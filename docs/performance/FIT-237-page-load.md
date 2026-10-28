@@ -55,6 +55,7 @@ Final clean-state run used one warmup and 10 measured runs per URL.
 | dashboard-shell | `/` | 44.0 | 46.7 | 46.7 | pass |
 | gym-now | `/gym-now` | 24.3 | 36.1 | 36.1 | pass |
 
-Optimization: `index.html` now loads a tiny `app-loader.js`, which schedules the
-large app bundle after the browser load event. The dashboard still hydrates and
-exposes `window.__aicoach` after load.
+Optimization: `index.html` now loads a tiny `app-loader.js`, which starts the
+async app bundle once the DOM is ready: immediately when `document.readyState`
+is no longer `loading`, otherwise on one-shot `DOMContentLoaded`. The dashboard
+still hydrates and exposes `window.__aicoach` after load.

@@ -1,12 +1,114 @@
 import importlib
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 def _fitness_app():
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     return module
+
+
+def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"events": [{
+        "end_time": "2026-06-28T07:00:00Z",
+        "duration_seconds": 28800,
+        "sleep_duration_seconds": 25200,
+        "stages": {
+            "awake_minutes": 35,
+            "light_minutes": 210,
+            "deep_minutes": 95,
+            "rem_minutes": 140,
+        },
+        "efficiency_percent": 91.5,
+        "is_nap": False,
+        "source": {"provider": "oura"},
+        "id": "sleep-1",
+    }]})
+
+    assert sleep["stages_min"] == {"awake": 35, "light": 210, "deep": 95, "rem": 140}
+    assert sleep["efficiency_percent"] == 91.5
+    assert sleep["is_nap"] is False
+    assert sleep["observed_at"] == "2026-06-28T07:00:00Z"
+    assert sleep["duration_min"] == 420
+
+
+def test_open_wearables_sleep_extractor_does_not_replace_main_sleep_with_latest_nap():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"data": [
+        {"end_time": "2026-06-28T07:00:00Z", "sleep_duration_seconds": 25200, "is_nap": False},
+        {"end_time": "2026-06-28T15:00:00Z", "sleep_duration_seconds": 1800, "is_nap": True},
+    ]})
+
+    assert sleep["duration_min"] == 420
+    assert sleep["is_nap"] is False
+
+
+def test_open_wearables_vitals_sleep_metrics_exclude_naps():
+    module = _fitness_app()
+
+    last_night, avg_hours = module._sleep_metrics_from_events([
+        {
+            "event_time": datetime(2026, 6, 28, 7, tzinfo=timezone.utc),
+            "duration_min": 420,
+            "is_nap": False,
+        },
+        {
+            "event_time": datetime(2026, 6, 28, 15, tzinfo=timezone.utc),
+            "duration_min": 30,
+            "is_nap": True,
+        },
+    ])
+
+    assert last_night["duration_hours"] == 7.0
+    assert avg_hours == 7.0
+
+
+def test_open_wearables_sleep_extractor_drops_non_finite_metrics():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"events": [{
+        "end_time": "2026-06-28T07:00:00Z",
+        "sleep_duration_seconds": float("nan"),
+        "avg_hr": float("inf"),
+        "stages": {"deep_minutes": float("nan"), "rem_minutes": float("inf")},
+        "efficiency_percent": float("-inf"),
+    }]})
+
+    assert sleep["duration_min"] is None
+    assert sleep["avg_hr"] is None
+    assert sleep["stages_min"] == {"deep": None, "rem": None, "light": None, "awake": None}
+    assert sleep["efficiency_percent"] is None
+
+
+def test_open_wearables_activity_extractor_preserves_zero_values():
+    module = _fitness_app()
+
+    [summary] = module._extract_open_wearables_activity_summaries({"data": [{
+        "date": "2026-06-28",
+        "active_calories_kcal": 0,
+        "active_minutes": 0,
+        "active_min": 22,
+        "distance_meters": 0,
+    }]})
+
+    assert summary["active_calories"] == 0
+    assert summary["active_minutes"] == 0
+    assert summary["distance"] == 0
+
+
+def test_open_wearables_activity_extractor_preserves_calorie_precision():
+    module = _fitness_app()
+
+    [summary] = module._extract_open_wearables_activity_summaries({"data": [{
+        "date": "2026-06-28", "active_calories_kcal": 342.9,
+    }]})
+
+    assert summary["active_calories"] == 342.9
 
 
 def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
@@ -343,7 +445,29 @@ def test_open_wearables_replacement_sources_expire_when_sync_is_stale(monkeypatc
     assert sources == []
 
 
-def test_open_wearables_store_records_replacement_dates_from_fact_provenance(monkeypatch, tmp_path):
+def test_open_wearables_replacement_sources_accept_offset_aware_sync_timestamp(monkeypatch, tmp_path):
+    module = _fitness_app()
+    facts_db = tmp_path / "wearable_facts.sqlite3"
+    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
+    module.upsert_wearable_source(str(facts_db), {
+        "provider_id": "open_wearables",
+        "label": "Open Wearables",
+        "status": "fresh",
+        "last_data_point": "2026-06-29",
+        "last_sync_attempt": "2026-07-01T19:00:00-05:00",
+        "capabilities": {
+            "replacement_source_dates": {"oura": "2026-06-29"},
+        },
+    }, profile_key=module._open_wearables_profile_key())
+
+    replacement_dates = module._open_wearables_replacement_source_dates(
+        now=module.datetime(2026, 7, 1, 20, 0, tzinfo=timezone(timedelta(hours=-5))),
+    )
+
+    assert replacement_dates == {"oura": "2026-06-29"}
+
+
+def test_open_wearables_store_records_domain_dates_without_claiming_partial_replacement(monkeypatch, tmp_path):
     module = _fitness_app()
     facts_db = tmp_path / "wearable_facts.sqlite3"
     monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
@@ -361,10 +485,11 @@ def test_open_wearables_store_records_replacement_dates_from_fact_provenance(mon
     assert facts_count == 2
     stored = module.list_wearable_sources(str(facts_db), profile_key=module._open_wearables_profile_key())
     open_wearables = next(source for source in stored if source["provider_id"] == "open_wearables")
-    assert open_wearables["capabilities"]["replacement_sources"] == ["apple_health", "oura"]
-    assert open_wearables["capabilities"]["replacement_source_dates"] == {
-        "apple_health": "2026-06-28",
-        "oura": "2026-06-28",
+    assert open_wearables["capabilities"]["replacement_sources"] == []
+    assert open_wearables["capabilities"]["replacement_source_dates"] == {}
+    assert open_wearables["capabilities"]["replacement_source_domain_dates"] == {
+        "apple_health": {"sleep": "2026-06-28"},
+        "oura": {"activity": "2026-06-28"},
     }
 
 
@@ -1248,6 +1373,198 @@ def test_open_wearables_sync_uses_current_profile_user_mapping(monkeypatch):
     assert requested
     assert all("/api/v1/users/open-wearables-user-42/" in url for url in requested)
     assert not any("open-wearables-user-1" in url for url in requested)
+
+
+def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch):
+    module = _fitness_app()
+    requested = []
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        requested.append(url)
+        if "/events/workouts" not in url:
+            return {"data": []}
+        if "cursor=" in url:
+            return {"events": [{"id": "workout-2"}], "pagination": {"has_more": False}}
+        return {
+            "events": [{"id": "workout-1"}],
+            "pagination": {"has_more": True, "next_cursor": "page 2"},
+        }
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert [row["id"] for row in payload["workouts"]["data"]] == ["workout-1", "workout-2"]
+    assert payload["_workout_snapshot_complete"] is True
+    expected_start, expected_end = module._open_wearables_window_bounds()
+    assert payload["_workout_query"] == {
+        "start_at": expected_start,
+        "end_at": expected_end,
+    }
+    recovery_url = next(url for url in requested if "/summaries/recovery" in url)
+    recovery_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(recovery_url).query)
+    sleep_summary_url = next(url for url in requested if "/summaries/sleep" in url)
+    sleep_summary_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(sleep_summary_url).query)
+    activity_url = next(url for url in requested if "/summaries/activity" in url)
+    activity_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(activity_url).query)
+    expected_start_date = module.datetime.fromisoformat(expected_start).date().isoformat()
+    expected_end_date = module.datetime.fromisoformat(expected_end).date().isoformat()
+    assert recovery_query["start_date"] == [expected_start_date]
+    assert recovery_query["end_date"] == [expected_end_date]
+    assert sleep_summary_query["start_date"] == [expected_start_date]
+    assert sleep_summary_query["end_date"] == [expected_end_date]
+    assert activity_query["start_date"] == [expected_start_date]
+    assert activity_query["end_date"] == [expected_end_date]
+    assert any("cursor=page%202" in url for url in requested)
+
+
+def test_open_wearables_fetch_uses_exact_timezone_aware_snapshot_bounds(monkeypatch):
+    module = _fitness_app()
+    requested = []
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        requested.append(url)
+        return {"data": [], "pagination": {"has_more": False}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    workout_url = next(url for url in requested if "/events/workouts" in url)
+    query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(workout_url).query)
+    assert query["start_date"] == [payload["_workout_query"]["start_at"]]
+    assert query["end_date"] == [payload["_workout_query"]["end_at"]]
+    start_at = module.datetime.fromisoformat(query["start_date"][0])
+    end_at = module.datetime.fromisoformat(query["end_date"][0])
+    expected_start, expected_end = module._open_wearables_window_bounds()
+    assert start_at.tzinfo is not None and end_at.tzinfo is not None
+    assert start_at.time().isoformat() == "00:00:00"
+    assert end_at.time().isoformat() == "00:00:00"
+    assert start_at.isoformat() == expected_start
+    assert end_at.isoformat() == expected_end
+
+
+def test_open_wearables_window_bounds_recalculate_dst_offsets():
+    module = _fitness_app()
+    chicago = ZoneInfo("America/Chicago")
+
+    start_at, end_at = module._open_wearables_window_bounds(
+        now=module.datetime(2026, 3, 9, 12, 0, tzinfo=chicago),
+        local_zone=chicago,
+    )
+
+    assert start_at == "2026-03-03T00:00:00-06:00"
+    assert end_at == "2026-03-10T00:00:00-05:00"
+
+
+def test_open_wearables_window_bounds_recalculate_dst_without_discovered_iana_zone(monkeypatch):
+    module = _fitness_app()
+    chicago = ZoneInfo("America/Chicago")
+    monkeypatch.setattr(module, "_system_local_zone", lambda: None)
+
+    start_at, end_at = module._open_wearables_window_bounds(
+        now=module.datetime(2026, 3, 9, 12, 0, tzinfo=chicago),
+    )
+
+    assert start_at == "2026-03-03T00:00:00-06:00"
+    assert end_at == "2026-03-10T00:00:00-05:00"
+
+
+def test_open_wearables_local_zone_accepts_posix_absolute_tz(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setenv("TZ", ":/etc/localtime")
+
+    assert module._system_local_zone() is not None
+
+
+def test_open_wearables_fetch_fails_closed_at_workout_pagination_cap(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" in url:
+            return {"data": [{"id": url}], "pagination": {"has_more": True, "next_cursor": "next"}}
+        return {"data": []}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_limit"
+
+
+def test_open_wearables_fetch_fails_closed_when_workout_cursor_is_missing(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" in url:
+            return {"data": [{"id": "workout-1"}], "pagination": {"has_more": True}}
+        return {"data": [], "pagination": {"has_more": False}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["_workout_snapshot_complete"] is False
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_cursor_missing"
+
+
+def test_open_wearables_fetch_fails_closed_when_later_workout_page_is_malformed(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" not in url:
+            return {"data": [], "pagination": {"has_more": False}}
+        if "cursor=" in url:
+            return [{"id": "workout-2"}]
+        return {
+            "data": [{"id": "workout-1"}],
+            "pagination": {"has_more": True, "next_cursor": "next"},
+        }
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["_workout_snapshot_complete"] is False
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_payload_invalid"
+
+
+def test_open_wearables_fetch_paginates_activity_summaries(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/summaries/activity" not in url:
+            return {"data": [], "pagination": {"has_more": False}}
+        if "cursor=" in url:
+            return {"data": [{"date": "2026-06-29"}], "pagination": {"has_more": False}}
+        return {"data": [{"date": "2026-06-28"}], "pagination": {"has_more": True, "next_cursor": "next"}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert [row["date"] for row in payload["activity_summary"]["data"]] == ["2026-06-28", "2026-06-29"]
 
 
 def test_open_wearables_recommendation_marker_cache_is_profile_scoped(monkeypatch):

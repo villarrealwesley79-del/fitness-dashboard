@@ -71,6 +71,23 @@ def test_complete_workout_retry_with_same_client_id_is_already_synced(fitness_ap
     assert fitness_app.WORKOUTS[0]["offline_sync"]["sync_attempts"] == 2
 
 
+def test_complete_workout_retry_accepts_pre_provenance_fingerprint(fitness_app):
+    client = fitness_app.app.test_client()
+    payload = _payload()
+    first = client.post("/api/complete-workout", json=payload)
+    assert first.status_code == 200
+
+    stored = fitness_app.WORKOUTS[0]
+    stored["exercises"][0]["sets"][0].pop("rpe_observed")
+    stored["offline_sync"]["fingerprint"] = fitness_app._workout_sync_fingerprint(stored)
+
+    retry = client.post("/api/complete-workout", json=copy.deepcopy(payload))
+
+    assert retry.status_code == 200
+    assert retry.get_json()["sync_status"] == "already_synced"
+    assert len(fitness_app.WORKOUTS) == 1
+
+
 def test_complete_workout_retry_with_empty_exercises_is_rejected(fitness_app):
     client = fitness_app.app.test_client()
 

@@ -393,8 +393,15 @@
         statuses: new Map(),
         dismissed: new Set(),
         fetching: false,
+        retryTimer: null,
+        retryDeadlineMs: null,
+        refreshPending: false,
+        appliedPlanRevision: null,
+        pendingAppliedPlanRevision: null,
         refillRequested: false,
     };
+    const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60_000;
+    const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1_000;
 
     function workoutAdaptationIsRenderable(event) {
         // Applied changes and source-invalidated stale markers remain visible
@@ -530,6 +537,78 @@
         if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);
     }
 
+    function scheduleWorkoutAdaptationEvaluationRetry(retryAfterMs) {
+        if (retryAfterMs == null) {
+            if (workoutAdaptationNoticeState.retryTimer) {
+                clearTimeout(workoutAdaptationNoticeState.retryTimer);
+                workoutAdaptationNoticeState.retryTimer = null;
+            }
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
+            return;
+        }
+        const delayMs = Number(retryAfterMs);
+        if (!Number.isFinite(delayMs) || delayMs < 0) return;
+        const deadlineMs = Date.now() + delayMs;
+        if (workoutAdaptationNoticeState.retryTimer) {
+            if (workoutAdaptationNoticeState.retryDeadlineMs <= deadlineMs) return;
+            clearTimeout(workoutAdaptationNoticeState.retryTimer);
+            workoutAdaptationNoticeState.retryTimer = null;
+        }
+        const retry = async () => {
+            if (workoutAdaptationNoticeState.fetching) {
+                workoutAdaptationNoticeState.retryDeadlineMs = (
+                    Date.now() + WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS
+                );
+                workoutAdaptationNoticeState.retryTimer = setTimeout(
+                    retry,
+                    WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS,
+                );
+                return;
+            }
+            workoutAdaptationNoticeState.retryTimer = null;
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
+            try {
+                await fetchWorkoutAdaptationNotices();
+            } catch (err) {
+                console.warn('workout adaptation retry failed:', err);
+            }
+        };
+        workoutAdaptationNoticeState.retryDeadlineMs = deadlineMs;
+        workoutAdaptationNoticeState.retryTimer = setTimeout(retry, delayMs);
+    }
+
+    async function refreshWorkoutAdaptationVisiblePlan() {
+        // The dashboard and the active workout refresh independently: a dashboard
+        // outage must not block the workout update or the event feed read.
+        let dashboardOk = true;
+        try {
+            await getDashboard(true);
+            paintDashboardFromState();
+        } catch (err) {
+            console.warn('adapted dashboard refresh failed:', err);
+            dashboardOk = false;
+        }
+        try {
+            await getNextWorkout(true);
+            await renderNextWorkout();
+            if (workoutAdaptationNoticeState.pendingAppliedPlanRevision != null) {
+                workoutAdaptationNoticeState.appliedPlanRevision = (
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision
+                );
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = null;
+            }
+            workoutAdaptationNoticeState.refreshPending = !dashboardOk;
+            if (!dashboardOk) {
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
+            return true;
+        } catch (err) {
+            console.warn('adapted workout refresh failed:', err);
+            scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            return false;
+        }
+    }
+
     async function fetchWorkoutAdaptationNotices() {
         if (workoutAdaptationNoticeState.fetching) {
             workoutAdaptationNoticeState.refillRequested = true;
@@ -538,8 +617,52 @@
         workoutAdaptationNoticeState.fetching = true;
         workoutAdaptationNoticeState.refillRequested = false;
         try {
-            const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
+            let evaluation = null;
+            try {
+                evaluation = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events/evaluate'), {
+                    method: 'POST',
+                    timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS,
+                });
+            } catch (err) {
+                console.warn('workout adaptation evaluation failed:', err);
+                workoutAdaptationNoticeState.refreshPending = true;
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
+            if (evaluation) {
+                scheduleWorkoutAdaptationEvaluationRetry(evaluation.retry_after_ms);
+                const appliedPlanRevision = evaluation.applied_plan_revision;
+                if (
+                    appliedPlanRevision != null
+                    && appliedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+                ) {
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision = appliedPlanRevision;
+                    workoutAdaptationNoticeState.refreshPending = true;
+                }
+            }
+            if (Number(evaluation && evaluation.evaluated_count) > 0) {
+                workoutAdaptationNoticeState.refreshPending = true;
+            }
+            if (workoutAdaptationNoticeState.refreshPending) {
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
+            let payload = null;
+            try {
+                payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            } catch (err) {
+                console.warn('workout adaptation feed failed:', err);
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+                return;
+            }
             const events = (payload && payload.events) || [];
+            const feedPlanRevision = payload && payload.applied_plan_revision;
+            if (
+                feedPlanRevision != null
+                && feedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+            ) {
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = feedPlanRevision;
+                workoutAdaptationNoticeState.refreshPending = true;
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
             for (const event of events) {
                 if (!event || !event.id) continue;
                 if (workoutAdaptationNoticeState.dismissed.has(event.id)) continue;
@@ -562,11 +685,9 @@
             }
         } finally {
             workoutAdaptationNoticeState.fetching = false;
-            if (workoutAdaptationNoticeState.refillRequested) {
-                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
-                    console.warn('workout adaptation refresh failed:', fetchErr);
-                });
-            }
+            const refillRequested = workoutAdaptationNoticeState.refillRequested;
+            workoutAdaptationNoticeState.refillRequested = false;
+            if (refillRequested) await fetchWorkoutAdaptationNotices();
         }
     }
 
@@ -951,6 +1072,8 @@
 
     // --- tab switching -------------------------------------------
     function switchTab(tabId) {
+        const panel = document.getElementById(tabId);
+        tabId = panel && panel.classList.contains('tab-content') ? tabId : 'tab-dashboard';
         state.currentTab = tabId;
         qsa('.tab-content').forEach((el) => {
             const active = el.id === tabId;
@@ -972,7 +1095,7 @@
         if (hash === '#settings') return 'tab-settings';
         if (hash === '#history') return 'tab-history';
         if (hash === '#workout') return 'tab-workout';
-        if (hash === '#nutrition') return 'tab-nutrition';
+        if (hash === '#nutrition') return 'tab-log';
         return 'tab-dashboard';
     }
 
@@ -1266,6 +1389,18 @@
             const r = await api(`/api/apple-health/workouts?days=${days}`);
             state[key] = r && Array.isArray(r.workouts) ? r.workouts : [];
         } catch { state[key] = []; }
+        return state[key];
+    }
+    async function getOpenWearablesWorkouts(force = false) {
+        const key = 'open_wearables_workouts';
+        if (!force && state[key]) return state[key];
+        try {
+            const r = await api('/api/open-wearables/workouts', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            state[key] = r && Array.isArray(r.workouts) ? r.workouts : [];
+        } catch {
+            delete state[key];
+            return [];
+        }
         return state[key];
     }
     async function getBody(force = false) {
@@ -2251,6 +2386,7 @@
             if (body && body.config) populateOpenWearablesSetupFields(body.config);
             state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
             const nextState = deriveOpenWearablesSetupState(state.openWearablesStatus, state.openWearablesUi.config);
             setOpenWearablesSetupStatus(
@@ -2460,6 +2596,7 @@
                 setOpenWearablesSetupStatus('Saved locally. Check setup once the wrapper and providers are running.', 'warn');
             }
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             toast('Open Wearables setup saved.', 'ok');
         } catch (error) {
             setOpenWearablesSetupStatus(error && error.message ? error.message : 'Open Wearables setup save failed.', 'error');
@@ -3016,6 +3153,15 @@
         const oura = state.oura;
         const reco = state.reco;
         const sleep = state.ouraSleep;
+        const dashboardSleepQualityKnown = sleep && sleep.data_quality
+            && sleep.data_quality.status;
+        const dashboardSleepInconsistent = sleep && sleep.data_quality
+            && sleep.data_quality.status === 'inconsistent';
+        const sleepQualityWarning = sleep && sleep.data_quality
+            && sleep.data_quality.status === 'partial';
+        const sleepQualityAction = dashboardSleepInconsistent || sleepQualityWarning
+            ? [sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'].filter(Boolean).join(' · ')
+            : null;
 
         // FIT-127: per-field guards. paintDashboardFromState runs after every
         // .then(repaint) in renderDashboard AND after invalidateCaches() nulls
@@ -3040,7 +3186,8 @@
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
-        if ($('dash-sleep')) $('dash-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+        if ($('dash-sleep')) $('dash-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
+            : (sleep && sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--');
 
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
@@ -3088,7 +3235,8 @@
             }
         }
 
-        // Intensity / time / RPE chips
+        // Intensity metadata / time chip. RPE is an exercise-derived range;
+        // `nw.goal` is an id string, not an object carrying an RPE target.
         const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
         const intensityWord = reco && reco.recommendation
             ? (reco.recommendation === 'intensity' ? 'High'
@@ -3096,24 +3244,26 @@
                 : reco.recommendation === 'recovery' ? 'Low'
                 : reco.recommendation)
             : null;
+        const readinessText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
+        const rpeLabel = nw && nw.rpe_range && nw.rpe_range.label;
+        const targetIntensity = rpeLabel ? `Target intensity · RPE ${rpeLabel}` : '';
         if ($('reco-intensity')) {
-            const intensityText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
-            if (intensityText) {
-                $('reco-intensity').textContent = intensityText;
-            } else {
-                // Reset to HTML placeholder so a prior session's chip doesn't linger.
-                $('reco-intensity').textContent = '—';
-            }
+            // Reset to HTML placeholder so a prior session's chip doesn't linger.
+            $('reco-intensity').textContent = targetIntensity || readinessText || '—';
+        }
+        if ($('reco-readiness')) {
+            // With an RPE range the readiness word moves here, so both show.
+            const readinessShown = targetIntensity && readinessText;
+            $('reco-readiness').textContent = readinessShown ? readinessText : '';
+            $('reco-readiness').hidden = !readinessShown;
         }
         const timeMin = nw && nw.estimated_minutes;
         if ($('reco-time')) {
             if (timeMin) { $('reco-time').textContent = `${timeMin} min`; $('reco-time').hidden = false; }
             else { $('reco-time').hidden = true; }
         }
-        const rpeTarget = nw && nw.goal && nw.goal.rpe_target;
         if ($('reco-rpe')) {
-            if (rpeTarget) { $('reco-rpe').textContent = `RPE ${rpeTarget}`; $('reco-rpe').hidden = false; }
-            else { $('reco-rpe').hidden = true; }
+            $('reco-rpe').hidden = true;
         }
 
         // FIT-88: last-session badge — one-liner showing how the completion
@@ -3248,10 +3398,12 @@
         if ($('glance-steps-goal')) $('glance-steps-goal').textContent = oura && oura.steps != null ? `${Math.round((oura.steps / 10000) * 100)}% of 10,000` : 'Pending sync';
         if ($('glance-cal')) $('glance-cal').textContent = fmtInt(oura && oura.active_calories);
         if ($('glance-cal-goal')) $('glance-cal-goal').textContent = oura && oura.active_calories != null ? `${Math.round((oura.active_calories / 800) * 100)}% of 800` : '';
-        if ($('glance-sleep')) $('glance-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+        if ($('glance-sleep')) $('glance-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
+            : (sleep && sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--');
         if ($('glance-sleep-quality')) {
             const score = oura && oura.sleep_score;
-            $('glance-sleep-quality').textContent = score != null ? (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : 'Fair') : '—';
+            $('glance-sleep-quality').textContent = dashboardSleepInconsistent || sleepQualityWarning ? sleepQualityAction
+                : (score != null ? (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : 'Fair') : '—');
         }
         const bs = (dash && dash.body_stats) || {};
         if ($('glance-weight')) $('glance-weight').textContent = bs.latest_weight != null ? `${fmtDecimal(bs.latest_weight, 1)} lb` : '--';
@@ -3269,6 +3421,10 @@
         // placeholders so a prior session's insight doesn't linger as stale
         // guidance.
         if (reco) {
+            if (dashboardSleepInconsistent || sleepQualityWarning) {
+                if ($('insight-title')) $('insight-title').textContent = 'Sleep data needs review';
+                if ($('insight-body')) $('insight-body').textContent = sleepQualityAction;
+            } else {
             const recoFactors = reco.readiness_factors;
             let insightTitle = 'Recovery is on track';
             let insightBody = reco.reasoning || 'Keep your sleep consistent and you\'ll stay ready.';
@@ -3281,15 +3437,23 @@
                     insightBody = recoFactors.acwr.message;
                 }
             }
-            if ($('insight-title')) $('insight-title').textContent = insightTitle;
-            if ($('insight-body')) $('insight-body').textContent = insightBody;
+                if ($('insight-title')) $('insight-title').textContent = insightTitle;
+                if ($('insight-body')) $('insight-body').textContent = insightBody;
+            }
+        } else if (dashboardSleepInconsistent || sleepQualityWarning) {
+            if ($('insight-title')) $('insight-title').textContent = 'Sleep data needs review';
+            if ($('insight-body')) $('insight-body').textContent = sleepQualityAction;
         } else {
             if ($('insight-title')) $('insight-title').textContent = 'Gathering data…';
             if ($('insight-body')) $('insight-body').textContent = '';
         }
 
         // Sparkline: sleep scores from Oura trend
-        const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
+        const sleepTrendRows = sleep && sleep.trend_data ? sleep.trend_data : [];
+        // trend_data is already vetted server-side (valid full nights kept), so no excluded_dates filter here.
+        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null
+            && (!dashboardSleepInconsistent || d.date !== sleep.data_quality.observed_at));
+        const sleepSeries = safeSleepTrendRows.map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
 
         // FIT-128/129: per-card retry chips. Each chip surfaces when its
@@ -3432,22 +3596,54 @@
         // Sparks from trends
         const trends = await getOuraTrends();
         const series = trends && trends.series ? trends.series : [];
+        const sleepInconsistent = sleep && sleep.data_quality && sleep.data_quality.status === 'inconsistent';
+        const sleepQualityWarning = sleep && sleep.data_quality && sleep.data_quality.status === 'partial';
+        const sleepQualityAction = sleepInconsistent || sleepQualityWarning
+            ? [sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'].filter(Boolean).join(' · ')
+            : null;
+        const excludedSleepDates = new Set(
+            sleep && sleep.data_quality && sleep.data_quality.excluded_dates
+                ? sleep.data_quality.excluded_dates
+                : []
+        );
+        const safeSleepSeries = series.filter((s) => s.sleep_duration_min != null && s.nightly_sleep === true
+            && !excludedSleepDates.has(s.day)
+            && (!sleepInconsistent || s.day !== sleep.data_quality.observed_at));
         sparkline($('spark-steps'), series.map((s) => s.steps), { color: '#22c55e' });
         sparkline($('spark-active-min'), series.map((s) => s.activity_score), { color: '#fbbf24' });
-        sparkline($('spark-sleep'), series.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
+        sparkline($('spark-sleep'), safeSleepSeries.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
 
         // Sleep details
-        const last = sleep && sleep.last_night;
-        if (last) {
-            $('v-sleep-dur').textContent = fmtDur(last.total_sleep_min);
-            $('v-sleep-dur-sub').textContent = `${Math.round(last.rem_sleep_min)}m REM · ${Math.round(last.deep_sleep_min)}m Deep`;
+        // Sleep summary failed: fall back to the Oura status night.
+        // shortcut: status comes from the unvetted daily cache, so only a >=60 min night is trusted.
+        const statusNight = !sleep && oura && oura.sleep_duration_min >= 60 ? {
+            total_sleep_min: oura.sleep_duration_min,
+            rem_sleep_min: (oura.sleep_breakdown_min || {}).rem,
+            deep_sleep_min: (oura.sleep_breakdown_min || {}).deep,
+            sleep_score: oura.sleep_score,
+        } : null;
+        const last = sleep ? sleep.last_night : statusNight;
+        if (sleepInconsistent) {
+            $('v-sleep-dur').textContent = '--';
+            $('v-sleep-dur-sub').textContent = 'Sleep data inconsistent · Check Oura sync';
+            $('v-sleep-score').textContent = '--';
+            $('v-sleep-score-sub').textContent = sleep.data_quality.observed_at || '';
+        } else if (last) {
+            const totalSleepMin = last.total_sleep_min;
+            $('v-sleep-dur').textContent = totalSleepMin != null ? fmtDur(totalSleepMin) : '--';
+            const remLabel = last.rem_sleep_min != null ? `${Math.round(last.rem_sleep_min)}m REM` : 'REM unknown';
+            const deepLabel = last.deep_sleep_min != null ? `${Math.round(last.deep_sleep_min)}m Deep` : 'Deep unknown';
+            $('v-sleep-dur-sub').textContent = `${remLabel} · ${deepLabel}`;
         } else {
             $('v-sleep-dur').textContent = '--';
             $('v-sleep-dur-sub').textContent = '—';
         }
-        $('v-sleep-score').textContent = oura && oura.sleep_score != null ? oura.sleep_score : '--';
-        const wa = sleep && sleep.week_average;
-        $('v-sleep-score-sub').textContent = wa && wa.score ? `avg ${wa.score} · 7d` : '';
+        if (!sleepInconsistent) {
+            $('v-sleep-score').textContent = last && last.sleep_score != null ? last.sleep_score : '--';
+            const wa = sleep && sleep.week_average;
+            $('v-sleep-score-sub').textContent = sleepQualityWarning ? sleepQualityAction
+                : (wa && wa.score ? `avg ${wa.score} · 7d` : '');
+        }
 
         // Body
         const latest = body && body.history && body.history[0];
@@ -3797,6 +3993,90 @@
         };
     }
 
+    function normalizeOpenWearablesHistoryRow(w) {
+        const label = w.original_label || w.activity_type || w.session_type || 'Workout';
+        return {
+            ...w,
+            source: 'open_wearables',
+            provider: 'Open Wearables',
+            original_label: label,
+            canonical_category: w.canonical_category || canonicalHistoryCategory(label, 'open_wearables'),
+            source_label: 'Open Wearables',
+        };
+    }
+
+    function historyWorkoutFingerprints(row) {
+        const rawStart = row && (row.startDate || row.start || row.start_time || row.created_at);
+        const timestamp = Date.parse(rawStart || '');
+        if (!Number.isFinite(timestamp)) return [];
+        const labels = row && row.source === 'open_wearables'
+            ? [row.session_type || row.type, row.activity_type || row.activity || row.canonical_category]
+            : [row && (row.canonical_category || canonicalHistoryCategory(
+                row.activity_type || row.activity || row.session_type,
+                row.source
+            ))];
+        const aliases = {
+            bike: 'cycling',
+            rower: 'rowing',
+            'treadmill incline walk': 'treadmill',
+            'treadmill run': 'treadmill',
+            'outdoor run': 'running',
+            'outdoor walk': 'walking',
+            walk: 'walking',
+        };
+        const second = Math.floor(timestamp / 1000);
+        return Array.from(new Set(labels.map((label) => {
+            const canonicalLabel = canonicalHistoryCategory(label, row && row.source);
+            const normalized = String(canonicalLabel || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+            const category = aliases[normalized] || normalized.replace(/\s+/g, '_');
+            return category ? `${second}:${category}` : null;
+        }).filter(Boolean)));
+    }
+
+    function mergeOpenWearablesHistory(baseRows, openWearablesRows) {
+        const base = (baseRows || []).map((row) => ({ ...row }));
+        const openWearables = (openWearablesRows || []).map((row) => ({ ...row }));
+        const baseByFingerprint = new Map();
+        const openWearablesByFingerprint = new Map();
+        base.forEach((row, index) => {
+            historyWorkoutFingerprints(row).forEach((fingerprint) => {
+                baseByFingerprint.set(fingerprint, new Set([...(baseByFingerprint.get(fingerprint) || []), index]));
+            });
+        });
+        openWearables.forEach((row, index) => {
+            historyWorkoutFingerprints(row).forEach((fingerprint) => {
+                openWearablesByFingerprint.set(fingerprint, new Set([...(openWearablesByFingerprint.get(fingerprint) || []), index]));
+            });
+        });
+
+        const matchedOpenWearables = new Set();
+        base.forEach((baseRow, baseIndex) => {
+            const openWearablesCandidates = new Set();
+            historyWorkoutFingerprints(baseRow).forEach((fingerprint) => {
+                (openWearablesByFingerprint.get(fingerprint) || []).forEach((index) => openWearablesCandidates.add(index));
+            });
+            if (openWearablesCandidates.size !== 1) return;
+            const openWearablesIndex = openWearablesCandidates.values().next().value;
+            const baseCandidates = new Set();
+            historyWorkoutFingerprints(openWearables[openWearablesIndex]).forEach((fingerprint) => {
+                (baseByFingerprint.get(fingerprint) || []).forEach((index) => baseCandidates.add(index));
+            });
+            if (baseCandidates.size !== 1 || !baseCandidates.has(baseIndex)) return;
+            const openWearablesRow = openWearables[openWearablesIndex];
+            let importedMetric = false;
+            ['calories_burned', 'avg_heart_rate', 'max_heart_rate'].forEach((field) => {
+                if (baseRow[field] == null && openWearablesRow[field] != null) {
+                    baseRow[field] = openWearablesRow[field];
+                    importedMetric = true;
+                }
+            });
+            baseRow.open_wearables_match = true;
+            if (importedMetric) baseRow.open_wearables_metrics = true;
+            matchedOpenWearables.add(openWearablesIndex);
+        });
+        return base.concat(openWearables.filter((_, index) => !matchedOpenWearables.has(index)));
+    }
+
     function mergeStrengthHistorySources(lifts, watchRows) {
         const loggedByDate = new Map();
         const mergedLifts = (lifts || []).map((w) => {
@@ -3808,19 +4088,36 @@
                 source_label: w.source_label || 'Strength - Logged',
                 merged_sources: Array.isArray(w.merged_sources) ? [...w.merged_sources] : ['logged'],
             };
-            if (row.date && row.canonical_category === 'strength_training' && !loggedByDate.has(row.date)) {
-                loggedByDate.set(row.date, row);
+            if (row.date && row.canonical_category === 'strength_training') {
+                loggedByDate.set(row.date, [...(loggedByDate.get(row.date) || []), row]);
             }
             return row;
         });
+        const absorbed = new Set();
         const visibleWatch = [];
         (watchRows || []).forEach((row) => {
-            if (row.canonical_category === 'strength_training' && row.date && loggedByDate.has(row.date)) {
-                const logged = loggedByDate.get(row.date);
-                logged.merged_sources = Array.from(new Set([...(logged.merged_sources || []), 'watch']));
-                logged.source_label = 'Strength - Logged + Watch';
+            // A wearable strength session counts once: it folds into a logged lift
+            // that day, but each lift absorbs at most one session. Extra distinct
+            // sessions stay visible as their own rows.
+            const candidates = row.canonical_category === 'strength_training' && row.date ? (loggedByDate.get(row.date) || []) : [];
+            const logged = candidates.find((lift) => !absorbed.has(lift));
+            if (logged) {
+                absorbed.add(logged);
+                const sourceKey = row.source === 'open_wearables' ? 'open_wearables' : 'watch';
+                logged.merged_sources = Array.from(new Set([...(logged.merged_sources || []), sourceKey]));
+                logged.source_label = sourceKey === 'watch' ? 'Strength - Logged + Watch' : 'Strength - Logged + Open Wearables';
                 logged.watch_duration_minutes = row.duration_minutes || row.duration || logged.watch_duration_minutes || null;
                 logged.watch_activity_label = row.original_label || row.activity_type || row.activity || logged.watch_activity_label || null;
+                // Logged lifts carry no start time, so the match is by date alone. Only
+                // copy the metrics when that date has exactly one logged lift; with
+                // several, the figures may belong to a different session.
+                const hasWearableMetrics = ['calories_burned', 'avg_heart_rate', 'max_heart_rate'].some((field) => row[field] != null);
+                if (candidates.length === 1 && hasWearableMetrics && (row.source === 'open_wearables' || row.open_wearables_metrics)) {
+                    logged.wearable_calories_burned = row.calories_burned ?? null;
+                    logged.wearable_avg_heart_rate = row.avg_heart_rate ?? null;
+                    logged.wearable_max_heart_rate = row.max_heart_rate ?? null;
+                    logged.wearable_metrics_source = 'Open Wearables';
+                }
                 return;
             }
             visibleWatch.push(row);
@@ -3840,11 +4137,12 @@
         $('history-total-volume').textContent = fmtKilo(0);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
-        let hist, aw;
+        let hist, aw, ow;
         try {
-            [hist, aw] = await Promise.all([
+            [hist, aw, ow] = await Promise.all([
                 getHistory(),
                 getAppleHealthWorkouts(Math.max(days, 30)),
+                getOpenWearablesWorkouts(),
             ]);
         } catch (e) {
             console.error('renderHistory: history fetch failed', e);
@@ -3866,12 +4164,16 @@
         cutoff.setDate(cutoff.getDate() - days);
 
         const lifts = allLifts
-            .map((w, i) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted', _origIndex: i }))
+            .map((w) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted' }))
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
         const watch = (Array.isArray(aw) ? aw : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map(normalizeWatchHistoryRow);
-        const mergedHistoryRows = mergeStrengthHistorySources(lifts, watch);
+        const openWearables = (Array.isArray(ow) ? ow : [])
+            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
+            .map(normalizeOpenWearablesHistoryRow);
+        const wearableRows = mergeOpenWearablesHistory(watch, openWearables);
+        const mergedHistoryRows = mergeStrengthHistorySources(lifts, wearableRows);
 
         const workouts = mergedHistoryRows.filter((w) => w.source === 'lifted');
 
@@ -3880,9 +4182,19 @@
         $('history-count').textContent = totalSessions || '0';
         const watchOnlyCount = mergedHistoryRows.filter((w) => w.source === 'watch').length;
         const mergedWatchCount = mergedHistoryRows.filter((w) => Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')).length;
-        $('history-freq-sub').textContent = lifts.length && (watchOnlyCount || mergedWatchCount)
-            ? `Last ${days} days · ${lifts.length} logged + ${watchOnlyCount} Watch-only + ${mergedWatchCount} merged`
-            : `Last ${days} days`;
+        const openWearablesCount = mergedHistoryRows.filter((w) => w.source === 'open_wearables').length;
+        if (openWearablesCount) {
+            const sourceCounts = [];
+            if (lifts.length) sourceCounts.push(`${lifts.length} logged`);
+            if (watchOnlyCount) sourceCounts.push(`${watchOnlyCount} Watch-only`);
+            if (mergedWatchCount) sourceCounts.push(`${mergedWatchCount} merged`);
+            sourceCounts.push(`${openWearablesCount} Open Wearables`);
+            $('history-freq-sub').textContent = `Last ${days} days · ${sourceCounts.join(' + ')}`;
+        } else {
+            $('history-freq-sub').textContent = lifts.length && (watchOnlyCount || mergedWatchCount)
+                ? `Last ${days} days · ${lifts.length} logged + ${watchOnlyCount} Watch-only + ${mergedWatchCount} merged`
+                : `Last ${days} days`;
+        }
         $('history-total-volume').textContent = fmtKilo(totalVol);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
@@ -3996,16 +4308,43 @@
             const row = document.createElement('div');
             row.className = 'w-row';
             row.tabIndex = 0;
-            if (w.source === 'watch') {
+            if (w.source === 'open_wearables') {
+                const title = w.activity_type || w.session_type || 'Workout';
+                const meta = [
+                    formatOptionalWorkoutMetric(w.duration_minutes, 'min', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.calories_burned, 'kcal', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.avg_heart_rate, 'bpm avg', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.max_heart_rate, 'bpm max', { omitMissing: true }),
+                ].filter(Boolean).join(' · ');
+                row.innerHTML = `
+                    <div class="w-date">${escapeHtml(fmtDate(w.date))}</div>
+                    <div>
+                        <div class="w-summary"><span class="src-tag src-open-wearables">OPEN WEARABLES</span>${escapeHtml(title)}</div>
+                        <div class="w-meta">${escapeHtml(meta) || '—'}</div>
+                    </div>
+                    <div class="w-volume open-wearables-volume">${escapeHtml(formatOptionalWorkoutMetric(w.duration_minutes, 'min', { omitMissing: true }) || '')}</div>
+                `;
+                row.addEventListener('click', () => openWorkoutDetail(w));
+                row.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        openWorkoutDetail(w);
+                    }
+                });
+            } else if (w.source === 'watch') {
                 const title = w.activity_type || w.activity || 'Workout';
                 const mins = w.duration_minutes || w.duration_min || 0;
-                const kcal = w.total_energy_kcal || w.energy_kcal || 0;
-                const hr = w.avg_heart_rate ? `${Math.round(w.avg_heart_rate)} bpm` : '';
-                const meta = [mins ? `${Math.round(mins)} min` : null, kcal ? `${Math.round(kcal)} kcal` : null, hr].filter(Boolean).join(' · ');
+                const kcal = historyCaloriesForDisplay(w);
+                const meta = [
+                    mins ? `${Math.round(mins)} min` : null,
+                    formatOptionalWorkoutMetric(kcal, 'kcal', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.avg_heart_rate, 'bpm avg', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.max_heart_rate, 'bpm max', { omitMissing: true }),
+                ].filter(Boolean).join(' · ');
                 row.innerHTML = `
                     <div class="w-date">${fmtDate(w.date)}</div>
                     <div>
-                        <div class="w-summary"><span class="src-tag src-watch">WATCH</span>${escapeHtml(title)}</div>
+                        <div class="w-summary"><span class="src-tag src-watch">WATCH</span>${w.open_wearables_metrics ? '<span class="src-tag src-open-wearables">OPEN WEARABLES</span>' : ''}${escapeHtml(title)}</div>
                         <div class="w-meta">${escapeHtml(meta) || '—'}</div>
                     </div>
                         <div class="w-volume watch-volume">${mins ? Math.round(mins) + ' min' : ''}</div>
@@ -4019,9 +4358,13 @@
                 });
             } else {
                 const exNames = (w.exercises || []).map((e) => e.machine || e.exercise).filter(Boolean).slice(0, 3).join(', ');
-                const sourceMeta = Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')
+                const mergedLabel = Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')
                     ? ` · merged Watch ${w.watch_duration_minutes ? Math.round(w.watch_duration_minutes) + ' min' : 'strength'}`
                     : '';
+                const wearableMeta = w.wearable_metrics_source
+                    ? ` · ${w.wearable_metrics_source}: ${loggedWearableMetricParts(w).join(' · ')}`
+                    : '';
+                const sourceMeta = mergedLabel + wearableMeta;
                 row.innerHTML = `
                     <div class="w-date">${fmtDate(w.date)}</div>
                     <div>
@@ -4109,6 +4452,33 @@
         return ex && (ex.machine || ex.exercise || ex.name) || 'Exercise';
     }
 
+    function formatOptionalWorkoutMetric(value, unit, { omitMissing = false } = {}) {
+        if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) {
+            return omitMissing ? '' : '—';
+        }
+        const rounded = Math.round(Number(value));
+        return unit ? `${rounded} ${unit}` : String(rounded);
+    }
+
+    function loggedWearableMetricParts(item) {
+        // Dash (never 0) for any metric the wearable did not report.
+        return [
+            [item.wearable_calories_burned, 'kcal'],
+            [item.wearable_avg_heart_rate, 'bpm avg'],
+            [item.wearable_max_heart_rate, 'bpm max'],
+        ].map(([value, unit]) => {
+            const text = formatOptionalWorkoutMetric(value, unit);
+            return text === '\u2014' ? `\u2014 ${unit}` : text;
+        });
+    }
+
+    function historyCaloriesForDisplay(item) {
+        if (item && item.open_wearables_metrics && item.calories_burned != null) {
+            return item.calories_burned;
+        }
+        return item && (item.total_energy_kcal ?? item.energy_kcal ?? item.calories_burned);
+    }
+
     function openWorkoutDetail(item) {
         const modal = $('modal-workout-detail');
         const body = $('workout-detail-body');
@@ -4118,7 +4488,7 @@
         if (!modal || !body || !title || !item) return;
 
         if (foot && deleteBtn) {
-            const deletable = item.source === 'lifted' && Number.isInteger(item._origIndex);
+            const deletable = item.source === 'lifted' && typeof item.id === 'string' && item.id.length > 0;
             foot.hidden = !deletable;
             const fresh = deleteBtn.cloneNode(true);
             deleteBtn.parentNode.replaceChild(fresh, deleteBtn);
@@ -4127,17 +4497,54 @@
             }
         }
 
+        if (item.source === 'open_wearables') {
+            const activity = item.activity_type || item.session_type || 'Workout';
+            title.textContent = `${activity} · ${fmtDate(item.date)}`;
+            body.innerHTML = `
+                <div class="workout-source-line">
+                    <span class="src-tag src-open-wearables">OPEN WEARABLES</span>
+                    ${item.provider_source ? `<span>${escapeHtml(item.provider_source)}</span>` : ''}
+                </div>
+                <dl class="workout-metrics-list">
+                    <div><dt>Duration</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.duration_minutes, 'min'))}</dd></div>
+                    <div><dt>Calories burned</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.calories_burned, 'kcal'))}</dd></div>
+                    <div><dt>Average heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, 'bpm'))}</dd></div>
+                    <div><dt>Maximum heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, 'bpm'))}</dd></div>
+                </dl>
+                ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+                <div class="workout-detail-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-open-wearables">Analyze workout</button>
+                </div>
+            `;
+            const analyzeBtn = $('btn-analyze-open-wearables');
+            if (analyzeBtn) {
+                analyzeBtn.addEventListener('click', () => {
+                    modal.hidden = true;
+                    openAnalyzeModal(
+                        { workout_id: item.id },
+                        `Analysis · ${fmtDate(item.date)}`,
+                    );
+                });
+            }
+            modal.hidden = false;
+            return;
+        }
+
         if (item.source === 'watch') {
             const activity = item.activity_type || item.activity || 'Workout';
             const mins = item.duration_minutes || item.duration_min || 0;
-            const kcal = item.total_energy_kcal || item.energy_kcal || 0;
-            const hr = item.avg_heart_rate ? `${Math.round(item.avg_heart_rate)} bpm` : '';
+            const kcal = historyCaloriesForDisplay(item);
             title.textContent = `${activity} · ${fmtDate(item.date)}`;
             body.innerHTML = `
-                <div class="workout-detail-kpis">
+                <div class="workout-source-line">
+                    <span class="src-tag src-watch">WATCH</span>
+                    ${item.open_wearables_metrics ? '<span class="src-tag src-open-wearables">OPEN WEARABLES METRICS</span>' : ''}
+                </div>
+                <div class="workout-detail-kpis workout-detail-kpis-four">
                     <div><span>${Math.round(mins || 0)}</span><label>minutes</label></div>
-                    <div><span>${Math.round(kcal || 0)}</span><label>kcal</label></div>
-                    <div><span>${escapeHtml(hr || '—')}</span><label>avg HR</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(kcal, ''))}</span><label>kcal</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, ''))}</span><label>avg HR</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, ''))}</span><label>max HR</label></div>
                 </div>
                 ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             `;
@@ -4257,13 +4664,22 @@
                 </button>
             </div>
         `;
-
+        const [loggedKcal, loggedAvgHr, loggedMaxHr] = item.wearable_metrics_source ? loggedWearableMetricParts(item) : [];
+        const wearableMetricsHtml = item.wearable_metrics_source ? `
+            <div class="workout-source-line"><span class="src-tag src-open-wearables">${escapeHtml(String(item.wearable_metrics_source).toUpperCase())}</span></div>
+            <dl class="workout-metrics-list">
+                <div><dt>Calories burned</dt><dd>${escapeHtml(loggedKcal)}</dd></div>
+                <div><dt>Average heart rate</dt><dd>${escapeHtml(loggedAvgHr)}</dd></div>
+                <div><dt>Maximum heart rate</dt><dd>${escapeHtml(loggedMaxHr)}</dd></div>
+            </dl>
+        ` : '';
         body.innerHTML = `
             <div class="workout-detail-kpis">
                 <div><span>${fmtInt(totalSets)}</span><label>sets</label></div>
                 <div><span>${fmtKilo(totalVolume)}</span><label>lbs</label></div>
                 <div><span>${fmtInt(item.duration_minutes || 0)}</span><label>minutes</label></div>
             </div>
+            ${wearableMetricsHtml}
             ${adherenceHtml}
             ${analyzeBtnHtml}
             ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
@@ -4319,7 +4735,7 @@
     }
 
     async function performDeleteWorkout(workout, button) {
-        if (!workout || !Number.isInteger(workout._origIndex)) return;
+        if (!workout || typeof workout.id !== 'string' || !workout.id) return;
         const confirmModal = $('modal-delete-confirm');
         if (button) {
             button.disabled = true;
@@ -4329,7 +4745,7 @@
             const res = await api('/api/delete-history', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'workout', index: workout._origIndex }),
+                body: JSON.stringify({ type: 'workout', id: workout.id }),
             });
             const deletedEntry = res && res.deleted;
             const detailModal = $('modal-workout-detail');
@@ -5752,6 +6168,7 @@
             state.openWearablesStatus = null;
             state.wearableSources = null;
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             toast('Open Wearables sync complete.', 'ok');
         } catch (error) {
             state.openWearablesUi.lastError = error && error.message ? error.message : 'Open Wearables sync failed.';
@@ -7138,17 +7555,124 @@
         const error = $('body-log-error');
         const weightPresent = Number(weightInput.value) > 0;
         const bodyFatPresent = bodyFatInput.value.trim() !== '';
+        const missingWeight = bodyFatPresent && !weightPresent;
 
         saveButton.disabled = bodyFatPresent && !weightPresent;
-        weightInput.setAttribute('aria-invalid', saveButton.disabled ? 'true' : 'false');
-        error.hidden = !saveButton.disabled;
+        if (bodyNavyCalculationPending) saveButton.disabled = true;
+        weightInput.setAttribute('aria-invalid', missingWeight ? 'true' : 'false');
+        error.hidden = !missingWeight;
         return !saveButton.disabled;
     }
 
+    let bodyNavyDerivedValue = null;
+    let bodyNavyInputVersion = 0;
+    let bodyNavyCalculationPending = false;
+
+    function navyInputValue(id) {
+        const el = $(id);
+        const value = el ? String(el.value ?? '').trim() : '';
+        return value === '' ? null : Number(value);
+    }
+
+    function bodyNavyContextPayload() {
+        const values = {
+            height_in: navyInputValue('body-navy-height'),
+            neck_in: navyInputValue('body-navy-neck'),
+            waist_in: navyInputValue('body-navy-waist'),
+            hip_in: navyInputValue('body-navy-hip'),
+        };
+        if (!Object.values(values).some((value) => value !== null)) return {};
+        return {
+            sex: $('body-navy-sex').value,
+            ...values,
+        };
+    }
+
+    function syncBodyNavySex() {
+        const hipField = $('body-navy-hip-field');
+        const hipInput = $('body-navy-hip');
+        const isFemale = $('body-navy-sex').value === 'female';
+        hipField.hidden = !isFemale;
+        hipInput.required = isFemale;
+        if (!isFemale) hipInput.value = '';
+    }
+
+    function setBodyNavyFeedback(id, message) {
+        const feedback = $(id);
+        feedback.textContent = message;
+        feedback.hidden = !message;
+    }
+
+    function setBodyNavyError(message) {
+        setBodyNavyFeedback('body-navy-error', message);
+        qsa('#body-navy-sex, #body-navy-height, #body-navy-neck, #body-navy-waist, #body-navy-hip')
+            .forEach((input) => input.setAttribute('aria-invalid', message ? 'true' : 'false'));
+    }
+
+    function setBodyNavyCalculationPending(pending) {
+        bodyNavyCalculationPending = pending;
+        $('btn-calc-navy').disabled = pending;
+        syncBodyLogValidation();
+    }
+
+    function invalidateBodyNavyEstimate() {
+        if (bodyNavyDerivedValue === null) return;
+        const bodyFatInput = $('body-log-bf');
+        if (bodyFatInput.value === bodyNavyDerivedValue) bodyFatInput.value = String();
+        bodyNavyDerivedValue = null;
+        setBodyNavyFeedback('body-navy-result', '');
+        syncBodyLogValidation();
+    }
+
+    function detachManualBodyFatFromNavyEstimate() {
+        bodyNavyInputVersion += 1;
+        setBodyNavyCalculationPending(false);
+        if (bodyNavyDerivedValue === null) return;
+        bodyNavyDerivedValue = null;
+        setBodyNavyFeedback('body-navy-result', '');
+    }
+
+    function noteBodyNavyInputChange() {
+        bodyNavyInputVersion += 1;
+        setBodyNavyCalculationPending(false);
+        setBodyNavyError('');
+        invalidateBodyNavyEstimate();
+    }
+
+    async function calculateNavyEstimate() {
+        const bodyFatInput = $('body-log-bf');
+        const requestVersion = bodyNavyInputVersion;
+        const requestPayload = bodyNavyContextPayload();
+        setBodyNavyFeedback('body-navy-result', '');
+        setBodyNavyError('');
+        setBodyNavyCalculationPending(true);
+        try {
+            const result = await api('/api/body/navy-calc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestPayload),
+            });
+            if (requestVersion !== bodyNavyInputVersion) return;
+            bodyFatInput.value = String(result.body_fat_pct);
+            bodyNavyDerivedValue = bodyFatInput.value;
+            setBodyNavyFeedback('body-navy-result', `Navy estimate ${result.body_fat_pct}% — review before saving.`);
+            syncBodyLogValidation();
+        } catch (e) {
+            if (requestVersion !== bodyNavyInputVersion) return;
+            console.error(e);
+            setBodyNavyError(apiErrorMessage(e, 'Could not calculate Navy estimate'));
+        } finally {
+            if (requestVersion === bodyNavyInputVersion) setBodyNavyCalculationPending(false);
+        }
+    }
+
     async function logBody() {
+        if (bodyNavyCalculationPending) return;
+        const navyContext = bodyNavyContextPayload();
         const payload = {
             weight_lbs: Number($('body-log-weight').value) || null,
             body_fat_pct: Number($('body-log-bf').value) || null,
+            ...navyContext,
         };
         if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
@@ -7161,7 +7685,12 @@
             toast('Measurement saved');
             state.body = null; state.dashboard = null;
             renderBody();
-        } catch (e) { console.error(e); toast('Save failed', 'err'); }
+        } catch (e) {
+            console.error(e);
+            const message = apiErrorMessage(e, 'Save failed');
+            if (Object.keys(navyContext).length) setBodyNavyError(message);
+            toast(message, 'err');
+        }
     }
 
     function _ouraSyncErrorDetails(err) {
@@ -7310,6 +7839,7 @@
     const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
     const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
     let _activeWorkoutDraftSavePending = false;
+    let _activeWorkoutDraftPersistenceFailed = false;
     let _mealQueueAuthScopeRetryTimer = null;
     let _mealQueueAuthScopeRetryDelayMs = 5_000;
 
@@ -7324,6 +7854,16 @@
     function activeWorkoutDraftScopeForWorkout(workout) {
         const workoutScope = String(workout && workout.auth_scope || '').trim();
         return workoutScope || currentActiveWorkoutDraftScope();
+    }
+
+    function setActiveWorkoutDraftPersistenceFailed(failed) {
+        _activeWorkoutDraftPersistenceFailed = Boolean(failed);
+        const warning = $('active-workout-persistence-warning');
+        if (!warning) return;
+        warning.hidden = !_activeWorkoutDraftPersistenceFailed;
+        warning.textContent = _activeWorkoutDraftPersistenceFailed
+            ? 'This workout still works, but it cannot be recovered after closing or reloading this page.'
+            : '';
     }
 
     function activeWorkoutDraftIsValid(parsed) {
@@ -7359,17 +7899,26 @@
             const ex = aw.exercises && aw.exercises[exIdx];
             const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
             if (!set) return;
+            const rpeInput = qs('input[data-field="rpe"]', row);
+            const rpe = normalizeActiveSetRpe(
+                rpeInput ? rpeInput.value : (set.rpe ?? prescribedRpeValue(ex)),
+                Boolean(set.rpe_observed),
+            );
             const next = {
                 weight: qs('input[data-field="weight"]', row).value,
                 reps: qs('input[data-field="reps"]', row).value,
                 done: qs('input[data-field="done"]', row).checked,
                 notes: qs('input[data-field="notes"]', row).value,
+                rpe: rpe.rpe,
+                rpe_observed: rpe.rpe_observed,
             };
             if (
                 String(set.weight ?? '') !== String(next.weight)
                 || String(set.reps ?? '') !== String(next.reps)
                 || Boolean(set.done) !== Boolean(next.done)
                 || String(set.notes ?? '') !== String(next.notes)
+                || set.rpe !== next.rpe
+                || Boolean(set.rpe_observed) !== next.rpe_observed
             ) {
                 ex.logged_sets[setIdx] = next;
                 aw.dirty = true;
@@ -7417,7 +7966,11 @@
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
             _activeWorkoutDraftSavePending = false;
-        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+            setActiveWorkoutDraftPersistenceFailed(false);
+        } catch (_) {
+            // localStorage may be unavailable; keep the workout in memory for this page.
+            setActiveWorkoutDraftPersistenceFailed(true);
+        }
     }
 
     function flushPendingActiveWorkoutDraftSave() {
@@ -7432,6 +7985,7 @@
 
     function clearActiveWorkoutDraft() {
         try { localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY); } catch (_) {}
+        setActiveWorkoutDraftPersistenceFailed(false);
     }
 
     function restoreActiveWorkoutDraft() {
@@ -7486,6 +8040,30 @@
         }, delayMs);
     }
 
+    function prescribedRpeValue(ex) {
+        const candidate = Number(ex && (ex.rpe_target ?? ex.rpe ?? 7));
+        return Number.isFinite(candidate) && candidate >= 1 && candidate <= 10 ? candidate : 7;
+    }
+
+    function normalizeActiveSetRpe(value, observed = false) {
+        if (value === '' || value == null || typeof value === 'boolean') {
+            return { rpe: null, rpe_observed: false };
+        }
+        const candidate = Number(value);
+        const rpe = Number.isFinite(candidate) && candidate >= 1 && candidate <= 10
+            ? candidate
+            : null;
+        return { rpe, rpe_observed: rpe !== null && observed === true };
+    }
+
+    function rpeInteractionObserves(event) {
+        return Boolean(
+            event
+            && event.isTrusted === true
+            && ['click', 'input', 'change'].includes(event.type)
+        );
+    }
+
     function buildLoggedSets(ex, previousSets) {
         const reps = recommendedRepsValue(ex);
         const weight = recommendedWeightValue(ex);
@@ -7493,11 +8071,21 @@
         const rowCount = Math.max(setCountForExercise(ex), priorCount);
         return Array.from({ length: rowCount }, (_, idx) => {
             const prev = previousSets && previousSets[idx];
+            const previousRpe = normalizeActiveSetRpe(prev && prev.rpe, Boolean(prev && prev.rpe_observed));
+            const previousRpeWasCleared = Boolean(
+                prev
+                && Object.prototype.hasOwnProperty.call(prev, 'rpe')
+                && previousRpe.rpe === null
+            );
             return {
                 reps: prev && prev.reps !== '' && prev.reps != null ? prev.reps : reps,
                 weight: prev && prev.weight !== '' && prev.weight != null ? prev.weight : weight,
                 done: prev ? Boolean(prev.done) : false,
                 notes: prev && prev.notes != null ? prev.notes : '',
+                rpe: previousRpe.rpe_observed
+                    ? previousRpe.rpe
+                    : (previousRpeWasCleared ? null : prescribedRpeValue(ex)),
+                rpe_observed: previousRpe.rpe_observed,
             };
         });
     }
@@ -7562,18 +8150,39 @@
         ) : '';
         const editedSet = (s) => {
             if (!s) return false;
-            if (s.done || (s.notes != null && String(s.notes).trim())) return true;
+            if (s.done || s.rpe_observed || (s.notes != null && String(s.notes).trim())) return true;
+            if (
+                Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && normalizeActiveSetRpe(s.rpe, Boolean(s.rpe_observed)).rpe === null
+            ) return true;
             if (previousReps && String(s.reps ?? '') !== previousReps) return true;
             if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
             return false;
         };
-        const copySet = (s) => ({
-            reps: s && s.reps != null ? s.reps : '',
-            weight: s && s.weight != null ? s.weight : '',
-            done: Boolean(s && s.done),
-            notes: s && s.notes != null ? s.notes : '',
+        const copySet = (s) => {
+            const rpe = normalizeActiveSetRpe(s && s.rpe, Boolean(s && s.rpe_observed));
+            const rpeWasCleared = Boolean(
+                s
+                && Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && rpe.rpe === null
+            );
+            return {
+                reps: s && s.reps != null ? s.reps : '',
+                weight: s && s.weight != null ? s.weight : '',
+                done: Boolean(s && s.done),
+                notes: s && s.notes != null ? s.notes : '',
+                rpe: rpe.rpe !== null ? rpe.rpe : (rpeWasCleared ? null : prescribedRpeValue(newEx)),
+                rpe_observed: rpe.rpe_observed,
+            };
+        };
+        const freshSet = () => ({
+            reps: targetReps,
+            weight: targetWeight,
+            done: false,
+            notes: '',
+            rpe: prescribedRpeValue(newEx),
+            rpe_observed: false,
         });
-        const freshSet = () => ({ reps: targetReps, weight: targetWeight, done: false, notes: '' });
         const rows = Array.from({ length: targetCount }, (_, idx) => {
             const prev = prevList[idx];
             return editedSet(prev) ? copySet(prev) : freshSet();
@@ -7625,7 +8234,7 @@
 
     function activeLoggedSetHasWork(ex, set) {
         if (!set) return false;
-        if (set.done || (set.notes != null && String(set.notes).trim())) return true;
+        if (set.done || set.rpe_observed || (set.notes != null && String(set.notes).trim())) return true;
 
         const targetValue = (value) => {
             if (value == null || value === '') return '';
@@ -7740,17 +8349,24 @@
         };
     }
 
-    function updateLoggedSetFromRow(row) {
+    function updateLoggedSetFromRow(row, { rpeObserved = null } = {}) {
         const exIdx = Number(row.dataset.ex);
         const setIdx = Number(row.dataset.set);
         const ex = state.activeWorkout && state.activeWorkout.exercises && state.activeWorkout.exercises[exIdx];
         if (!ex || !ex.logged_sets || !ex.logged_sets[setIdx]) return;
-        const wasDone = !!ex.logged_sets[setIdx].done;
+        const previousSet = ex.logged_sets[setIdx];
+        const wasDone = !!previousSet.done;
+        const rpe = normalizeActiveSetRpe(
+            qs('input[data-field="rpe"]', row).value,
+            rpeObserved === null ? Boolean(previousSet.rpe_observed) : rpeObserved,
+        );
         ex.logged_sets[setIdx] = {
             weight: qs('input[data-field="weight"]', row).value,
             reps: qs('input[data-field="reps"]', row).value,
             done: qs('input[data-field="done"]', row).checked,
             notes: qs('input[data-field="notes"]', row).value,
+            rpe: rpe.rpe,
+            rpe_observed: rpe.rpe_observed,
         };
         state.activeWorkout.dirty = true;
         saveActiveWorkoutDraft();
@@ -7865,11 +8481,19 @@
             card.className = 'active-ex';
             const sets = setCountForExercise(ex);
             const reps = ex.target_reps || ex.reps || 10;
-            const rpe = ex.rpe_target || ex.rpe || '7';
-            ex.rpe = rpe; // keep for completeWorkout payload
             const target = exerciseTargetText(ex);
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
+                const storedRpe = normalizeActiveSetRpe(set.rpe, Boolean(set.rpe_observed));
+                const rpeWasCleared = Object.prototype.hasOwnProperty.call(set, 'rpe') && storedRpe.rpe === null;
+                const renderedRpe = storedRpe.rpe_observed
+                    ? storedRpe
+                    : {
+                        rpe: rpeWasCleared ? null : prescribedRpeValue(ex),
+                        rpe_observed: false,
+                    };
+                set.rpe = renderedRpe.rpe;
+                set.rpe_observed = renderedRpe.rpe_observed;
                 // FIT-108: flag the first incomplete set across the whole
                 // workout so the user's next action is visually obvious.
                 const isNext = progress.nextIncomplete
@@ -7880,6 +8504,10 @@
                         <label>${sidx + 1}</label>
                         <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
                         <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
+                        <label class="set-rpe-cell${set.rpe_observed ? ' observed' : ''}">
+                            <span>RPE</span>
+                            <input type="number" data-field="rpe" inputmode="decimal" min="1" max="10" step="0.5" value="${escapeHtml(set.rpe)}" aria-label="RPE for set ${sidx + 1}; tap to confirm prescribed value">
+                        </label>
                         <label class="set-done-cell" aria-label="mark set done">
                             <input type="checkbox" data-field="done"${set.done ? ' checked' : ''}>
                         </label>
@@ -7945,6 +8573,19 @@
         }
         qsa('.set-row', body).forEach((row) => {
             qsa('input', row).forEach((input) => {
+                if (input.dataset.field === 'rpe') {
+                    ['click', 'input', 'change'].forEach((eventName) => {
+                        input.addEventListener(eventName, (event) => {
+                            updateLoggedSetFromRow(row, {
+                                rpeObserved: rpeInteractionObserves(event) ? true : null,
+                            });
+                            const set = state.activeWorkout.exercises[Number(row.dataset.ex)].logged_sets[Number(row.dataset.set)];
+                            const cell = input.closest('.set-rpe-cell');
+                            if (cell) cell.classList.toggle('observed', Boolean(set.rpe_observed));
+                        });
+                    });
+                    return;
+                }
                 input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => updateLoggedSetFromRow(row));
             });
         });
@@ -8906,13 +9547,22 @@
         const exercises = [];
         aw.exercises.forEach((ex, i) => {
             const rows = qsa(`.set-row[data-ex="${i}"]`, $('active-workout-body'));
-            const sets = rows.map((r) => ({
-                reps: Number(qs('input[data-field="reps"]', r).value || 0),
-                weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
-                rpe: ex.rpe ? Number(ex.rpe) : null,
-                done: qs('input[data-field="done"]', r).checked,
-                notes: (qs('input[data-field="notes"]', r).value || '').trim(),
-            }));
+            const sets = rows.map((r) => {
+                const setIdx = Number(r.dataset.set);
+                const set = ex.logged_sets[setIdx] || {};
+                const rpe = normalizeActiveSetRpe(
+                    qs('input[data-field="rpe"]', r).value,
+                    Boolean(set.rpe_observed),
+                );
+                return {
+                    reps: Number(qs('input[data-field="reps"]', r).value || 0),
+                    weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
+                    rpe: rpe.rpe,
+                    rpe_observed: rpe.rpe_observed,
+                    done: qs('input[data-field="done"]', r).checked,
+                    notes: (qs('input[data-field="notes"]', r).value || '').trim(),
+                };
+            });
             const hasCheckedSets = sets.some((s) => s.done);
             const completedSets = sets
                 .filter((s) => s.reps > 0 && s.weight_lbs >= 0 && (!hasCheckedSets || s.done))
@@ -9133,7 +9783,10 @@
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
-        state.swapContext = { exIdx, muscle, currentName, source };
+        const recommendationId = source === 'active'
+            ? (state.activeWorkout && state.activeWorkout.recommendation_id)
+            : (state.nextWorkout && state.nextWorkout.id);
+        state.swapContext = { exIdx, muscle, currentName, source, recommendationId };
         const modal = $('modal-swap');
         const host = $('swap-alternatives');
         const title = $('swap-modal-title');
@@ -9217,6 +9870,33 @@
         }
     }
 
+    // FIT-397: a swap answered 409 plan_changed (the plan was regenerated or swapped
+    // since this screen loaded) or workout_plan_conflict (it changed mid-request).
+    // Adopt the server's current plan, keeping logged sets in an active workout, so
+    // the next swap carries the current recommendation_id instead of dead-ending.
+    function isSwapPlanChangedError(err) {
+        return Boolean(err) && (err.apiErrorCode === 'plan_changed' || err.apiErrorCode === 'workout_plan_conflict');
+    }
+
+    async function adoptCurrentPlanAfterSwapConflict() {
+        let nw = null;
+        try { nw = await getNextWorkout(true); } catch (err) { console.warn('swap conflict refresh failed:', err); }
+        if (nw) {
+            if (state.dashboard) state.dashboard.next_workout = nw;
+            if (state.activeWorkout) {
+                applyAdjustedRecommendationToActiveWorkout(nw, state.activeWorkout.exercises || []);
+                renderActiveWorkout();
+            } else {
+                renderNextWorkout();
+            }
+        }
+        // Exercise slots may have shifted in the new plan, so make the user re-pick.
+        closeModal($('modal-swap'));
+        toast(nw
+            ? 'Workout plan changed — your logged sets were kept. Pick the swap again.'
+            : 'Workout plan changed — refresh the workout and try again.', 'err');
+    }
+
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
@@ -9227,12 +9907,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+                body: JSON.stringify({ recommendation_id: state.swapContext && state.swapContext.recommendationId, exercise_index: exIdx, new_exercise_name: newName }),
             });
             _finalizeSwap(resp, oldName, newName);
         } catch (e) {
             console.error(e);
-            host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+            } else {
+                host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            }
         }
     }
 
@@ -9279,12 +9963,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: ctx.exIdx, new_exercise_name: raw }),
+                body: JSON.stringify({ recommendation_id: ctx.recommendationId, exercise_index: ctx.exIdx, new_exercise_name: raw }),
             });
             _finalizeSwap(resp, ctx.currentName, raw);
             input.value = '';
         } catch (e) {
             console.error('applyCustomSwap', e);
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+                return;
+            }
             const msg = String((e && e.message) || e || '').toLowerCase();
             let friendly = `Couldn't swap to "${raw}".`;
             if (msg.includes('unknown exercise')) {
@@ -9505,6 +10193,7 @@
                 result_kind: payload && payload.result_kind ? payload.result_kind : null,
                 summary: payload && payload.summary ? payload.summary : '',
                 applied_notes: Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [],
+                skipped_notes: Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [],
                 recommendation: payload && payload.recommendation ? payload.recommendation : null,
                 meta: payload && payload.meta ? payload.meta : {},
                 cache_hit: !!(payload && payload.cache_hit),
@@ -9544,6 +10233,8 @@
         const restoredBanner = $('adjust-restored-banner');
         if (!stateEl || !result || !summaryEl || !notesEl || !metaEl) return;
         const notes = Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [];
+        const skippedNotes = (Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [])
+            .map((n) => String(n || '').trim()).filter(Boolean);
         const rawKind = (payload && payload.result_kind) || (notes.length ? 'changed' : 'unchanged');
         const kind = ADJUST_KIND_TABLE[rawKind] ? rawKind : 'changed';
         const kindMeta = ADJUST_KIND_TABLE[kind];
@@ -9558,7 +10249,10 @@
         if (kind === 'changed' && notes.length) {
             notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
         } else if (kind === 'unchanged') {
-            notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
+            // FIT-265: say why nothing changed (e.g. exercise not found), not just "clamped".
+            notesEl.innerHTML = skippedNotes.length
+                ? '<div class="dim">Nothing was changed:</div><ul>' + skippedNotes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul><div class="dim">The original plan stands.</div>'
+                : '<div class="dim">No change was applied. The original plan stands.</div>';
         } else if (kind === 'refused') {
             notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
         } else {
@@ -9696,8 +10390,18 @@
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
         const bodyWeightInput = $('body-log-weight');
         const bodyFatInput = $('body-log-bf');
+        const bodyNavySex = $('body-navy-sex');
         bodyWeightInput && bodyWeightInput.addEventListener('input', syncBodyLogValidation);
         bodyFatInput && bodyFatInput.addEventListener('input', syncBodyLogValidation);
+        bodyFatInput && bodyFatInput.addEventListener('input', detachManualBodyFatFromNavyEstimate);
+        bodyNavySex && bodyNavySex.addEventListener('change', () => {
+            noteBodyNavyInputChange();
+            syncBodyNavySex();
+        });
+        qsa('#body-navy-height, #body-navy-neck, #body-navy-waist, #body-navy-hip').forEach((input) => {
+            input.addEventListener('input', noteBodyNavyInputChange);
+        });
+        $('btn-calc-navy') && $('btn-calc-navy').addEventListener('click', calculateNavyEstimate);
         $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
 
         // Actions
@@ -9794,6 +10498,7 @@
     let aiStatusTimer = null;
 
     async function refreshAiStatus() {
+        if (document.visibilityState === 'hidden') return;
         const dot = $('ai-status-dot');
         if (!dot) return;
         try {
@@ -9887,6 +10592,8 @@
         barcodeSubmitting: false,
         barcodeStream: null,
         barcodeDetector: null,
+        barcodeVideo: null,
+        barcodeInput: null,
         barcodeScanRaf: null,
         barcodeScanLastAt: 0,
         barcodeScanToken: 0,
@@ -11160,12 +11867,14 @@
             mealComposerState.barcodeStream.getTracks().forEach((track) => track.stop());
             mealComposerState.barcodeStream = null;
         }
-        const { barcodeVideo } = mealComposerEls();
+        const barcodeVideo = mealComposerState.barcodeVideo;
         if (barcodeVideo) {
             barcodeVideo.pause();
             barcodeVideo.srcObject = null;
             barcodeVideo.hidden = true;
         }
+        mealComposerState.barcodeVideo = null;
+        mealComposerState.barcodeInput = null;
     }
 
     function mealBarcodeScanCancelled(scanToken) {
@@ -11188,7 +11897,7 @@
     }
 
     async function startMealBarcodeScanner() {
-        const { barcodeVideo } = mealComposerEls();
+        const { barcodeVideo, barcodeInput } = mealComposerEls();
         if (!barcodeVideo || !barcodeDetectorSupported()) {
             setMealBarcodeStatus('Camera scan is not available here. Enter the barcode number instead.');
             return;
@@ -11197,6 +11906,8 @@
             stopMealBarcodeScanner();
         }
         mealComposerState.barcodeScanToken += 1;
+        mealComposerState.barcodeVideo = barcodeVideo;
+        mealComposerState.barcodeInput = barcodeInput;
         const scanToken = mealComposerState.barcodeScanToken;
         try {
             mealComposerState.barcodeDetector = new window.BarcodeDetector({
@@ -11236,7 +11947,8 @@
     }
 
     async function scanMealBarcodeFrame(now = 0) {
-        const { barcodeVideo, barcodeInput } = mealComposerEls();
+        const barcodeVideo = mealComposerState.barcodeVideo;
+        const barcodeInput = mealComposerState.barcodeInput;
         const detector = mealComposerState.barcodeDetector;
         if (!barcodeVideo || !detector || !mealComposerState.barcodeStream || mealComposerState.barcodeSubmitting) return;
         const scanToken = mealComposerState.barcodeScanToken;
@@ -11468,18 +12180,6 @@
         form.append('local_iso', localTime.local_iso);
 
         try {
-            // FIT-134: ?fit134=mock short-circuits to a synthetic multi-item
-            // payload so the new review UI can be exercised locally before
-            // FIT-135 lands the real backend. Production path is unchanged.
-            if (mealV2MockEnabled()) {
-                const payload = mealV2Mock.createMeal(textValue);
-                // FIT-138 multi-image refactor: the legacy single `file`
-                // variable no longer exists; use the first attached photo
-                // for the legacy imageFile field and the full list for
-                // imageFiles so the mock harness mirrors the real submit.
-                handleMealIntakeResponse(payload, { textValue, clientId, imageFile: files[0] || null, imageFiles: files, localTime });
-                return;
-            }
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
                 credentials: 'same-origin',
@@ -11616,13 +12316,8 @@
     // Activates when /api/meal-intake (or refresh) returns the new
     // contract shape: top-level meal_id, meal_totals, followup, items[]
     // with item_id/candidates/unclear/status, and save_blocked_item_ids[].
-    // Until FIT-135 (Codex, sibling-backend) lands that contract, legacy
-    // single-item responses fall through to the original review card and
-    // the existing accept/discard flow.
-    //
-    // A ?fit134=mock URL param swaps the real backend for an in-memory
-    // synthetic backend so the new UI can be exercised end-to-end locally
-    // before FIT-135 ships. The production path is unchanged.
+    // Legacy single-item responses fall through to the original review
+    // card and the existing accept/discard flow.
     //
     // Contract source: /Users/admin/.claude/plans/codex-is-owrking-on-shiny-ripple.md
     // (locked via codex-consensus-loop on 2026-05-22).
@@ -12190,15 +12885,11 @@
         }
         setMealV2PendingRefresh(mealId, true);
         try {
-            if (mealV2MockEnabled()) {
-                mealV2Mock.accept(mealId);
-            } else {
-                await api(`/api/meal-intake/${encodeURIComponent(mealId)}/accept`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildMealV2AcceptBody(entry)),
-                });
-            }
+            await api(`/api/meal-intake/${encodeURIComponent(mealId)}/accept`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildMealV2AcceptBody(entry)),
+            });
             removeMealV2Entry(mealId);
             renderMealPendingList();
             toast('Meal saved.', 'ok');
@@ -12215,11 +12906,7 @@
         if (!entry) return;
         setMealV2PendingRefresh(mealId, true);
         try {
-            if (mealV2MockEnabled()) {
-                mealV2Mock.discard(mealId);
-            } else {
-                await api(`/api/meal-intake/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
-            }
+            await api(`/api/meal-intake/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
             removeMealV2Entry(mealId);
             renderMealPendingList();
             toast('Meal discarded.', 'ok');
@@ -12232,9 +12919,6 @@
     }
 
     async function postMealV2Refresh(mealId, body) {
-        if (mealV2MockEnabled()) {
-            return mealV2Mock.refresh(mealId, body);
-        }
         return api(`/api/meal-intake/${encodeURIComponent(mealId)}/refresh`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -12298,157 +12982,6 @@
             return '';
         }
     }
-
-    // ── Mock backend (?fit134=mock) ─────────────────────────────────────
-    function mealV2MockEnabled() {
-        try {
-            const params = new URLSearchParams(window.location.search);
-            return params.get('fit134') === 'mock';
-        } catch (_) {
-            return false;
-        }
-    }
-
-    const mealV2Mock = {
-        store: new Map(),
-        createMeal(textValue) {
-            const mealId = 'mock-meal-' + Math.random().toString(36).slice(2, 10);
-            const payload = {
-                meal_id: mealId,
-                meal_type: this.inferMealType(textValue) || 'lunch',
-                followup: {
-                    available: true,
-                    question: 'How big was the side of rice — a small scoop, half a cup, or a full cup?',
-                    used: false,
-                },
-                items: [
-                    {
-                        item_id: mealId + '-i1',
-                        name: 'Grilled chicken breast',
-                        portion_description: '6 oz',
-                        calories: 280, protein_g: 53, carbs_g: 0, fat_g: 6, sodium_mg: 95, fiber_g: 0,
-                        confidence: 0.88,
-                        source: { kind: 'vision', label: 'AI estimate', link: null },
-                        unclear: false,
-                        candidates: [],
-                        status: 'included',
-                    },
-                    {
-                        item_id: mealId + '-i2',
-                        name: 'Side of rice',
-                        portion_description: 'small',
-                        calories: 160, protein_g: 3, carbs_g: 35, fat_g: 0, sodium_mg: 1, fiber_g: 0,
-                        confidence: 0.42,
-                        source: { kind: 'text', label: 'Text parser', link: null },
-                        unclear: true,
-                        candidates: [
-                            { candidate_id: 'c-rice-white-cup', name: 'White rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/white-rice' } },
-                            { candidate_id: 'c-rice-brown-cup', name: 'Brown rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/brown-rice' } },
-                        ],
-                        status: 'included',
-                    },
-                ],
-            };
-            this.recompute(payload);
-            this.store.set(mealId, payload);
-            return JSON.parse(JSON.stringify(payload));
-        },
-        refresh(mealId, body) {
-            const payload = this.store.get(mealId);
-            if (!payload) throw new Error('mock meal not found: ' + mealId);
-            const kind = body && body.kind;
-            const findItem = (id) => payload.items.find((x) => x.item_id === id);
-            if (kind === 'add_item') {
-                const text = String(body.text || '').trim();
-                const branded = /\b(heb|h-?e-?b|hot cheetos?|chipotle|bill miller|whataburger|coca-?cola|coke|pepsi|trader joe|costco|starbucks|mcdonalds?)\b/i.test(text);
-                const itemId = mealId + '-i' + (payload.items.length + 1);
-                payload.items.push({
-                    item_id: itemId,
-                    name: text || 'Added item',
-                    portion_description: branded ? 'looking up…' : '1 serving',
-                    calories: branded ? 240 : 120,
-                    protein_g: branded ? 3 : 2,
-                    carbs_g: branded ? 30 : 18,
-                    fat_g: branded ? 12 : 3,
-                    sodium_mg: branded ? 320 : 50,
-                    fiber_g: 1,
-                    confidence: branded ? 0.62 : 0.35,
-                    source: { kind: branded ? 'branded' : 'text', label: branded ? 'Branded lookup' : 'Text parser', link: branded ? '/api/sources/branded/' + encodeURIComponent(text.toLowerCase().replace(/\s+/g, '-')) : null },
-                    unclear: !branded,
-                    candidates: [],
-                    status: 'included',
-                });
-            } else if (kind === 'edit_portion') {
-                const it = findItem(body.item_id);
-                if (it) {
-                    it.portion_description = String(body.text || '').trim() || it.portion_description;
-                    it.unclear = false;
-                }
-            } else if (kind === 'followup_answer') {
-                payload.followup.used = true;
-                const unclear = payload.items.find((x) => x.status === 'included' && x.unclear);
-                if (unclear) unclear.unclear = false;
-            } else if (kind === 'choose_candidate') {
-                const it = findItem(body.item_id);
-                if (it) {
-                    const choice = (it.candidates || []).find((c) => c.candidate_id === body.candidate_id);
-                    if (choice) {
-                        it.name = choice.name;
-                        it.portion_description = choice.portion_description;
-                        it.source = choice.source || it.source;
-                        it.unclear = false;
-                        if (!Number.isFinite(Number(it.calories)) || it.calories === 0) it.calories = 200;
-                    }
-                    it.candidates = [];
-                }
-            } else if (kind === 'skip_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'skipped';
-            } else if (kind === 'delete_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'deleted';
-            } else if (kind === 'restore_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'included';
-            } else if (kind === 'set_meal_type') {
-                if (MEAL_TYPE_OPTIONS.includes(body.meal_type)) payload.meal_type = body.meal_type;
-            }
-            this.recompute(payload);
-            return JSON.parse(JSON.stringify(payload));
-        },
-        accept(mealId) {
-            if (!this.store.has(mealId)) throw new Error('mock meal not found: ' + mealId);
-            this.store.delete(mealId);
-            return { saved: true };
-        },
-        discard(mealId) {
-            this.store.delete(mealId);
-            return { removed: true };
-        },
-        recompute(payload) {
-            payload.save_blocked_item_ids = payload.items
-                .filter((it) => it.status === 'included' && it.unclear)
-                .map((it) => it.item_id);
-            const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, sodium_mg: 0, fiber_g: 0 };
-            payload.items
-                .filter((it) => it.status === 'included')
-                .forEach((it) => {
-                    MEAL_V2_MACRO_KEYS.forEach((k) => {
-                        const v = Number(it[k]);
-                        if (Number.isFinite(v)) totals[k] += v;
-                    });
-                });
-            MEAL_V2_MACRO_KEYS.forEach((k) => { totals[k] = Math.round(totals[k] * 10) / 10; });
-            payload.meal_totals = totals;
-        },
-        inferMealType(text) {
-            const t = String(text || '').toLowerCase();
-            if (/(breakfast|eggs?|bagel|cereal|oatmeal|pancake)/.test(t)) return 'breakfast';
-            if (/(lunch|sandwich|salad|burrito|taco)/.test(t)) return 'lunch';
-            if (/(dinner|steak|pasta|pizza|rice and|grill)/.test(t)) return 'dinner';
-            return 'snack';
-        },
-    };
 
     function clearMealComposerInputs() {
         const { text } = mealComposerEls();
@@ -12561,6 +13094,7 @@
         window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
+            else refreshAiStatus();
         });
         window.addEventListener('online', () => {
             refreshMealQueueAuthScope()

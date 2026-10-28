@@ -161,7 +161,7 @@ Freshness coupling:
 - Offline meal queue stores metadata and raw photo blobs in IndexedDB stores `queued_meals` and `meal_photos`; raw photos are not placed in `localStorage`.
 - Queue banner summarizes pending/problem rows and opens Pending Sync modal. Retry all only retries statuses marked retryable.
 - Queued workout analysis is disabled until the workout is successfully saved server-side.
-- Hash routing recognizes `#settings`, `#history`, `#workout`, and `#nutrition`; `#nutrition` maps to a dead tab target with no tab button, pane, or loadTab case.
+- Hash routing recognizes `#settings`, `#history`, `#workout`, and `#nutrition`; `#nutrition` maps to the existing `#tab-log` panel, and invalid/non-panel targets fall back to `#tab-dashboard`.
 
 ## Public/Dead Page Relationships And [TBC] Hotspots
 

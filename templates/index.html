@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260626-fit238-qol">
-    <link rel="stylesheet" href="/static/css/app.css?v=20260713-fit270-oura-detail">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260716-fit392-rpe">
+    <link rel="stylesheet" href="/static/css/app.css?v=20260713-fit233-adaptation-polling">
 </head>
 <body>
     <div class="app-shell">
@@ -69,7 +69,8 @@
                 </div>
                 <div class="reco-title" id="reco-title">—</div>
                 <div class="reco-meta">
-                    <span class="reco-tag" id="reco-intensity">—</span>
+                    <span class="reco-tag" id="reco-readiness" hidden></span>
+                    <span class="reco-intensity-meta" id="reco-intensity">—</span>
                     <span class="reco-tag" id="reco-time" hidden></span>
                     <span class="reco-tag" id="reco-rpe" hidden></span>
                 </div>
@@ -644,6 +645,38 @@
                         </div>
                         <div class="form-field"><label>Body Fat %</label><input type="number" id="body-log-bf" step="0.1" placeholder="18.5"></div>
                     </div>
+                    <details class="body-navy-calculator">
+                        <summary id="body-navy-toggle">Estimate body fat from tape measurements</summary>
+                        <p class="body-navy-description">Use inch measurements for a US Navy estimate. Review the result before saving.</p>
+                        <div class="body-navy-fields">
+                            <div class="form-field">
+                                <label for="body-navy-sex">Sex</label>
+                                <select id="body-navy-sex" aria-describedby="body-navy-error">
+                                    <option value="male">Male</option>
+                                    <option value="female">Female</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="body-navy-height">Height (in)</label>
+                                <input type="number" id="body-navy-height" step="0.1" inputmode="decimal" aria-describedby="body-navy-error">
+                            </div>
+                            <div class="form-field">
+                                <label for="body-navy-neck">Neck (in)</label>
+                                <input type="number" id="body-navy-neck" step="0.1" inputmode="decimal" aria-describedby="body-navy-error">
+                            </div>
+                            <div class="form-field">
+                                <label for="body-navy-waist">Waist (in)</label>
+                                <input type="number" id="body-navy-waist" step="0.1" inputmode="decimal" aria-describedby="body-navy-error">
+                            </div>
+                            <div class="form-field" id="body-navy-hip-field" hidden>
+                                <label for="body-navy-hip">Hip (in)</label>
+                                <input type="number" id="body-navy-hip" step="0.1" inputmode="decimal" aria-describedby="body-navy-error">
+                            </div>
+                        </div>
+                        <button id="btn-calc-navy" class="btn btn-secondary body-navy-calculate" type="button">Calculate estimate</button>
+                        <p id="body-navy-result" class="body-navy-result" role="status" aria-live="polite" hidden></p>
+                        <p id="body-navy-error" class="body-navy-error" role="alert" aria-live="assertive" hidden></p>
+                    </details>
                     <button id="btn-log-body" class="btn btn-primary btn-block" type="button">Save Measurement</button>
                 </form>
             </div>
@@ -1629,6 +1662,7 @@
                 <h3 class="modal-title" id="active-workout-title">Workout</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
+            <p id="active-workout-persistence-warning" class="active-workout-persistence-warning" role="status" aria-live="polite" hidden></p>
             <div id="active-workout-body" class="modal-body"></div>
             <div class="modal-foot">
                 <div id="active-workout-status" class="active-workout-status" hidden></div>
@@ -1686,6 +1720,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260713-fit270-oura-detail"></script>
+    <script src="/static/js/app-loader.js?v=20260716-fit392-rpe"></script>
 </body>
 </html>

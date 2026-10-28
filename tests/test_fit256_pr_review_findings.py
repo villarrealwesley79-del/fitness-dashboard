@@ -76,7 +76,7 @@ def test_smart_recommendation_does_not_resurrect_stale_plan_across_day_rollover(
 
     swap = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "day1-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
     assert swap.status_code == 200
     assert swap.get_json()["recommendation"]["exercises"][0]["exercise"] == "Incline Press"
@@ -120,14 +120,17 @@ def test_smart_recommendation_does_not_resurrect_stale_plan_across_day_rollover(
 
     monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_due_adaptation)
 
+    evaluated = client.post("/api/workout-adaptation-events/evaluate")
     smart = client.get("/api/recommendation/smart")
 
+    assert evaluated.status_code == 200
+    assert evaluated.get_json()["evaluated_count"] == 1
     assert smart.status_code == 200
     smart_payload = smart.get_json()
     # The resurrected/stale "Incline Press" plan must NOT be served.
     assert smart_payload["next_workout"]["exercises"][0]["exercise"] != "Incline Press"
     assert smart_payload["next_workout"]["id"] == "day2-fresh-plan"
-    assert smart_payload["workout_adaptation_events"][0]["status"] == "applied"
+    assert smart_payload["workout_adaptation_events"] == []
 
     # A subsequent /api/next-workout call must serve the freshly regenerated
     # plan (matching today's fingerprint), not the resurrected stale one.
@@ -252,7 +255,7 @@ def test_gym_now_swap_adjust_show_same_clamped_plan_as_next_workout_under_deload
     # reference /api/next-workout, not the base.
     swap = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
     assert swap.status_code == 200
     swap_untouched = swap.get_json()["recommendation"]["exercises"][1]

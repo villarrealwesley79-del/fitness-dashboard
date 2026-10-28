@@ -75,11 +75,12 @@ def test_switch_tab_keeps_aria_selected_and_panel_hidden_state_in_sync():
     output = run_app_js(
         ["switchTab", "wireEvents", "state"],
         """
-const makePanel = (id) => ({ id, attrs: {}, classList: { toggle: () => {} }, setAttribute(key, value) { this.attrs[key] = value; } });
+const makePanel = (id) => ({ id, attrs: {}, classList: { toggle: () => {}, contains: (name) => name === 'tab-content' }, setAttribute(key, value) { this.attrs[key] = value; } });
 const makeTab = (tab) => ({ attrs: { 'data-tab': tab }, handlers: {}, classList: { toggle: () => {} }, tabIndex: -1, getAttribute(key) { return this.attrs[key]; }, setAttribute(key, value) { this.attrs[key] = value; }, addEventListener(name, fn) { this.handlers[name] = fn; }, focus() { this.focused = true; } });
 const panels = [makePanel('tab-dashboard'), makePanel('tab-settings')];
 const tabs = [makeTab('tab-dashboard'), makeTab('tab-settings')];
 sandbox.document.querySelectorAll = (selector) => selector === '.tab-content' ? panels : selector === '.tab-btn' ? tabs : [];
+sandbox.document.getElementById = (id) => panels.find((panel) => panel.id === id) || null;
 sandbox.scrollTo = () => {};
 sandbox.addEventListener = () => {};
 const loadCalls = [];
@@ -333,7 +334,7 @@ def test_modal_markup_exposes_dialog_semantics_and_labels():
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/css/style.css?v=20260626-fit238-qol" in html
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in html
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
+    assert "/static/css/style.css?v=20260716-fit392-rpe" in html
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260716-fit392-rpe" in sw

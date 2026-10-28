@@ -6,9 +6,11 @@ Evidence-based resistance training optimization for iOS/Android.
 
 from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
+from contextvars import ContextVar
 import copy
 import csv
 import io
@@ -34,6 +36,7 @@ import threading
 import fcntl
 import shutil
 from subprocess import SubprocessError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     from pywebpush import WebPushException, webpush
@@ -52,6 +55,7 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 from data_loader import parse_workout_log, get_workout_summary
 from runtime_config import DATA_DIR, data_path, public_base_url as _runtime_public_base_url
+from settings_contract import DEFAULT_SETTINGS
 from oura_client import (
     OuraClient,
     init_oura_db,
@@ -109,7 +113,7 @@ from open_wearables_adapter import (
     redacted_base_url,
     validate_open_wearables_base_url,
 )
-from recommendation_sources import build_open_wearables_recommendation_source
+from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof
 from wearable_fact_store import (
     WearableDailyFact,
     delete_provider_data,
@@ -141,10 +145,15 @@ from data_store import (
     acknowledge_food_log_refresh_event,
     acknowledge_workout_adaptation_event,
     delete_current_workout_plan,
+    expire_unpublished_workout_adaptation_events,
     get_current_workout_plan,
+    get_current_workout_plan_snapshot,
+    get_workout_adaptation_revision,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     list_food_log_refresh_events,
+    list_pending_workout_adaptation_windows,
+    list_unpublished_applied_workout_adaptation_events,
     list_workout_adaptation_events,
     revoke_push_subscription,
     save_push_subscription,
@@ -481,27 +490,6 @@ GOAL_PARAMETERS = {
     }
 }
 
-# Default user settings
-DEFAULT_SETTINGS = {
-    "training_goal": TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value,
-    "date_of_birth": "",
-    "sex": "",
-    "sessions_per_week_target": 3,
-    "available_time_minutes": 75,
-    "target_weight_lbs": 175,
-    "target_body_fat_pct": 18,
-    "daily_calorie_target": 2200,
-    "daily_protein_target_g": 148,
-    "fatigue_threshold": 72,
-    "equipment_preference": "machines_only",
-    "preferred_equipment_brands": ["Hoist", "Nautilus"],
-    "excluded_exercises": ["Preacher Curl"],
-    "volume_landmarks": {
-        "default": {"mv": 6, "mev": 9, "mav_min": 12, "mav_max": 18, "mrv": 22}
-    }
-}
-
-
 def _settings_with_defaults(settings):
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     merged.update(settings or {})
@@ -553,7 +541,40 @@ LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap action
 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
 LAST_WORKOUT_RECOMMENDATION_OWNER = None
 CURRENT_WORKOUT_PLAN_LOCK = threading.RLock()
+_WORKOUT_PLAN_STATE_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "workout_plan_state_context",
+    default=None,
+)
 OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
+
+
+class _WorkoutPlanSnapshot(dict):
+    """Dict-compatible plan snapshot carrying its durable CAS identity."""
+
+    def __init__(
+        self,
+        plan=None,
+        *,
+        plan_generation=None,
+        plan_version=None,
+        current_plan_absent=False,
+        absent_plan_generation=None,
+    ):
+        super().__init__(plan or {})
+        self.plan_generation = plan_generation
+        self.plan_version = plan_version
+        self.current_plan_absent = current_plan_absent
+        self.absent_plan_generation = absent_plan_generation
+
+
+_WORKOUT_PLAN_PERSISTENCE_CONFLICT = object()
+_WORKOUT_PLAN_INTERNAL_KEYS = frozenset(
+    {
+        "_fit233_current_plan_absent",
+        "_fit233_expected_plan_generation",
+        "_fit233_expected_plan_version",
+    }
+)
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -1016,26 +1037,28 @@ class SorenessEntry:
 
 # Load data from JSON files (persists across restarts)
 WORKOUTS = load_json(WORKOUTS_FILE, [])
-# Backfill stable IDs for legacy workouts (pre-id-tracking). Persist once.
-_id_backfill_needed = False
-if isinstance(WORKOUTS, list):
-    import uuid as _uuid_boot
-    for _w in WORKOUTS:
-        if isinstance(_w, dict) and not _w.get("id"):
-            _w["id"] = _uuid_boot.uuid4().hex[:12]
-            _id_backfill_needed = True
-    if _id_backfill_needed:
-        try:
-            # save_json isn't defined until later in the file, so do it raw.
-            with open(WORKOUTS_FILE, "w") as _fh:
-                json.dump(WORKOUTS, _fh, indent=2, default=str)
-            print(f"INFO: backfilled stable IDs on {sum(1 for w in WORKOUTS if w.get('id'))} workouts")
-        except Exception as _exc:
-            print(f"WARN: workout-id backfill save failed: {_exc}")
-
 SORENESS_DATA = load_json(SORENESS_FILE, [])
 CARDIO_DATA = load_json(CARDIO_FILE, [])
 RECOVERY_DATA = load_json(RECOVERY_FILE, [])
+
+
+def _backfill_history_ids(rows, filepath, entry_type):
+    """Persist stable IDs for history rows created before IDs were required."""
+    changed = False
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and not row.get("id"):
+                row["id"] = uuid.uuid4().hex[:12]
+                changed = True
+    if changed:
+        save_json(filepath, rows)
+        logging.info("Backfilled stable IDs for legacy %s history rows", entry_type)
+
+
+_backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
+_backfill_history_ids(CARDIO_DATA, CARDIO_FILE, "cardio")
+_backfill_history_ids(RECOVERY_DATA, RECOVERY_FILE, "recovery")
+
 BASELINES_DATA = load_json(BASELINES_FILE, {})
 BODY_DATA = load_json(BODY_FILE, [])
 SLEEP_DATA = load_json(SLEEP_FILE, [])
@@ -1811,10 +1834,10 @@ def _current_data_user_id():
 
 
 def _get_latest_weight():
-    if not BODY_DATA:
-        return None
-    sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-    return sorted_body[0].get("weight_lbs")
+    for entry in _safe_dated_body_entries():
+        if entry.get("weight_lbs") is not None:
+            return entry["weight_lbs"]
+    return None
 
 
 def _get_nutrition_targets():
@@ -2174,6 +2197,10 @@ def _apply_due_workout_adaptations_for_plan(
     nutrition_context: dict,
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
+    raise_on_error: bool = False,
+    recovery_fingerprint: str | None = None,
+    recovery_source_plan_generation: int | None = None,
+    recovery_source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed FIT-136 windows against a generated remaining plan."""
     current_visible_plan = _fit136_visible_workout_plan(next_workout or {})
@@ -2193,6 +2220,9 @@ def _apply_due_workout_adaptations_for_plan(
             plan_date=date_s,
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise or {},
+            plan_fingerprint=recovery_fingerprint,
+            source_plan_generation=recovery_source_plan_generation,
+            source_plan_version=recovery_source_plan_version,
         )
         if not events:
             return next_workout, []
@@ -2200,12 +2230,23 @@ def _apply_due_workout_adaptations_for_plan(
         if applied_events:
             patched["_fit136_base_recommendation"] = adaptation_base
             patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
+            existing_event_ids = (next_workout or {}).get("_fit136_adaptation_event_ids") or []
+            patched["_fit136_adaptation_event_ids"] = list(dict.fromkeys([
+                *existing_event_ids,
+                *[
+                    event.get("id")
+                    for event in applied_events
+                    if event.get("id")
+                ],
+            ]))
             patched["_fit136_adaptation_event_id"] = applied_events[-1]["id"]
         elif events:
             return next_workout, events
         return patched, events
     except Exception:
         app.logger.warning("workout adaptation evaluation failed", exc_info=True)
+        if raise_on_error:
+            raise
         return next_workout, []
 
 
@@ -2241,7 +2282,7 @@ def _completed_sets_query_param(raw_value: str | None) -> dict[str, int]:
     for key, value in payload.items():
         try:
             count = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if key and count > 0:
             completed[str(key)] = count
@@ -3410,9 +3451,80 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
 
 def _merge_deterministic_adjust_swap(intent, deterministic_swap):
     merged = dict(intent or {})
-    if deterministic_swap:
-        merged["swap"] = [deterministic_swap]
+    if not deterministic_swap:
+        return merged
+
+    existing_swaps = merged.get("swap") or []
+    if not isinstance(existing_swaps, list):
+        existing_swaps = []
+
+    deterministic_index = deterministic_swap.get("replace_index")
+    deterministic_name = str(deterministic_swap.get("replace_exercise") or "").strip().lower()
+    deterministic_definition = (
+        _resolve_exercise_definition(deterministic_name) if deterministic_name else None
+    )
+
+    def _same_source_slot(candidate):
+        if not isinstance(candidate, dict):
+            return False
+        candidate_index = candidate.get("replace_index")
+        candidate_name = str(candidate.get("replace_exercise") or "").strip().lower()
+        candidate_definition = (
+            _resolve_exercise_definition(candidate_name) if candidate_name else None
+        )
+
+        def _same_source_name():
+            if deterministic_definition and candidate_definition:
+                return _same_exercise_definition(
+                    deterministic_definition, candidate_definition
+                )
+            return bool(deterministic_name and candidate_name == deterministic_name)
+
+        if isinstance(deterministic_index, int) and isinstance(candidate_index, int):
+            if deterministic_index != candidate_index:
+                return False
+            if deterministic_name:
+                return _same_source_name()
+            return not candidate_name
+        if deterministic_name and candidate_name:
+            return _same_source_name()
+        return False
+
+    swaps = []
+    deterministic_inserted = False
+    replaced_model_swap = False
+    for swap in existing_swaps:
+        if _same_source_slot(swap):
+            if isinstance(swap, dict) and not swap.get("_deterministic"):
+                replaced_model_swap = True
+            if not deterministic_inserted:
+                swaps.append(deterministic_swap)
+                deterministic_inserted = True
+            continue
+        swaps.append(swap)
+    if not deterministic_inserted:
+        swaps.append(deterministic_swap)
+    merged["swap"] = swaps
+    if replaced_model_swap:
+        merged["_deterministic_swap_replaced_model_swap"] = True
     return merged
+
+
+def _adjust_outcome_summary(
+    result_kind,
+    applied_notes,
+    skipped_notes,
+    model_summary,
+    *,
+    trust_model_summary=True,
+):
+    if result_kind == "unchanged":
+        return "The requested adjustment could not be applied to the current plan."
+    if result_kind == "changed" and applied_notes and skipped_notes:
+        return "Applied some requested changes; other requested changes were skipped."
+    if result_kind == "changed" and applied_notes and not trust_model_summary:
+        return f"Applied validated changes: {'; '.join(applied_notes)}"
+    return model_summary
 
 
 def _deterministic_adjust_payload(
@@ -3426,18 +3538,28 @@ def _deterministic_adjust_payload(
     equipment_pref,
     reason,
 ):
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
-    patched, applied_notes = _apply_intent_patch(
+    patched, applied_notes, skipped_notes = _apply_intent_patch(
         patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
     )
     result_kind = "changed" if applied_notes else "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        "Applied the recognized exercise request without the local coach model.",
+    )
     return {
         "status": "ok",
         "result_kind": result_kind,
         "recommendation": patched,
-        "summary": "Applied the recognized exercise request without the local coach model.",
+        "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": {"mode": "deterministic_fallback", "reason": reason},
         "cache_hit": False,
@@ -3646,6 +3768,22 @@ def _calculate_rpe_target(is_compound, readiness_index, oura_readiness, soreness
     return round(target * 2) / 2
 
 
+def _observed_set_rpe(set_row):
+    """A set's RPE as a float, only when it is an observed effort (FIT-392).
+
+    The guided workout saves the prescribed target as ``rpe`` with
+    ``rpe_observed: False`` for sets the user never touched; that target is not
+    evidence of effort. Legacy rows without the flag keep counting, as before.
+    """
+    if not isinstance(set_row, dict) or set_row.get("rpe_observed") is False:
+        return None
+    try:
+        rpe = float(set_row.get("rpe"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return rpe if math.isfinite(rpe) else None
+
+
 def _get_last_exercise_performance(workouts, exercise_name):
     if not workouts:
         return None
@@ -3661,7 +3799,7 @@ def _get_last_exercise_performance(workouts, exercise_name):
             sets = ex.get("sets", []) or []
             if not sets:
                 continue
-            rpes = [s.get("rpe") for s in sets if s.get("rpe") is not None]
+            rpes = [r for r in (_observed_set_rpe(s) for s in sets) if r is not None]
             avg_rpe = round(sum(rpes) / len(rpes), 2) if rpes else None
             min_reps = min((s.get("reps") or 0) for s in sets)
             max_weight = max((s.get("weight_lbs") or 0) for s in sets)
@@ -3941,7 +4079,7 @@ def generate_next_workout(
         mesocycle["indicators"] = deload_status.get("indicators", [])
 
     recommendation = {
-        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "id": _new_workout_recommendation_id(),
         "created_at": datetime.now().isoformat(),
         "focus": focus,
         "goal": goal,
@@ -4260,7 +4398,8 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     for workout in workouts[-4:]:
         for exercise in workout.get("exercises", []):
             for s in exercise.get("sets", []):
-                if s.get("rpe", 7) >= 9:
+                set_rpe = _observed_set_rpe(s)
+                if set_rpe is not None and set_rpe >= 9:
                     high_rpe_count += 1
 
     if high_rpe_count >= 6:
@@ -4363,7 +4502,7 @@ def _parse_iso_date_or_datetime(s: str | None):
             return None
 
 
-def calculate_acwr(workouts: list) -> dict:
+def calculate_acwr(workouts: list, *, include_apple_health: bool = True) -> dict:
     """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
 
     Load definition: sum over all sets of (1 * reps * weight), plus
@@ -4372,7 +4511,8 @@ def calculate_acwr(workouts: list) -> dict:
     Chronic: average 7-day load over the last 28 days (uses available days if < 28).
     """
     today = datetime.now().date()
-    workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
+    if include_apple_health:
+        workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
     if not workouts:
         return {
             "acwr": 0.0,
@@ -4475,8 +4615,13 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
         conn.row_factory = sqlite3.Row
         try:
             cur = conn.execute(
-                "SELECT day, sleep_duration_min FROM oura_daily WHERE sleep_duration_min IS NOT NULL ORDER BY day DESC LIMIT ?",
-                (days,),
+                """
+                SELECT day, sleep_type, sleep_duration_min, sleep_score,
+                       sleep_deep_min, sleep_rem_min, sleep_light_min
+                FROM oura_daily
+                WHERE sleep_duration_min IS NOT NULL
+                ORDER BY day DESC
+                """
             )
             rows = [dict(r) for r in cur.fetchall()]
         finally:
@@ -4489,8 +4634,11 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "avg_sleep_min": 0.0,
             "status": "good",
             "message": f"Sleep debt unavailable (DB error: {str(e)}).",
+            "sample_count": 0,
         }
 
+    rows = rows[:days]
+    rows = [r for r in rows if _is_valid_nightly_sleep_row(r)]
     if not rows:
         return {
             "debt_minutes": 0,
@@ -4499,6 +4647,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "avg_sleep_min": 0.0,
             "status": "good",
             "message": "No recent sleep-duration data available from Oura cache.",
+            "sample_count": 0,
         }
 
     debt = 0
@@ -4537,6 +4686,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
         "avg_sleep_min": round(avg_sleep, 1),
         "status": status,
         "message": msg,
+        "sample_count": n,
     }
 
 
@@ -4639,24 +4789,215 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     if recommendation is None:
         return None
     scoped = dict(recommendation)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        scoped.pop(key, None)
+    rpe_targets = []
+    for exercise in recommendation.get("exercises") or []:
+        if not isinstance(exercise, dict):
+            continue
+        raw_target = exercise.get("rpe_target")
+        if isinstance(raw_target, bool):
+            continue
+        try:
+            target = float(raw_target)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= target <= 10:
+            rpe_targets.append(target)
+    if rpe_targets:
+        minimum = min(rpe_targets)
+        maximum = max(rpe_targets)
+
+        def _format_rpe(value):
+            return str(int(value)) if value.is_integer() else str(value)
+
+        label = _format_rpe(minimum)
+        if maximum != minimum:
+            label = f"{label}–{_format_rpe(maximum)}"
+        scoped["rpe_range"] = {
+            "min": int(minimum) if minimum.is_integer() else minimum,
+            "max": int(maximum) if maximum.is_integer() else maximum,
+            "label": label,
+        }
     scoped["auth_scope"] = _current_auth_scope()
     return scoped
 
 
-def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
+def _new_workout_recommendation_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}"
+
+
+def _persist_current_workout_plan(
+    recommendation: dict,
+    fingerprint: str,
+    *,
+    customized: bool = False,
+    publish_adaptation_event_ids: list[str] | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        user_id = _current_data_user_id()
-        persisted = save_current_workout_plan(user_id, fingerprint, recommendation)
-        authoritative_plan = persisted["plan"]
+        expected_current_plan_absent = (
+            recommendation.get("_fit233_current_plan_absent") is True
+            or getattr(recommendation, "current_plan_absent", False) is True
+        )
+        expected_plan_generation = recommendation.get("_fit233_expected_plan_generation")
+        expected_plan_version = recommendation.get("_fit233_expected_plan_version")
+        if expected_plan_generation is None:
+            expected_plan_generation = getattr(recommendation, "plan_generation", None)
+        if expected_plan_version is None:
+            expected_plan_version = getattr(recommendation, "plan_version", None)
+        expected_absent_plan_generation = getattr(
+            recommendation,
+            "absent_plan_generation",
+            None,
+        )
+        expected_plan_identity = (
+            expected_plan_generation is not None and expected_plan_version is not None
+        )
+        if expected_current_plan_absent or expected_plan_identity or any(
+            key in recommendation for key in _WORKOUT_PLAN_INTERNAL_KEYS
+        ):
+            recommendation = dict(recommendation)
+            for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+                recommendation.pop(key, None)
+        stored_customization_marker = recommendation.get("_user_customized") is True
+        if stored_customization_marker:
+            recommendation = dict(recommendation)
+            recommendation.pop("_user_customized", None)
+        current_user_id = _current_data_user_id()
+        same_current_plan = bool(
+            LAST_WORKOUT_RECOMMENDATION_OWNER
+            and LAST_WORKOUT_RECOMMENDATION_OWNER.get("user_id") == current_user_id
+            and LAST_WORKOUT_RECOMMENDATION
+            and recommendation == LAST_WORKOUT_RECOMMENDATION
+        )
+        customized = bool(
+            customized
+            or stored_customization_marker
+            or (same_current_plan and LAST_WORKOUT_RECOMMENDATION_OWNER.get("customized"))
+        )
+        persisted_recommendation = dict(recommendation)
+        if customized:
+            persisted_recommendation["_user_customized"] = True
+        only_if_current_plan_absent = bool(
+            publish_adaptation_event_ids is None
+            and expected_current_plan_absent
+        )
+        save_kwargs = {
+            "publish_adaptation_event_ids": publish_adaptation_event_ids,
+        }
+        if only_if_current_plan_absent:
+            save_kwargs["only_if_current_plan_absent"] = True
+            if expected_absent_plan_generation is not None:
+                save_kwargs["expected_absent_plan_generation"] = int(
+                    expected_absent_plan_generation
+                )
+        if expected_plan_identity:
+            save_kwargs["expected_plan_generation"] = int(expected_plan_generation)
+            save_kwargs["expected_plan_version"] = int(expected_plan_version)
+        persisted = save_current_workout_plan(
+            current_user_id,
+            fingerprint,
+            persisted_recommendation,
+            **save_kwargs,
+        )
+        if persisted is None:
+            if only_if_current_plan_absent or expected_plan_identity:
+                return _WORKOUT_PLAN_PERSISTENCE_CONFLICT
+            return None
+        authoritative_plan = _WorkoutPlanSnapshot(
+            persisted["plan"],
+            plan_generation=persisted.get("plan_generation"),
+            plan_version=persisted.get("plan_version"),
+        )
+        authoritative_plan.pop("_user_customized", None)
         LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
-            "user_id": user_id,
+            "user_id": current_user_id,
             "fingerprint": fingerprint,
             "plan_id": id(authoritative_plan),
+            "customized": customized,
         }
+        if persisted.get("plan_generation") is not None and persisted.get("plan_version") is not None:
+            LAST_WORKOUT_RECOMMENDATION_OWNER.update(
+                {
+                    "plan_generation": persisted["plan_generation"],
+                    "plan_version": persisted["plan_version"],
+                }
+            )
     return authoritative_plan
+
+
+def _publish_unpublished_workout_adaptations(
+    user_id: int,
+    fingerprint: str,
+    today_s: str,
+) -> list[str]:
+    while True:
+        unpublished = list_unpublished_applied_workout_adaptation_events(user_id)
+        if not unpublished:
+            return []
+        plan_state = get_current_workout_plan_snapshot(user_id)
+        current_plan = plan_state["current_plan"]
+        current_plan_generation = int(plan_state["plan_generation"])
+        current_plan_identity = (
+            (
+                current_plan.get("plan_generation"),
+                current_plan.get("plan_version"),
+            )
+            if current_plan
+            else (current_plan_generation, None)
+        )
+        obsolete_ids = [
+            str(event["id"])
+            for event in unpublished
+            if event.get("id")
+            and (
+                str(event.get("target_plan_date") or "") != today_s
+                or event.get("plan_fingerprint") != fingerprint
+                or (
+                    (
+                        0
+                        if not current_plan
+                        and current_plan_generation == 0
+                        and event.get("source_plan_generation") is None
+                        else event.get("source_plan_generation")
+                    ),
+                    event.get("source_plan_version"),
+                ) != current_plan_identity
+            )
+        ]
+        if obsolete_ids:
+            expire_unpublished_workout_adaptation_events(user_id, obsolete_ids)
+            continue
+        latest_plan = unpublished[-1].get("_adapted_plan")
+        if not isinstance(latest_plan, dict):
+            raise RuntimeError("unpublished workout adaptation is missing its adapted plan")
+        event_ids = [str(event["id"]) for event in unpublished if event.get("id")]
+        persisted = _persist_current_workout_plan(
+            latest_plan,
+            fingerprint,
+            publish_adaptation_event_ids=event_ids,
+        )
+        if persisted is not None:
+            return event_ids
+
+
+def _same_day_preserved_workout_plan(today_s: str) -> dict | None:
+    stored = get_current_workout_plan(_current_data_user_id())
+    if not stored or str(stored.get("updated_at") or "")[:10] != today_s:
+        return None
+    plan = stored.get("plan")
+    preserved = isinstance(plan, dict) and (
+        plan.get("_user_customized") is True
+        or isinstance(plan.get("_fit136_last_adapted_plan"), dict)
+    )
+    if not preserved or _is_lightweight_current_workout_plan(plan):
+        return None
+    plan = dict(plan)
+    plan.pop("_user_customized", None)
+    return plan
 
 
 def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
@@ -4735,81 +5076,107 @@ def _is_lightweight_current_workout_plan(recommendation: dict | None) -> bool:
     return bool((recommendation or {}).get("_fit136_lightweight_no_ow"))
 
 
-def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsaved: bool = False) -> dict | None:
+def _current_workout_plan_for_fingerprint(
+    fingerprint: str,
+    *,
+    allow_stale_unsaved: bool = False,
+    return_lookup_token: bool = False,
+    durable_only: bool = False,
+    plan_state: dict | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        if LAST_WORKOUT_RECOMMENDATION and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION):
-            owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
-            owner_matches_plan = owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            if owner_matches_plan:
-                if owner.get("user_id") == _current_data_user_id():
-                    if owner.get("fingerprint") == fingerprint:
-                        persisted = get_current_workout_plan(
-                            _current_data_user_id(),
-                            fingerprint=fingerprint,
-                        )
-                        if (
-                            persisted
-                            and persisted.get("plan")
-                            and persisted["plan"] != LAST_WORKOUT_RECOMMENDATION
-                        ):
-                            if (
-                                LAST_WORKOUT_RECOMMENDATION.get(
-                                    "_fit136_base_recommendation"
-                                )
-                                and not persisted["plan"].get(
-                                    "_fit136_base_recommendation"
-                                )
-                            ):
-                                if LAST_WORKOUT_RECOMMENDATION.get("_fit136_adaptation_event_id"):
-                                    authoritative = save_current_workout_plan(
-                                        _current_data_user_id(),
-                                        fingerprint,
-                                        LAST_WORKOUT_RECOMMENDATION,
-                                    )
-                                    LAST_WORKOUT_RECOMMENDATION = authoritative["plan"]
-                                else:
-                                    LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
-                                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
-                                LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                                    "user_id": _current_data_user_id(),
-                                    "fingerprint": fingerprint,
-                                    "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
-                                }
-                        return LAST_WORKOUT_RECOMMENDATION
-                    if allow_stale_unsaved:
-                        return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == fingerprint:
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif allow_stale_unsaved and (
-                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT is None
-                or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
-            ):
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        row = get_current_workout_plan(_current_data_user_id(), fingerprint=fingerprint)
-        if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-            LAST_WORKOUT_RECOMMENDATION = row["plan"]
-            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+        current_user_id = _current_data_user_id()
+        plan_state = (
+            plan_state
+            or _WORKOUT_PLAN_STATE_CONTEXT.get()
+            or get_current_workout_plan_snapshot(current_user_id)
+        )
+        row = plan_state["current_plan"]
+        if (
+            row
+            and row.get("plan")
+            and not _is_lightweight_current_workout_plan(row["plan"])
+            and (row["fingerprint"] == fingerprint or allow_stale_unsaved or durable_only)
+        ):
+            plan = _WorkoutPlanSnapshot(
+                row["plan"],
+                plan_generation=row.get("plan_generation"),
+                plan_version=row.get("plan_version"),
+            )
+            customized = plan.get("_user_customized") is True
+            if customized:
+                plan.pop("_user_customized", None)
+            LAST_WORKOUT_RECOMMENDATION = plan
+            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = row["fingerprint"]
             LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                "user_id": _current_data_user_id(),
-                "fingerprint": fingerprint,
-                "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                "user_id": current_user_id,
+                "fingerprint": row["fingerprint"],
+                "plan_id": id(plan),
+                "customized": customized,
+                "plan_generation": row.get("plan_generation"),
+                "plan_version": row.get("plan_version"),
             }
-            return LAST_WORKOUT_RECOMMENDATION
+            return plan
+        if durable_only:
+            return None
+        owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
         if (
             allow_stale_unsaved
             and LAST_WORKOUT_RECOMMENDATION
             and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION)
-            and not (
-                (LAST_WORKOUT_RECOMMENDATION_OWNER or {}).get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            )
+            and owner.get("user_id") == current_user_id
+            and owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
         ):
-            return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        if allow_stale_unsaved:
-            row = get_current_workout_plan(_current_data_user_id())
-            if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-                return _persist_current_workout_plan(row["plan"], fingerprint)
+            mutation_snapshot = _WorkoutPlanSnapshot(
+                LAST_WORKOUT_RECOMMENDATION,
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
+            mutation_snapshot["_fit233_current_plan_absent"] = True
+            return mutation_snapshot
+        if return_lookup_token:
+            if row:
+                return _WorkoutPlanSnapshot(
+                    {},
+                    plan_generation=row.get("plan_generation"),
+                    plan_version=row.get("plan_version"),
+                )
+            return _WorkoutPlanSnapshot(
+                {},
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
         return None
+
+
+def _copy_workout_plan_cas_identity(source: dict, target: dict) -> dict:
+    """Copy mutation-only CAS metadata without exposing it in API payloads."""
+    copied = dict(target)
+    current_plan_absent = (
+        source.get("_fit233_current_plan_absent") is True
+        or getattr(source, "current_plan_absent", False) is True
+    )
+    plan_generation = source.get("_fit233_expected_plan_generation")
+    plan_version = source.get("_fit233_expected_plan_version")
+    if plan_generation is None:
+        plan_generation = getattr(source, "plan_generation", None)
+    if plan_version is None:
+        plan_version = getattr(source, "plan_version", None)
+    if plan_generation is not None and plan_version is not None:
+        plan_generation = int(plan_generation)
+        plan_version = int(plan_version)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        copied.pop(key, None)
+    if current_plan_absent or (plan_generation is not None and plan_version is not None):
+        return _WorkoutPlanSnapshot(
+            copied,
+            plan_generation=plan_generation,
+            plan_version=plan_version,
+            current_plan_absent=current_plan_absent,
+            absent_plan_generation=getattr(source, "absent_plan_generation", None),
+        )
+    return copied
 
 
 def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
@@ -4957,7 +5324,16 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    today_s = _today_str()
+    current_plan = _same_day_preserved_workout_plan(today_s)
+    lookup_token = None
+    if not current_plan:
+        current_plan = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not current_plan:
+            lookup_token = current_plan
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -4965,36 +5341,29 @@ def api_next_workout():
         open_wearables_facts,
     )
     if not current_plan:
-        current_plan = generate_next_workout(
+        generated_plan = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
-    today_s = _today_str()
-    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
-    food_log_entries = adaptation_food_entries
-    nutrition_context = _nutrition_context_for_date(
-        today_s,
-        hard_training_planned=_workout_looks_hard(current_plan or {}),
-        food_log_entries=food_log_entries,
-    )
+        if lookup_token is not None:
+            generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            current_plan = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            )
+            if current_plan is None:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+        else:
+            current_plan = persisted or generated_plan
     workout_adaptation_events = []
-    if can_evaluate_active:
-        current_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            current_plan or {},
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
@@ -5030,7 +5399,9 @@ def gym_now():
     """Emergency no-app-shell workout view for stale mobile/PWA caches."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    workout = _current_workout_plan_for_fingerprint(fingerprint)
+    workout = _same_day_preserved_workout_plan(_today_str())
+    if not workout:
+        workout = _current_workout_plan_for_fingerprint(fingerprint)
     if not workout:
         workout = generate_next_workout(
             WORKOUTS,
@@ -5151,22 +5522,30 @@ def api_dashboard():
     # Body stats
     body_stats = {}
     if BODY_DATA:
-        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-        latest = sorted_body[0]
-        body_stats["latest_weight"] = latest.get("weight_lbs")
-        body_stats["latest_body_fat"] = latest.get("body_fat_pct")
+        sorted_body = _safe_dated_body_entries()
+        latest_weight = next(
+            (entry["weight_lbs"] for entry in sorted_body if entry.get("weight_lbs") is not None),
+            None,
+        )
+        latest_body_fat = next(
+            (entry["body_fat_pct"] for entry in sorted_body if entry.get("body_fat_pct") is not None),
+            None,
+        )
+        body_stats["latest_weight"] = latest_weight
+        body_stats["latest_body_fat"] = latest_body_fat
 
         # 30-day weight change
         today = datetime.now().date()
         thirty_days_ago = today - timedelta(days=30)
         old_entries = [
-            e for e in BODY_DATA
-            if e.get("date") and datetime.strptime(e["date"], "%Y-%m-%d").date() <= thirty_days_ago
+            entry for entry in sorted_body
+            if entry.get("weight_lbs") is not None
+            and datetime.strptime(entry["date"], "%Y-%m-%d").date() <= thirty_days_ago
         ]
         if old_entries:
             oldest_in_range = sorted(old_entries, key=lambda x: x.get("date") or "")[-1]
             old_weight = oldest_in_range.get("weight_lbs")
-            if old_weight and body_stats["latest_weight"]:
+            if old_weight is not None and body_stats["latest_weight"] is not None:
                 body_stats["weight_change_30d"] = round(body_stats["latest_weight"] - old_weight, 1)
 
         # Trend direction
@@ -5179,9 +5558,9 @@ def api_dashboard():
             else:
                 body_stats["trend"] = "stable"
         else:
-            recent_7 = sorted_body[:7]
+            recent_7 = [entry for entry in sorted_body if entry.get("weight_lbs") is not None][:7]
             if len(recent_7) >= 3:
-                weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
+                weights = [entry["weight_lbs"] for entry in recent_7]
                 if len(weights) >= 3:
                     x = list(range(len(weights)))
                     n = len(weights)
@@ -5240,7 +5619,16 @@ def api_dashboard():
         reason_bits.append(open_wearables_modifier["detail"])
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    next_workout = _same_day_preserved_workout_plan(today_s)
+    using_stored_customization = next_workout is not None
+    lookup_token = None
+    if not next_workout:
+        next_workout = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not next_workout:
+            lookup_token = next_workout
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
@@ -5248,6 +5636,8 @@ def api_dashboard():
             training_recommendation=guarded_dashboard_recommendation,
             consume_cardio_rotation=False,
         )
+        if lookup_token is not None:
+            next_workout = _copy_workout_plan_cas_identity(lookup_token, next_workout)
     adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
     food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
@@ -5256,24 +5646,6 @@ def api_dashboard():
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today_s,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(readiness_val)
     # Persist the base/programmed plan (post-adaptation, pre-wearable-modifier)
@@ -5285,7 +5657,17 @@ def api_dashboard():
     # transform on the way out only. Persisting the base first is safe: the base
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
-    next_workout = _persist_current_workout_plan(next_workout, fingerprint)
+    if not using_stored_customization:
+        persisted = _persist_current_workout_plan(next_workout, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            # A concurrent log may have deleted the plan; serve the generated
+            # plan unpersisted rather than failing the read-only dashboard.
+            next_workout = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            ) or next_workout
+        else:
+            next_workout = persisted or next_workout
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -5347,16 +5729,15 @@ def api_vitals():
     current_weight = None
     body_fat = None
     if BODY_DATA:
-        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-        latest = sorted_body[0]
-        try:
-            current_weight = float(latest.get("weight_lbs")) if latest.get("weight_lbs") is not None else None
-        except Exception:
-            current_weight = None
-        try:
-            body_fat = float(latest.get("body_fat_pct")) if latest.get("body_fat_pct") is not None else None
-        except Exception:
-            body_fat = None
+        sorted_body = _safe_dated_body_entries()
+        current_weight = next(
+            (entry["weight_lbs"] for entry in sorted_body if entry.get("weight_lbs") is not None),
+            None,
+        )
+        body_fat = next(
+            (entry["body_fat_pct"] for entry in sorted_body if entry.get("body_fat_pct") is not None),
+            None,
+        )
 
     trend_7d = _body_trend(7)
     trend_30d = _body_trend(30)
@@ -5416,9 +5797,10 @@ def api_vitals():
         start_s = start.strftime("%Y-%m-%d")
         oura_today = get_oura_daily(OURA_DB_FILE, today_s)
         oura_week = get_oura_daily_range(OURA_DB_FILE, start_s, today_s) or []
+        nightly_oura_week = [r for r in oura_week if _is_valid_nightly_sleep_row(r)]
 
-        def _latest_with(field):
-            for r in reversed(oura_week):
+        def _latest_with(field, rows=oura_week):
+            for r in reversed(rows):
                 if r.get(field) is not None:
                     return r
             return None
@@ -5468,8 +5850,13 @@ def api_vitals():
                 steps_avg_7d = int(round(sum(step_vals) / len(step_vals)))
 
         if not last_night:
-            row = (oura_today if oura_today and oura_today.get("sleep_duration_min") is not None
-                   else _latest_with("sleep_duration_min"))
+            row = (
+                oura_today
+                if oura_today
+                and oura_today.get("sleep_duration_min") is not None
+                and _is_valid_nightly_sleep_row(oura_today)
+                else _latest_with("sleep_duration_min", nightly_oura_week)
+            )
             if row:
                 dur_min = row.get("sleep_duration_min") or 0
                 last_night = {
@@ -5487,11 +5874,20 @@ def api_vitals():
                 sources["sleep"] = "oura"
 
         if avg_7d_hours is None:
-            dur_vals = [r.get("sleep_duration_min") for r in oura_week if r.get("sleep_duration_min") is not None]
+            dur_vals = [
+                r.get("sleep_duration_min")
+                for r in nightly_oura_week
+                if r.get("sleep_duration_min") is not None
+            ]
             if dur_vals:
                 avg_7d_hours = round((sum(dur_vals) / len(dur_vals)) / 60.0, 2)
 
-        if quality_score is None and oura_today and oura_today.get("sleep_score") is not None:
+        if (
+            quality_score is None
+            and oura_today
+            and _is_valid_nightly_sleep_row(oura_today)
+            and oura_today.get("sleep_score") is not None
+        ):
             quality_score = oura_today.get("sleep_score")
     except Exception:
         pass
@@ -9661,6 +10057,11 @@ def ack_food_log_refresh_event(event_id: str):
 
 @app.route('/api/workout-adaptation-events')
 def workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _workout_adaptation_events_locked()
+
+
+def _workout_adaptation_events_locked():
     """Pollable FIT-137 event feed for nutrition-based workout adaptations."""
     unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
     unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
@@ -9673,6 +10074,30 @@ def workout_adaptation_events():
     except (TypeError, ValueError):
         return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
 
+    user_id = _current_data_user_id()
+    events = list_workout_adaptation_events(
+        user_id,
+        unacknowledged=unacknowledged,
+        since=since,
+        limit=limit,
+    )
+    projected = [workout_adaptation.project_event(event) for event in events]
+    return jsonify({
+        "events": projected,
+        "count": len(projected),
+        "applied_plan_revision": get_workout_adaptation_revision(user_id),
+    })
+
+
+@app.route('/api/workout-adaptation-events/evaluate', methods=["POST"])
+def evaluate_workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _evaluate_workout_adaptation_events_locked()
+
+
+def _evaluate_workout_adaptation_events_locked():
+    """Explicitly evaluate due FIT-136 windows before polling the event feed."""
+    user_id = _current_data_user_id()
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     active_open_requested = active_open_raw in {"1", "true", "yes"}
@@ -9682,39 +10107,148 @@ def workout_adaptation_events():
     food_log_entries = adaptation_food_entries
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
+    plan_state = get_current_workout_plan_snapshot(user_id)
+    source_plan_row = plan_state["current_plan"]
+    state_token = _WORKOUT_PLAN_STATE_CONTEXT.set(plan_state)
+    try:
+        current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    finally:
+        _WORKOUT_PLAN_STATE_CONTEXT.reset(state_token)
+    stored_plan = source_plan_row
+    stored_plan_written_today = bool(
+        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today_s
+    )
+    stored_workout = stored_plan.get("plan") if stored_plan_written_today else None
+    if stored_workout and _is_lightweight_current_workout_plan(stored_workout):
+        stored_workout = None
+    stored_workout_was_customized = bool(
+        stored_workout and stored_workout.get("_user_customized") is True
+    )
+    stored_workout_was_adapted = bool(
+        stored_workout
+        and isinstance(stored_workout.get("_fit136_last_adapted_plan"), dict)
+    )
+    if stored_workout and not (
+        stored_workout_was_customized
+        or stored_workout_was_adapted
+        or active_workout_open
+    ):
+        stored_workout = None
+    next_workout = stored_workout or current_plan
     if not next_workout:
+        training_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+            _current_workout_training_recommendation(),
+            _open_wearables_recommendation_facts(),
+        )
         next_workout = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
-            training_recommendation=_current_workout_training_recommendation(),
+            training_recommendation=training_recommendation,
             consume_cardio_rotation=False,
         )
-        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, _events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_workout_open,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
-
-    events = list_workout_adaptation_events(
-        _current_data_user_id(),
-        unacknowledged=unacknowledged,
-        since=since,
-        limit=limit,
+    events = []
+    source_plan_generation = (
+        source_plan_row.get("plan_generation")
+        if source_plan_row
+        else plan_state["plan_generation"]
     )
-    projected = [workout_adaptation.project_event(event) for event in events]
-    return jsonify({"events": projected, "count": len(projected)})
+    source_plan_version = None
+    if source_plan_row:
+        source_plan_version = int(source_plan_row.get("plan_version") or 0)
+    if not active_open_requested or completed_sets_by_exercise:
+        try:
+            next_workout, events = _apply_due_workout_adaptations_for_plan(
+                next_workout,
+                date_s=today_s,
+                food_log_entries=adaptation_food_entries,
+                nutrition_context=nutrition_context,
+                active_workout_open=active_workout_open,
+                completed_sets_by_exercise=completed_sets_by_exercise,
+                raise_on_error=True,
+                recovery_fingerprint=fingerprint,
+                recovery_source_plan_generation=source_plan_generation,
+                recovery_source_plan_version=source_plan_version,
+            )
+        except Exception:
+            return api_error(
+                "workout adaptation evaluation failed",
+                500,
+                code="evaluation_failed",
+            )
+        if any(
+            event.get("_claim_created", True) and event.get("status") == "applied"
+            for event in events
+        ):
+            winning_applied_event_ids = [
+                str(event["id"])
+                for event in events
+                if event.get("_claim_created", True)
+                and event.get("status") == "applied"
+                and event.get("id")
+            ]
+            _persist_current_workout_plan(
+                next_workout,
+                fingerprint,
+                publish_adaptation_event_ids=winning_applied_event_ids,
+            )
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
+    pending_windows = list_pending_workout_adaptation_windows(user_id)
+    next_evaluation_at = min(
+        (
+            str(window.get("window_closes_at") or "").strip()
+            for window in pending_windows
+            if str(window.get("window_closes_at") or "").strip()
+        ),
+        default=None,
+    )
+    retry_after_ms = None
+    next_evaluation_time = workout_adaptation._parse_iso(next_evaluation_at)
+    if next_evaluation_time is not None:
+        remaining_ms = math.ceil(
+            (next_evaluation_time - workout_adaptation._clock_now()).total_seconds() * 1000
+        )
+        retry_after_ms = remaining_ms if remaining_ms > 0 else 60_000
+    unacknowledged_events = list_workout_adaptation_events(
+        user_id,
+        unacknowledged=True,
+        limit=50,
+    )
+    applied_event_revision = ",".join(
+        sorted(
+            str(event["id"])
+            for event in unacknowledged_events
+            if event.get("status") == "applied" and event.get("id")
+        )
+    )
+    return jsonify(
+        {
+            "status": "success",
+            "evaluated_count": len(events),
+            "retry_after_ms": retry_after_ms,
+            "applied_event_revision": applied_event_revision or None,
+            "applied_plan_revision": get_workout_adaptation_revision(user_id),
+        }
+    )
 
 
 @app.route('/api/workout-adaptation-events/<event_id>/ack', methods=["POST"])
@@ -9752,6 +10286,7 @@ def add_cardio():
         return err2
 
     entry = {
+        "id": uuid.uuid4().hex[:12],
         "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "activity_type": activity_type,
         "duration_minutes": duration,
@@ -9790,6 +10325,7 @@ def add_recovery():
         return err2
 
     entry = {
+        "id": uuid.uuid4().hex[:12],
         "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "recovery_type": recovery_type,
         "duration_minutes": duration,
@@ -9836,6 +10372,72 @@ def api_exercises():
     return jsonify({"exercises": options})
 
 
+BODY_TAPE_RANGES = {
+    "neck_in": (8.0, 30.0),
+    "waist_in": (18.0, 80.0),
+    "chest_in": (18.0, 80.0),
+    "hips_in": (18.0, 80.0),
+    "arms": (5.0, 30.0),
+    "legs": (10.0, 50.0),
+}
+
+
+BODY_TAPE_SIDED_FIELDS = ("arms", "legs")
+
+
+def _body_measurement_date_or_none(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _body_measurement_number_or_none(value, min_v, max_v):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < min_v or number > max_v:
+        return None
+    return number
+
+
+def _body_measurement_left_right_or_none(value, min_v, max_v):
+    """Return (left, right) for an "a/b" string with both sides in range, else None."""
+    if not isinstance(value, str):
+        return None
+    sides = value.split("/")
+    if len(sides) != 2:
+        return None
+    parsed = [_body_measurement_number_or_none(side, min_v, max_v) for side in sides]
+    return None if None in parsed else tuple(parsed)
+
+
+def _safe_body_history_entry(raw):
+    entry = dict(raw)
+    entry["date"] = _body_measurement_date_or_none(entry.get("date"))
+    entry["weight_lbs"] = _body_measurement_number_or_none(entry.get("weight_lbs"), 50.0, 1000.0)
+    entry["body_fat_pct"] = _body_measurement_number_or_none(entry.get("body_fat_pct"), 1.0, 60.0)
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        value = entry.get(field)
+        # Legacy arms/legs rows store left/right text such as "11.37/13.62"; keep it only when both sides are in range.
+        if field in BODY_TAPE_SIDED_FIELDS and _body_measurement_left_right_or_none(value, min_v, max_v):
+            continue
+        entry[field] = _body_measurement_number_or_none(value, min_v, max_v)
+    return entry
+
+
+def _safe_dated_body_entries():
+    entries = [_safe_body_history_entry(raw) for raw in BODY_DATA if isinstance(raw, dict)]
+    return sorted(
+        (entry for entry in entries if entry.get("date") is not None),
+        key=lambda entry: entry["date"],
+        reverse=True,
+    )
+
+
 @app.route('/api/add-body-measurement', methods=['POST'])
 def add_body_measurement():
     """Add body composition measurement (weight, body fat %)."""
@@ -9846,26 +10448,54 @@ def add_body_measurement():
     weight_lbs, err2 = _coerce_float(data.get("weight_lbs"), "weight_lbs", min_v=50.0, max_v=1000.0)
     if err2:
         return err2
+    if not math.isfinite(weight_lbs):
+        return api_error("weight_lbs must be a finite number", 400, code="invalid_field")
     body_fat_pct, err2 = _coerce_float(data.get("body_fat_pct"), "body_fat_pct", min_v=1.0, max_v=60.0, allow_none=True)
     if err2:
         return err2
+    if body_fat_pct is not None and not math.isfinite(body_fat_pct):
+        return api_error("body_fat_pct must be a finite number", 400, code="invalid_field")
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+    raw_date = data.get("date")
+    date_s = datetime.now().strftime("%Y-%m-%d") if raw_date is None else raw_date
+    if _body_measurement_date_or_none(date_s) is None:
+        return api_error("date must be a valid YYYY-MM-DD date", 400, code="invalid_field")
+    tape_context, err2 = _validate_navy_tape_context(data)
+    if err2:
+        return err2
+    tape_values = {}
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        raw_value = data.get(field)
+        if field in BODY_TAPE_SIDED_FIELDS and isinstance(raw_value, str) and "/" in raw_value:
+            parsed = _body_measurement_left_right_or_none(raw_value, min_v, max_v)
+            if parsed is None:
+                return api_error(f"{field} must be a number or left/right numbers between {min_v} and {max_v}", 400, code="invalid_field")
+            tape_values[field] = f"{parsed[0]:g}/{parsed[1]:g}"
+            continue
+        value, err2 = _coerce_float(raw_value, field, min_v=min_v, max_v=max_v, allow_none=True)
+        if err2:
+            return err2
+        if value is not None and not math.isfinite(value):
+            return api_error(f"{field} must be a finite number", 400, code="invalid_field")
+        tape_values[field] = value
+    if tape_context:
+        # Navy flow owns neck/waist/hips; history stores hips as hips_in.
+        tape_values.update(neck_in=tape_context["neck_in"], waist_in=tape_context["waist_in"])
+        if tape_context["hip_in"] is not None:
+            tape_values["hips_in"] = tape_context["hip_in"]
 
     entry = {
-        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "date": date_s,
         "weight_lbs": weight_lbs,
         "body_fat_pct": body_fat_pct,
-        "neck_in": data.get("neck_in"),
-        "waist_in": data.get("waist_in"),
-        "chest_in": data.get("chest_in"),
-        "hips_in": data.get("hips_in"),
-        "arms": data.get("arms"),
-        "legs": data.get("legs"),
+        **tape_values,
         "notes": notes,
         "created_at": datetime.now().isoformat(),
     }
+    if tape_context:
+        entry.update(sex=tape_context["sex"], height_in=tape_context["height_in"])
 
     BODY_DATA.append(entry)
     save_json(BODY_FILE, BODY_DATA)
@@ -9875,22 +10505,24 @@ def add_body_measurement():
 @app.route('/api/body-history')
 def body_history():
     """Return body measurement history with calculated fields."""
-    sorted_data = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+    sorted_data = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get("date") or "",
+        reverse=True,
+    )
+    dated_data = [entry for entry in sorted_data if entry.get("date") is not None]
 
     # Calculate weight changes and trend
-    for i, entry in enumerate(sorted_data):
-        if i < len(sorted_data) - 1:
-            prev_weight = sorted_data[i + 1].get("weight_lbs")
-            curr_weight = entry.get("weight_lbs")
-            if prev_weight and curr_weight:
-                entry["weight_change"] = round(curr_weight - prev_weight, 1)
-            else:
-                entry["weight_change"] = None
-        else:
-            entry["weight_change"] = None
+    for entry in sorted_data:
+        entry["weight_change"] = None
+    for i, entry in enumerate(dated_data[:-1]):
+        prev_weight = dated_data[i + 1].get("weight_lbs")
+        curr_weight = entry.get("weight_lbs")
+        if prev_weight is not None and curr_weight is not None:
+            entry["weight_change"] = round(curr_weight - prev_weight, 1)
 
     # Calculate trend (last 7 entries linear regression)
-    recent_7 = sorted_data[:7]
+    recent_7 = dated_data[:7]
     if len(recent_7) >= 3:
         weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
         if len(weights) >= 3:
@@ -10177,9 +10809,26 @@ def swap_workout_exercise():
     if err:
         return err
 
-    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
-    if err2:
-        return err2
+    raw_recommendation_id = data.get("recommendation_id")
+    if (
+        not isinstance(raw_recommendation_id, str)
+        or not raw_recommendation_id.strip()
+        or len(raw_recommendation_id.strip()) > 256
+    ):
+        return api_error("recommendation_id must be a non-empty string", 400, code="invalid_field")
+    recommendation_id = raw_recommendation_id.strip()
+
+    fingerprint = _workout_recommendation_fingerprint()
+    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    if not recommendation:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+    if recommendation.get("id") != recommendation_id:
+        return api_error(
+            "Workout plan changed. Refresh the workout and try again.",
+            409,
+            code="plan_changed",
+        )
+
     exercise_index, err2 = _coerce_int(data.get("exercise_index"), "exercise_index", min_v=0, max_v=10_000)
     if err2:
         return err2
@@ -10187,10 +10836,10 @@ def swap_workout_exercise():
     if err2:
         return err2
 
-    fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
-    if not recommendation:
-        return api_error("No recent workout recommendation available", 404, code="not_found")
+    recommendation = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
 
     exercises = recommendation.get("exercises") or []
     if not (0 <= exercise_index < len(exercises)):
@@ -10249,7 +10898,19 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+    recommendation["id"] = _new_workout_recommendation_id()
+    persisted = _persist_current_workout_plan(
+        recommendation,
+        fingerprint,
+        customized=True,
+    )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    recommendation = persisted or recommendation
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -10266,7 +10927,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit179-movement-resolution-v1"
+_ADJUST_CACHE_VERSION = "fit265-honest-adjust-v2"
 
 
 def _ai_cache_init():
@@ -10412,10 +11073,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     """Apply the LLM's intent patch to the deterministic recommendation.
 
     Every mutation is clamped/validated here. The LLM cannot override safety.
-    Returns (patched_recommendation, applied_notes) where applied_notes is a
-    list of human-readable strings describing what actually changed.
+    Returns (patched_recommendation, applied_notes, skipped_notes). Applied
+    notes describe actual mutations; skipped notes describe rejected no-ops.
     """
-    notes = []
+    applied_notes = []
+    skipped_notes = []
     exercises = list(recommendation.get("exercises") or [])
 
     def _normalize_avoid_joints(raw_items):
@@ -10452,18 +11114,28 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     # ── 2) Clamp rpe_delta to ±1.0; disallow upward on poor readiness.
     rpe_delta_raw = float(intent.get("rpe_delta") or 0)
     rpe_delta = max(-1.0, min(1.0, rpe_delta_raw))
+    if rpe_delta != rpe_delta_raw:
+        skipped_notes.append(
+            f"Clamped: RPE adjustment {rpe_delta_raw:+.1f} to {rpe_delta:+.1f}"
+        )
     if deload_active and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)  # deload can only reduce
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
     if oura_readiness is not None and oura_readiness < 60 and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
 
     # ── 3) Clamp sets_delta_pct to ±20; no upward on deload/low readiness.
     sets_delta_raw = float(intent.get("sets_delta_pct") or 0)
     sets_delta = max(-20.0, min(20.0, sets_delta_raw))
+    if sets_delta != sets_delta_raw:
+        skipped_notes.append(
+            f"Clamped: sets adjustment {sets_delta_raw:+.0f}% to {sets_delta:+.0f}%"
+        )
     if deload_active or (oura_readiness is not None and oura_readiness < 60):
         sets_delta = min(0.0, sets_delta)
+        if sets_delta_raw > 0:
+            skipped_notes.append("Ignored: sets increase — deload or low readiness")
 
     # ── 4) Hard blacklist avoid_muscles / avoid_joints using current soreness data.
     avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
@@ -10493,7 +11165,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 reason_bits = [f"{muscle} avoided"]
                 if sore_map.get(muscle, 0) >= 7:
                     reason_bits.append(f"soreness {sore_map[muscle]}/10")
-                notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
+                applied_notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10514,7 +11186,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 if any(src in ex_name.lower() for src in joint_swap_sources):
                     kept.append(ex)
                     continue
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10536,15 +11208,16 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         replace_index = sw.get("replace_index")
         target_muscle = (sw.get("target_muscle") or "").strip().lower()
         if not target_muscle or (not src_name and not isinstance(replace_index, int)):
+            skipped_notes.append("Ignored: swap requires a target muscle and source exercise or index")
             continue
         if target_muscle in avoid_muscles:
-            notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
+            skipped_notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
             continue
 
         # Find the exercise to replace by name (case-insensitive, contains).
         def _source_matches_plan_exercise(plan_ex):
             if not src_name:
-                return True
+                return False
             if src_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), src_definition):
                 return True
             plan_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
@@ -10560,13 +11233,13 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                     idx = i
                     break
         if idx is None:
-            notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
+            skipped_notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
         target_exercise_name = (sw.get("target_exercise") or "").strip()
         requested_exercise = _resolve_exercise_definition(target_exercise_name)
         if target_exercise_name and not requested_exercise:
-            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            skipped_notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
             continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
@@ -10577,7 +11250,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             and not _exercise_loads_avoided_joint(ex.get("name"), avoid_joints)
         ]
         if not library:
-            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
+            skipped_notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan, including aliases.
@@ -10589,8 +11262,14 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
         if requested_exercise:
             if requested_exercise not in library:
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is unavailable under current equipment/joint constraints"
+                )
                 continue
             if _plan_already_contains(requested_exercise):
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is already in the current plan"
+                )
                 continue
             picked = requested_exercise
         else:
@@ -10615,7 +11294,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         new_entry["rationale"] = f"{new_entry.get('rationale', '')} · Swapped from {old_name} ({reason})".strip(" ·")
         exercises[idx] = new_entry
         reason_suffix = f" — {reason}" if reason else ""
-        notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+        applied_notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
 
     if avoid_joints:
         kept = []
@@ -10623,28 +11302,65 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
             avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
             if avoided:
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
 
     # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
+    rpe_changed_count = 0
+    rpe_unchanged_count = 0
+    sets_changed_count = 0
+    sets_unchanged_count = 0
     if rpe_delta != 0 or sets_delta != 0:
         for ex in exercises:
             if rpe_delta:
                 cur = float(ex.get("rpe_target") or goal_params.get("rpe_target") or 7)
-                ex["rpe_target"] = max(1.0, min(10.0, cur + rpe_delta))
+                new_rpe = max(1.0, min(10.0, cur + rpe_delta))
+                if new_rpe != cur:
+                    ex["rpe_target"] = new_rpe
+                    rpe_changed_count += 1
+                else:
+                    rpe_unchanged_count += 1
             if sets_delta:
                 cur = int(ex.get("target_sets") or goal_params.get("sets_per_exercise") or 3)
                 new_sets = max(1, round(cur * (1 + sets_delta / 100.0)))
                 # Never add sets on deload
                 if deload_active:
                     new_sets = min(cur, new_sets)
-                ex["target_sets"] = new_sets
-        if rpe_delta:
-            notes.append(f"RPE adjusted {rpe_delta:+.1f} across all exercises")
-        if sets_delta:
-            notes.append(f"Sets adjusted {sets_delta:+.0f}% across all exercises")
+                if new_sets != cur:
+                    ex["target_sets"] = new_sets
+                    sets_changed_count += 1
+                else:
+                    sets_unchanged_count += 1
+        if rpe_changed_count:
+            suffix = "exercise" if rpe_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"RPE adjusted {rpe_delta:+.1f} for {rpe_changed_count} {suffix}"
+            )
+        if rpe_delta and not rpe_changed_count:
+            skipped_notes.append("Ignored: RPE adjustment produced no exercise changes")
+        elif rpe_unchanged_count:
+            suffix = "exercise" if rpe_unchanged_count == 1 else "exercises"
+            limit_phrase = "at its limit" if rpe_unchanged_count == 1 else "at their limits"
+            skipped_notes.append(
+                f"RPE adjustment skipped for {rpe_unchanged_count} {suffix} {limit_phrase}"
+            )
+        if sets_changed_count:
+            suffix = "exercise" if sets_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"Sets adjusted {sets_delta:+.0f}% for {sets_changed_count} {suffix}"
+            )
+        if sets_delta and not sets_changed_count:
+            skipped_notes.append("Ignored: sets adjustment produced no exercise changes")
+        elif sets_unchanged_count:
+            suffix = "exercise" if sets_unchanged_count == 1 else "exercises"
+            rounding_phrase = (
+                "kept it unchanged" if sets_unchanged_count == 1 else "kept them unchanged"
+            )
+            skipped_notes.append(
+                f"Sets adjustment skipped for {sets_unchanged_count} {suffix} because rounding {rounding_phrase}"
+            )
 
     # ── 7) Weight guard: cap every exercise at +10% of its recent e1RM-derived load.
     for ex in exercises:
@@ -10655,8 +11371,10 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             target_w = float(ex.get("target_weight") or 0)
             cap = e1rm * 1.10
             if target_w > cap:
-                ex["target_weight"] = round(cap, 1)
-                notes.append(f"Capped: {ex_name} weight → {round(cap, 1)} lb (10% above e1RM ceiling)")
+                capped_weight = round(cap, 1)
+                if capped_weight != target_w:
+                    ex["target_weight"] = capped_weight
+                    applied_notes.append(f"Capped: {ex_name} weight → {capped_weight} lb (10% above e1RM ceiling)")
 
     # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
     duration_cap = float(intent.get("duration_cap_min") or 0)
@@ -10672,17 +11390,23 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             kept.append(ex)
         if len(kept) < len(exercises):
             dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
-            notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            applied_notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
             exercises = kept
-        recommendation["estimated_minutes"] = int(minutes_used + 10)
+        old_estimated_minutes = recommendation.get("estimated_minutes")
+        new_estimated_minutes = int(minutes_used + 10)
+        recommendation["estimated_minutes"] = new_estimated_minutes
+        if old_estimated_minutes != new_estimated_minutes:
+            applied_notes.append(
+                f"Duration adjusted: {old_estimated_minutes} → {new_estimated_minutes} min"
+            )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio"):
+    if intent.get("drop_cardio") and recommendation.get("cardio") is not None:
         recommendation["cardio"] = None
-        notes.append("Removed: Cardio finisher — per your request")
+        applied_notes.append("Removed: Cardio finisher — per your request")
 
     recommendation["exercises"] = exercises
-    return recommendation, notes
+    return recommendation, applied_notes, skipped_notes
 
 
 @app.route('/api/workout/adjust', methods=['POST'])
@@ -10705,10 +11429,23 @@ def adjust_workout():
         return err2
 
     fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    recommendation = _current_workout_plan_for_fingerprint(
+        fingerprint,
+        allow_stale_unsaved=True,
+        return_lookup_token=True,
+    )
     if not recommendation:
-        recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
-        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+        lookup_token = recommendation
+        generated_plan = generate_next_workout(WORKOUTS, SORENESS_DATA)
+        generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            return api_error(
+                "Workout plan changed while this request was in progress. Refresh and retry.",
+                409,
+                code="workout_plan_conflict",
+            )
+        recommendation = persisted or generated_plan
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -10732,7 +11469,18 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -10742,6 +11490,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     readiness_date = _today_str()
@@ -10771,7 +11520,22 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                cached["recommendation"] = _persist_current_workout_plan(cached["recommendation"], fingerprint)
+                cached_recommendation = _copy_workout_plan_cas_identity(
+                    recommendation,
+                    cached["recommendation"],
+                )
+                persisted = _persist_current_workout_plan(
+                    cached_recommendation,
+                    fingerprint,
+                    customized=cached.get("result_kind") == "changed",
+                )
+                if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                    return api_error(
+                        "Workout plan changed while this request was in progress. Refresh and retry.",
+                        409,
+                        code="workout_plan_conflict",
+                    )
+                cached["recommendation"] = persisted or cached_recommendation
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -10787,7 +11551,18 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -10802,6 +11577,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     # Send readiness context the LLM can reason about.
@@ -10832,7 +11608,18 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -10852,18 +11639,25 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent = _merge_deterministic_adjust_swap(raw_patch.get("intent") or {}, deterministic_swap)
+    trust_model_summary = not bool(
+        intent.pop("_deterministic_swap_replaced_model_swap", False)
+    )
     summary = raw_patch.get("summary") or ""
     raw_meta = raw_patch.get("_meta") or {}
     actual_model_version = raw_meta.get("model_version") or route_model_version
 
     # Deep-copy the recommendation so the in-memory canonical isn't mutated
     # if the user re-opens without applying.
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     try:
-        patched, applied_notes = _apply_intent_patch(
+        patched, applied_notes, skipped_notes = _apply_intent_patch(
             patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
         )
     except Exception as exc:
@@ -10883,6 +11677,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent_is_empty = (
@@ -10900,6 +11695,13 @@ def adjust_workout():
         result_kind = "refused"
     else:
         result_kind = "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        summary,
+        trust_model_summary=trust_model_summary,
+    )
 
     payload = {
         "status": "ok",
@@ -10907,6 +11709,7 @@ def adjust_workout():
         "recommendation": patched,
         "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": raw_meta,
         "cache_hit": False,
@@ -10925,7 +11728,18 @@ def adjust_workout():
     # Cache and persist the BASE patched plan (display transform must not be
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
-    patched = _persist_current_workout_plan(patched, fingerprint)
+    persisted = _persist_current_workout_plan(
+        patched,
+        fingerprint,
+        customized=result_kind == "changed",
+    )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    patched = persisted or patched
     payload["recommendation"] = patched
     _ai_cache_put(cache_write_key, payload)
     _ai_metric_log(
@@ -10949,16 +11763,35 @@ def _analysis_number(value, default=0.0):
 
 
 def _workout_analysis_response(target, analysis, recent_compact, progression_subset, oura_snapshot, notes_context, *, status="ok", meta=None, cache_hit=False):
+    workout_payload = {
+        "id": target.get("id"),
+        "date": target.get("date"),
+        "session_type": target.get("session_type") or target.get("focus"),
+        "total_sets": target.get("total_sets"),
+        "total_volume": target.get("total_volume"),
+        "duration_minutes": target.get("duration_minutes"),
+    }
+    context_used = {
+        "recent_session_count": len(recent_compact),
+        "exercise_progression_available": list(progression_subset.keys()),
+        "readiness_available": oura_snapshot is not None,
+        **notes_context,
+    }
+    if target.get("source") == "open_wearables":
+        open_wearables_metrics = {
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        }
+        workout_payload.update({
+            "source": "open_wearables",
+            **open_wearables_metrics,
+        })
+        context_used["open_wearables_metrics"] = open_wearables_metrics
+
     return {
         "status": status,
-        "workout": {
-            "id": target.get("id"),
-            "date": target.get("date"),
-            "session_type": target.get("session_type") or target.get("focus"),
-            "total_sets": target.get("total_sets"),
-            "total_volume": target.get("total_volume"),
-            "duration_minutes": target.get("duration_minutes"),
-        },
+        "workout": workout_payload,
         "analysis": {
             "summary": analysis.get("summary"),
             "wins": analysis.get("wins") or [],
@@ -10966,12 +11799,7 @@ def _workout_analysis_response(target, analysis, recent_compact, progression_sub
             "comparison": analysis.get("comparison"),
             "next_session_cue": analysis.get("next_session_cue"),
         },
-        "context_used": {
-            "recent_session_count": len(recent_compact),
-            "exercise_progression_available": list(progression_subset.keys()),
-            "readiness_available": oura_snapshot is not None,
-            **notes_context,
-        },
+        "context_used": context_used,
         "meta": meta or {},
         "cache_hit": cache_hit,
     }
@@ -11076,6 +11904,18 @@ def analyze_workout():
     target = None
     if workout_id:
         target = next((w for w in WORKOUTS if w.get("id") == workout_id), None)
+        if target is None and str(workout_id).startswith("open_wearables:"):
+            try:
+                target = next(
+                    (w for w in _load_open_wearables_workouts() if w.get("id") == workout_id),
+                    None,
+                )
+            except ConnectionError:
+                return api_error(
+                    "Open Wearables workouts are temporarily unavailable.",
+                    503,
+                    "open_wearables_workouts_unavailable",
+                )
     elif workout_date:
         matches = [w for w in WORKOUTS if w.get("date") == workout_date]
         if matches:
@@ -11208,6 +12048,13 @@ def analyze_workout():
             "rep_range": goal_params.get("rep_range"),
         },
     }
+    is_open_wearables = target.get("source") == "open_wearables"
+    if is_open_wearables:
+        llm_context["open_wearables_metrics"] = {
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        }
 
     model_version = getattr(_lm_studio, "LM_STUDIO_MODEL_VERSION", "deterministic-fallback")
     prompt_version = getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "deterministic-v1")
@@ -11235,28 +12082,40 @@ def analyze_workout():
     # Cache key based on workout content + model version so re-analyzing the
     # same unchanged workout doesn't re-spend tokens.
     import hashlib
+    fingerprint_target = {
+        "date": target.get("date"),
+        "exercises": [
+            {
+                "name": ex.get("machine") or ex.get("exercise"),
+                "sets": [
+                    {
+                        "r": s.get("reps"),
+                        "w": s.get("weight_lbs"),
+                        "rpe": s.get("rpe"),
+                        "notes": s.get("notes") or "",
+                    }
+                    for s in (ex.get("sets") or [])
+                ],
+            }
+            for ex in (target.get("exercises") or [])
+        ],
+        "notes": target.get("notes") or "",
+        "cardio": target.get("cardio"),
+    }
+    if is_open_wearables:
+        fingerprint_target.update({
+            "id": target.get("id"),
+            "source": "open_wearables",
+            "session_type": target.get("session_type"),
+            "activity_type": target.get("activity_type"),
+            "duration_minutes": target.get("duration_minutes"),
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        })
     fingerprint_src = json.dumps({
         "analysis_prompt_version": prompt_version,
-        "target": {
-            "date": target.get("date"),
-            "exercises": [
-                {
-                    "name": ex.get("machine") or ex.get("exercise"),
-                    "sets": [
-                        {
-                            "r": s.get("reps"),
-                            "w": s.get("weight_lbs"),
-                            "rpe": s.get("rpe"),
-                            "notes": s.get("notes") or "",
-                        }
-                        for s in (ex.get("sets") or [])
-                    ],
-                }
-                for ex in (target.get("exercises") or [])
-            ],
-            "notes": target.get("notes") or "",
-            "cardio": target.get("cardio"),
-        },
+        "target": fingerprint_target,
         "recent_keys": [w.get("date") for w in recent_compact],
         "model": model_version,
     }, default=str, sort_keys=True)
@@ -12636,36 +13495,103 @@ def _open_wearables_complete_oauth_callback(provider, code, state):
         return False
 
 
+def _system_local_zone():
+    zone_name = str(os.environ.get("TZ") or "").lstrip(":")
+    zoneinfo_marker = "/zoneinfo/"
+    if zone_name and os.path.isabs(zone_name):
+        resolved_zone_path = os.path.realpath(zone_name)
+        zone_name = (
+            resolved_zone_path.split(zoneinfo_marker, 1)[1]
+            if zoneinfo_marker in resolved_zone_path
+            else ""
+        )
+    if not zone_name:
+        localtime_path = os.path.realpath("/etc/localtime")
+        if zoneinfo_marker in localtime_path:
+            zone_name = localtime_path.split(zoneinfo_marker, 1)[1]
+    if zone_name:
+        try:
+            return ZoneInfo(zone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+    return None
+
+
+def _open_wearables_window_bounds(*, now=None, local_zone=None):
+    zone = local_zone or _system_local_zone()
+    if zone is None and now is not None and isinstance(now.tzinfo, ZoneInfo):
+        zone = now.tzinfo
+    local_now = (now or datetime.now(zone)).astimezone(zone)
+    start_day = local_now.date() - timedelta(days=6)
+    end_day = local_now.date() + timedelta(days=1)
+    if zone is None:
+        # Naive astimezone() asks the operating system for each target instant,
+        # preserving DST rules even when /etc/localtime is a copied tzfile.
+        window_start = datetime(start_day.year, start_day.month, start_day.day).astimezone()
+        window_end = datetime(end_day.year, end_day.month, end_day.day).astimezone()
+    else:
+        window_start = datetime(start_day.year, start_day.month, start_day.day, tzinfo=zone)
+        window_end = datetime(end_day.year, end_day.month, end_day.day, tzinfo=zone)
+    return window_start.isoformat(), window_end.isoformat()
+
+
 def fetch_open_wearables_data():
-    """Fetch sleep, workouts, and activity summaries from local Open Wearables bridge (best-effort)."""
+    """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort)."""
     missing = _missing_open_wearables_config()
     if missing:
         return {
             "sleep": None,
+            "sleep_summary": None,
             "workouts": None,
             "activity_summary": None,
-            "fetched_at": datetime.now().isoformat(),
+            "recovery_summary": None,
+            "body_summary": None,
+            "_sleep_summary_snapshot_complete": False,
+            "_workout_snapshot_complete": False,
+            "fetched_at": datetime.now().astimezone().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
         }
 
     token = _get_ow_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    today = datetime.now().date()
-    start_date = (today - timedelta(days=6)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
+    start_at, end_at = _open_wearables_window_bounds()
+    event_range_query = urllib.parse.urlencode(
+        {"start_date": start_at, "end_date": end_at, "limit": 100}
+    )
+    summary_range_query = urllib.parse.urlencode({
+        "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+        "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        "limit": 100,
+    })
 
     endpoints = {
-        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
-        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}",
-        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
+        "sleep": f"{_open_wearables_user_base()}/events/sleep?{event_range_query}",
+        "sleep_summary": f"{_open_wearables_user_base()}/summaries/sleep?{summary_range_query}",
+        "workouts": f"{_open_wearables_user_base()}/events/workouts?{event_range_query}",
+        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?{summary_range_query}",
+        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?{summary_range_query}",
+        "body_summary": f"{_open_wearables_user_base()}/summaries/body",
     }
 
     result = {
         "sleep": None,
+        "sleep_summary": None,
         "workouts": None,
         "activity_summary": None,
-        "fetched_at": datetime.now().isoformat(),
+        "recovery_summary": None,
+        "body_summary": None,
+        "_sleep_summary_snapshot_complete": False,
+        "_sleep_summary_query": {
+            "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+            "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        },
+        "_workout_snapshot_complete": False,
+        "_workout_query": {
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+        "fetched_at": datetime.now().astimezone().isoformat(),
         "errors": {},
     }
 
@@ -12673,14 +13599,158 @@ def fetch_open_wearables_data():
         result["errors"]["auth"] = "missing_token"
         return result
 
+    def fetch_paginated_pages(url, domain):
+        combined = []
+        current_url = url
+        first_payload = None
+        for _ in range(5):
+            payload = _ow_request(current_url, headers=headers)
+            if first_payload is None:
+                first_payload = payload
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            row_key = next((key for key in ("data", "events", "items") if key in payload), None)
+            if row_key is None or not isinstance(payload.get(row_key), list):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            combined.extend(payload[row_key])
+            raw_pagination = payload.get("pagination")
+            if raw_pagination is None:
+                pagination_complete = False
+                terminal_page = True
+                cursor = None
+            elif not isinstance(raw_pagination, dict):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            else:
+                has_more = raw_pagination.get("has_more")
+                cursor = raw_pagination.get("next_cursor")
+                if has_more is True and (cursor is None or not str(cursor).strip()):
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_cursor_missing")
+                if has_more not in {True, False}:
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+                pagination_complete = has_more is False
+                terminal_page = not has_more
+            if terminal_page:
+                result_payload = dict(first_payload)
+                for row_key in ("events", "items"):
+                    result_payload.pop(row_key, None)
+                result_payload["data"] = combined
+                result_payload["_pagination_complete"] = pagination_complete
+                return result_payload
+            current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
+        raise RuntimeError(f"open_wearables_{domain}_pagination_limit")
+
     for key, url in endpoints.items():
         try:
-            result[key] = _ow_request(url, headers=headers)
+            payload = (
+                _ow_request(url, headers=headers)
+                if key == "body_summary"
+                else fetch_paginated_pages(url, key)
+            )
+            if isinstance(payload, dict):
+                pagination_complete = payload.pop("_pagination_complete", False)
+                if key == "workouts":
+                    result["_workout_snapshot_complete"] = pagination_complete is True
+                elif key == "sleep_summary":
+                    result["_sleep_summary_snapshot_complete"] = pagination_complete is True
+            result[key] = payload
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
     _store_open_wearables_recommendation_marker(result)
     return result
+
+
+def _system_local_timezone():
+    """Return system-local transition rules when an IANA TZ key is unavailable."""
+    try:
+        with open("/etc/localtime", "rb") as timezone_file:
+            return ZoneInfo.from_file(timezone_file)
+    except (OSError, ValueError):
+        return datetime.now().astimezone().tzinfo
+
+
+def _fetch_open_wearables_workout_data():
+    """Fetch the most recent seven local calendar days of workout events."""
+    missing = _missing_open_wearables_config()
+    if missing:
+        return {
+            "workouts": None,
+            "errors": {"config": f"missing:{','.join(missing)}"},
+        }
+
+    token = _get_ow_token()
+    if not token:
+        return {"workouts": None, "errors": {"auth": "missing_token"}}
+
+    timezone_name = os.environ.get("TZ", "").strip()
+    try:
+        local_timezone = ZoneInfo(timezone_name) if timezone_name else _system_local_timezone()
+    except (ZoneInfoNotFoundError, ValueError):
+        local_timezone = _system_local_timezone()
+    today = datetime.now(local_timezone).date()
+    start_local = datetime.combine(
+        today - timedelta(days=6),
+        datetime.min.time(),
+        tzinfo=local_timezone,
+    )
+    exclusive_end_local = datetime.combine(
+        today + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=local_timezone,
+    )
+    start_date = start_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    exclusive_end_date = exclusive_end_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    base_url = f"{_open_wearables_user_base()}/events/workouts"
+    headers = {"Authorization": f"Bearer {token}"}
+    rows = []
+    cursor = None
+    seen_cursors = set()
+    try:
+        # Same bounds as fetch_open_wearables_data: data/events/items row keys, 5 pages max.
+        for _ in range(5):
+            query = {
+                "start_date": start_date,
+                "end_date": exclusive_end_date,
+                "limit": 100,
+            }
+            if cursor:
+                query["cursor"] = cursor
+            page = _ow_request(f"{base_url}?{urllib.parse.urlencode(query)}", headers=headers)
+            if not isinstance(page, dict):
+                raise ValueError("invalid workout page")
+            row_key = next((key for key in ("data", "events", "items") if key in page), None)
+            page_rows = page.get(row_key) if row_key else None
+            if not isinstance(page_rows, list):
+                raise ValueError("invalid workout page data")
+            rows.extend(page_rows)
+            pagination = page.get("pagination") if isinstance(page.get("pagination"), dict) else {}
+            if not pagination.get("has_more"):
+                break
+            next_cursor = pagination.get("next_cursor")
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                raise ValueError("invalid workout cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            raise ValueError("open_wearables_workouts_pagination_limit")
+    except Exception as exc:
+        return {"workouts": None, "errors": {"workouts": str(exc)}}
+    return {"workouts": {"data": rows}, "errors": {}}
+
+
+def _load_open_wearables_workouts():
+    """Return safe normalized recent workouts; distinguish absence from failure."""
+    data = _fetch_open_wearables_workout_data()
+    if not isinstance(data, dict):
+        raise ConnectionError("Open Wearables workout response was invalid")
+    errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
+    workout_payload = data.get("workouts")
+    if workout_payload is None:
+        if "config" in errors:
+            return []
+        raise ConnectionError("Open Wearables workouts are unavailable")
+    rows = open_wearables_hub.extract_workouts(workout_payload)
+    return [normalize_history_item(row, source="open_wearables") for row in rows]
 
 
 def _extract_open_wearables_sleep(payload):
@@ -12689,7 +13759,10 @@ def _extract_open_wearables_sleep(payload):
     if not events:
         return None
 
-    best = max(events, key=lambda e: e.get("event_time") or datetime.min)
+    main_sleep_events = [event for event in events if event.get("is_nap") is not True]
+    if not main_sleep_events:
+        return None
+    best = max(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     best_time = best.get("event_time")
     duration = best.get("duration_min")
     avg_hr = best.get("avg_hr")
@@ -12702,8 +13775,12 @@ def _extract_open_wearables_sleep(payload):
         "duration_min": int(round(duration)) if duration is not None else None,
         "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
         "event_time": best_time.isoformat() if best_time else None,
+        "observed_at": best.get("observed_at"),
         "recent": recent,
         "raw": best.get("raw"),
+        "stages_min": best.get("stages_min") or {},
+        "efficiency_percent": best.get("efficiency_percent"),
+        "is_nap": best.get("is_nap"),
     }
 
 
@@ -12729,6 +13806,13 @@ def _extract_open_wearables_sleep_events(payload):
                 return dt
         return None
 
+    def _observed_at(ev):
+        for key in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
+            value = ev.get(key)
+            if value is not None:
+                return str(value)
+        return None
+
     parsed = []
     for ev in events:
         if not isinstance(ev, dict):
@@ -12736,20 +13820,23 @@ def _extract_open_wearables_sleep_events(payload):
         dt = _event_time(ev)
         if dt is None:
             continue
-        duration = (
-            ev.get("duration_min")
-            or ev.get("duration_minutes")
-            or ev.get("sleep_duration_min")
-            or ev.get("total_sleep_min")
-            or ev.get("duration")
-            or ev.get("sleep_duration")
-            or ev.get("duration_seconds")
-        )
+        duration = ev.get("sleep_duration_seconds")
+        duration_is_seconds = duration is not None
+        if duration is None:
+            for key in ("duration_min", "duration_minutes", "sleep_duration_min", "total_sleep_min", "duration", "sleep_duration"):
+                if ev.get(key) is not None:
+                    duration = ev.get(key)
+                    break
+        if duration is None and ev.get("duration_seconds") is not None:
+            duration = ev.get("duration_seconds")
+            duration_is_seconds = True
         try:
             duration = float(duration) if duration is not None else None
         except Exception:
             duration = None
-        if duration is not None and duration > 1000:
+        if duration is not None and not math.isfinite(duration):
+            duration = None
+        if duration is not None and (duration_is_seconds or duration > 1000):
             duration = duration / 60.0
 
         stages = ev.get("stages") or {}
@@ -12757,9 +13844,13 @@ def _extract_open_wearables_sleep_events(payload):
         if isinstance(stages, dict):
             for key in ("deep", "rem", "light", "awake"):
                 val = stages.get(key)
+                if val is None:
+                    val = stages.get(f"{key}_minutes")
                 try:
                     val = float(val) if val is not None else None
                 except Exception:
+                    val = None
+                if val is not None and not math.isfinite(val):
                     val = None
                 if val is not None and val > 1000:
                     val = val / 60.0
@@ -12776,12 +13867,25 @@ def _extract_open_wearables_sleep_events(payload):
             avg_hr = float(avg_hr) if avg_hr is not None else None
         except Exception:
             avg_hr = None
+        if avg_hr is not None and not math.isfinite(avg_hr):
+            avg_hr = None
+
+        efficiency = ev.get("efficiency_percent")
+        try:
+            efficiency = float(efficiency) if efficiency is not None else None
+        except Exception:
+            efficiency = None
+        if efficiency is not None and not math.isfinite(efficiency):
+            efficiency = None
 
         parsed.append({
             "event_time": dt,
+            "observed_at": _observed_at(ev),
             "duration_min": duration,
             "stages_min": stage_minutes,
             "avg_hr": avg_hr,
+            "efficiency_percent": efficiency,
+            "is_nap": ev.get("is_nap") if isinstance(ev.get("is_nap"), bool) else None,
             "raw": ev,
         })
 
@@ -12821,20 +13925,35 @@ def _extract_open_wearables_activity_summaries(payload):
             average = None
 
         steps = item.get("steps")
-        active_calories = item.get("active_calories") or item.get("calories_active")
-        active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
+        active_calories = item.get("active_calories_kcal")
+        if active_calories is None:
+            active_calories = item.get("active_calories")
+        if active_calories is None:
+            active_calories = item.get("calories_active")
+        active_minutes = item.get("active_minutes")
+        if active_minutes is None:
+            active_minutes = item.get("active_min")
+        if active_minutes is None:
+            active_minutes = item.get("active_duration_min")
+        distance = item.get("distance_meters")
+        if distance is None:
+            distance = item.get("distance")
         try:
             steps = int(float(steps)) if steps is not None else None
         except Exception:
             steps = None
         try:
-            active_calories = int(float(active_calories)) if active_calories is not None else None
+            active_calories = float(active_calories) if active_calories is not None else None
         except Exception:
             active_calories = None
         try:
             active_minutes = int(float(active_minutes)) if active_minutes is not None else None
         except Exception:
             active_minutes = None
+        try:
+            distance = float(distance) if distance is not None else None
+        except Exception:
+            distance = None
 
         summaries.append({
             "date": dt.date(),
@@ -12843,6 +13962,7 @@ def _extract_open_wearables_activity_summaries(payload):
             "steps": steps,
             "active_calories": active_calories,
             "active_minutes": active_minutes,
+            "distance": distance,
             "raw": item,
         })
     return summaries
@@ -12854,10 +13974,8 @@ def _body_trend(days: int):
     today = datetime.now().date()
     start = today - timedelta(days=days - 1)
     entries = []
-    for e in BODY_DATA:
-        date_s = e.get("date")
-        if not date_s:
-            continue
+    for e in _safe_dated_body_entries():
+        date_s = e["date"]
         dt = _parse_iso_date_or_datetime(date_s)
         if not dt:
             continue
@@ -12865,10 +13983,6 @@ def _body_trend(days: int):
         if d < start or d > today:
             continue
         weight = e.get("weight_lbs")
-        try:
-            weight = float(weight) if weight is not None else None
-        except Exception:
-            weight = None
         if weight is None:
             continue
         entries.append({"date": d, "weight_lbs": weight})
@@ -12886,9 +14000,10 @@ def _trend_change(trend: list):
 
 
 def _sleep_metrics_from_events(events: list):
-    if not events:
+    main_sleep_events = [event for event in events or [] if event.get("is_nap") is not True]
+    if not main_sleep_events:
         return None, None
-    events_sorted = sorted(events, key=lambda e: e.get("event_time") or datetime.min)
+    events_sorted = sorted(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     most_recent = events_sorted[-1]
 
     stages = most_recent.get("stages_min") or {}
@@ -13145,6 +14260,10 @@ def _open_wearables_replacement_source_dates(now=None):
     except Exception:
         return {}
     now_dt = now or datetime.now()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.astimezone()
+    local_now_date = now_dt.date()
+    now_dt = now_dt.astimezone(timezone.utc)
     for source in stored_sources:
         if source.get("provider_id") != "open_wearables":
             continue
@@ -13153,6 +14272,9 @@ def _open_wearables_replacement_source_dates(now=None):
         sync_dt = _parse_iso_date_or_datetime(source.get("last_sync_attempt"))
         if not sync_dt:
             return {}
+        if sync_dt.tzinfo is None:
+            sync_dt = sync_dt.astimezone()
+        sync_dt = sync_dt.astimezone(timezone.utc)
         age_days = (now_dt - sync_dt).total_seconds() / 86400.0
         if age_days < 0 or age_days > 2:
             return {}
@@ -13169,7 +14291,7 @@ def _open_wearables_replacement_source_dates(now=None):
             data_dt = _parse_iso_date_or_datetime(str(date_value or ""))
             if not data_dt:
                 continue
-            data_age_days = (now_dt.date() - data_dt.date()).days
+            data_age_days = (local_now_date - data_dt.date()).days
             if 0 <= data_age_days <= 2:
                 replacement_source_dates[source_key] = data_dt.date().isoformat()
         return replacement_source_dates
@@ -13283,7 +14405,8 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
     )
 
 
-def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source):
+def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source, source_inputs=None):
+    open_wearables_modifier = open_wearables_modifier or {}
     open_wearables_source = build_open_wearables_recommendation_source(
         freshness.get("open_wearables"),
         facts=open_wearables_facts,
@@ -13299,6 +14422,17 @@ def _recommendation_sources_payload(freshness, whoop_context, open_wearables_fac
         "source_conflict": whoop_context["source_conflict"],
         "load_source": load_source,
     }
+    if source_inputs is not None:
+        payload["source_proof"] = build_recommendation_source_proof(
+            freshness=freshness,
+            open_wearables_source=open_wearables_source,
+            whoop_signals=whoop_signals,
+            source_inputs={
+                "open_wearables_facts": open_wearables_facts,
+                "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
+                **(source_inputs or {}),
+            },
+        )
     apple_status = (freshness.get("apple_health") or {}).get("status")
     if (
         load_source == "apple_health"
@@ -13316,6 +14450,19 @@ def open_wearables_status_api():
         providers=providers,
         error_code=provider_error if provider_error != "missing_config" else None,
     ))
+
+
+@app.route('/api/open-wearables/workouts')
+def open_wearables_workouts_api():
+    try:
+        workouts = _load_open_wearables_workouts()
+    except ConnectionError:
+        return api_error(
+            "Open Wearables workouts are temporarily unavailable.",
+            503,
+            "open_wearables_workouts_unavailable",
+        )
+    return jsonify({"workouts": workouts, "total": len(workouts)})
 
 
 @app.route('/api/open-wearables/setup', methods=['GET', 'POST'])
@@ -13693,6 +14840,67 @@ def wearable_facts_api():
     })
 
 
+def _cross_source_workout_fingerprints(workout):
+    start = _workout_start_dt(workout)
+    if start is None:
+        return set()
+    if workout.get("source") == "open_wearables":
+        labels = (
+            workout.get("session_type") or workout.get("type"),
+            workout.get("activity_type") or workout.get("canonical_category"),
+        )
+    else:
+        labels = (_workout_activity_for_dedupe(workout),)
+    second = int(start.timestamp())
+    def canonical_activity(label):
+        training_category = canonical_training_category(label)
+        if training_category == "strength_training":
+            return training_category
+        return _canonical_cardio_fatigue_type(label)
+    return {
+        (second, activity)
+        for activity in (canonical_activity(label) for label in labels)
+        if activity
+    }
+
+
+def _merge_open_wearables_history_rows(base_rows, open_wearables_rows):
+    base = [dict(row) for row in (base_rows or [])]
+    open_wearables = [dict(row) for row in (open_wearables_rows or [])]
+    base_by_fingerprint = {}
+    open_wearables_by_fingerprint = {}
+    for index, row in enumerate(base):
+        for fingerprint in _cross_source_workout_fingerprints(row):
+            base_by_fingerprint.setdefault(fingerprint, set()).add(index)
+    for index, row in enumerate(open_wearables):
+        for fingerprint in _cross_source_workout_fingerprints(row):
+            open_wearables_by_fingerprint.setdefault(fingerprint, set()).add(index)
+
+    matched_open_wearables = set()
+    for base_index, base_row in enumerate(base):
+        open_wearables_candidates = set()
+        for fingerprint in _cross_source_workout_fingerprints(base_row):
+            open_wearables_candidates.update(open_wearables_by_fingerprint.get(fingerprint, set()))
+        if len(open_wearables_candidates) != 1:
+            continue
+        open_wearables_index = next(iter(open_wearables_candidates))
+        base_candidates = set()
+        for fingerprint in _cross_source_workout_fingerprints(open_wearables[open_wearables_index]):
+            base_candidates.update(base_by_fingerprint.get(fingerprint, set()))
+        if base_candidates != {base_index}:
+            continue
+        open_wearables_row = open_wearables[open_wearables_index]
+        for field in ("calories_burned", "avg_heart_rate", "max_heart_rate"):
+            if base_row.get(field) is None and open_wearables_row.get(field) is not None:
+                base_row[field] = open_wearables_row[field]
+        matched_open_wearables.add(open_wearables_index)
+
+    return base + [
+        row for index, row in enumerate(open_wearables)
+        if index not in matched_open_wearables
+    ]
+
+
 def _ai_history_context(limit=80):
     rows = []
     for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True)[:limit]:
@@ -13708,15 +14916,30 @@ def _ai_history_context(limit=80):
         apple_rows = _load_apple_health_recommendation_workouts(days=365)
     except Exception:
         apple_rows = []
-    for row in apple_rows[:limit]:
-        rows.append(normalize_history_item({
+    try:
+        open_wearables_rows = _load_open_wearables_workouts()
+    except Exception:
+        open_wearables_rows = []
+    wearable_rows = _merge_open_wearables_history_rows(apple_rows, open_wearables_rows)
+    for row in wearable_rows:
+        source = "open_wearables" if row.get("source") == "open_wearables" else "apple_health"
+        activity_type = row.get("activity_type")
+        if source == "apple_health":
+            activity_type = (row.get("apple_health") or {}).get("activity_type") or row.get("session_type")
+        item = {
             "id": row.get("id"),
             "date": row.get("date"),
             "session_type": row.get("session_type"),
-            "activity_type": (row.get("apple_health") or {}).get("activity_type") or row.get("session_type"),
+            "activity_type": activity_type,
             "duration_minutes": row.get("duration_minutes"),
-            "source": "apple_health",
-        }, source="apple_health"))
+            "calories_burned": row.get("calories_burned"),
+            "avg_heart_rate": row.get("avg_heart_rate"),
+            "max_heart_rate": row.get("max_heart_rate"),
+            "source": source,
+        }
+        if source == "open_wearables":
+            item["provider"] = "Open Wearables"
+        rows.append(normalize_history_item(item, source=source))
     rows.sort(key=lambda x: x.get("date") or "", reverse=True)
     return rows[:limit]
 
@@ -14739,6 +15962,7 @@ def oura_status():
             activity_score=metrics.get("activity_score") if activity_day == today else None,
             resting_hr=metrics.get("resting_hr"),
             temperature_deviation=metrics.get("temperature_deviation"),
+            sleep_type=metrics.get("sleep_type"),
             sleep_duration_min=metrics.get("sleep_duration_min"),
             sleep_deep_min=metrics.get("sleep_deep_min"),
             sleep_rem_min=metrics.get("sleep_rem_min"),
@@ -14823,6 +16047,7 @@ def oura_trends():
         for row in items or []:
             public = dict(row)
             public.pop("raw_json", None)
+            public["nightly_sleep"] = _is_valid_nightly_sleep_row(row)
             cleaned.append(public)
         return cleaned
 
@@ -14846,6 +16071,7 @@ def oura_trends():
                     active_calories=d.get("active_calories"),
                     resting_hr=d.get("resting_hr"),
                     temperature_deviation=d.get("temperature_deviation"),
+                    sleep_type=d.get("sleep_type"),
                     sleep_duration_min=d.get("sleep_duration_min"),
                     sleep_deep_min=d.get("sleep_deep_min"),
                     sleep_rem_min=d.get("sleep_rem_min"),
@@ -14925,15 +16151,101 @@ def sync_oura_sleep():
         return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
+def _sleep_row_inconsistency_reason(row):
+    total_sleep_min = (row or {}).get("total_sleep_min")
+    sleep_score = (row or {}).get("sleep_score")
+    sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
+    is_nap = sleep_type in {"nap", "rest", "late_nap"}
+    if total_sleep_min is not None and total_sleep_min < 60:
+        if sleep_score is not None and sleep_score >= 70:
+            return "duration_score_conflict"
+        if not is_nap:
+            return "implausible_duration"
+    stage_values = [
+        (row or {}).get("deep_sleep_min"),
+        (row or {}).get("rem_sleep_min"),
+        (row or {}).get("light_sleep_min"),
+    ]
+    if total_sleep_min is not None and total_sleep_min >= 60 and all(value is not None for value in stage_values):
+        if abs(total_sleep_min - sum(stage_values)) > 30:
+            return "duration_stage_conflict"
+    return None
+
+
+def _sleep_row_is_non_nightly(row):
+    sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
+    return sleep_type in {"nap", "rest", "late_nap"}
+
+
+def _is_valid_nightly_sleep_row(row):
+    row = dict(row or {})
+    if _sleep_row_is_non_nightly(row):
+        return False
+    if "total_sleep_min" not in row:
+        row["total_sleep_min"] = row.get("sleep_duration_min")
+    if "deep_sleep_min" not in row:
+        row["deep_sleep_min"] = row.get("sleep_deep_min")
+    if "rem_sleep_min" not in row:
+        row["rem_sleep_min"] = row.get("sleep_rem_min")
+    if "light_sleep_min" not in row:
+        row["light_sleep_min"] = row.get("sleep_light_min")
+    return _sleep_row_inconsistency_reason(row) is None
+
+
+def _sleep_summary_data_quality(last_night, week_data=None):
+    excluded_dates = {
+        row.get("day")
+        for row in (week_data or [])
+        if row.get("day") and _sleep_row_inconsistency_reason(row)
+    }
+    reason = _sleep_row_inconsistency_reason(last_night)
+    if reason:
+        if last_night.get("day"):
+            excluded_dates.add(last_night["day"])
+        return {
+            "status": "inconsistent",
+            "reason": reason,
+            "source": "oura",
+            "observed_at": last_night.get("day"),
+            "excluded_dates": sorted(excluded_dates),
+            "message": "Sleep data is inconsistent. Check Oura sync.",
+        }
+    if excluded_dates:
+        excluded_dates = sorted(excluded_dates)
+        return {
+            "status": "partial",
+            "reason": "historical_inconsistency",
+            "source": "oura",
+            "observed_at": excluded_dates[-1],
+            "excluded_dates": excluded_dates,
+            "message": "Some sleep history is inconsistent. Check Oura sync.",
+        }
+    return {"status": "ok"}
+
+
+def _bedtime_variance_from_rows(rows):
+    """Circular bedtime SD (FIT-337) over rows that carry real sleep data."""
+    from oura_sleep_sync import calculate_bedtime_variance
+
+    rows = [
+        row for row in rows or []
+        if not (row.get("total_sleep_min", 0) is None and row.get("sleep_score") is None)
+    ]
+    return calculate_bedtime_variance(OURA_DB_FILE, rows=rows)
+
+
 @app.route('/api/oura/sleep-summary')
 def oura_sleep_summary():
     """Get sleep summary for dashboard (last night + 7-day trends)."""
-    from oura_sleep_sync import get_latest_sleep, get_sleep_range, calculate_bedtime_variance
+    from oura_sleep_sync import get_latest_sleep, get_sleep_range
 
     try:
         # Get last night's sleep
         latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
-        last_night = latest[0] if latest else None
+        last_night = next(
+            (row for row in (latest or []) if not _sleep_row_is_non_nightly(row)),
+            None,
+        )
 
         # Get 7-day data
         end = datetime.now().date()
@@ -14945,6 +16257,13 @@ def oura_sleep_summary():
             long_sleep_only=True
         )
 
+        # Days where the sleep table holds a valid full night. A disagreeing
+        # oura_daily cache row is still flagged below but must not hide them.
+        valid_sleep_days = {
+            row.get("day") for row in (week_data or [])
+            if row.get("total_sleep_min") is not None and _is_valid_nightly_sleep_row(row)
+        }
+
         # Prefer oura_daily (today's cached daily sleep fields) when it's newer or fuller
         # than the oura_sleep row. The oura_sleep table can go stale; oura_daily is
         # refreshed by /api/oura/status on every dashboard load.
@@ -14954,15 +16273,16 @@ def oura_sleep_summary():
             if not d:
                 return None
             dur = d.get("sleep_duration_min")
-            if not dur and not d.get("sleep_score"):
+            if dur is None and d.get("sleep_score") is None:
                 return None
             return {
                 "day": d.get("day"),
-                "total_sleep_min": dur or 0,
-                "deep_sleep_min": d.get("sleep_deep_min") or 0,
-                "rem_sleep_min": d.get("sleep_rem_min") or 0,
-                "light_sleep_min": d.get("sleep_light_min") or 0,
-                "awake_time_min": d.get("sleep_awake_min") or 0,
+                "sleep_type": d.get("sleep_type"),
+                "total_sleep_min": dur,
+                "deep_sleep_min": d.get("sleep_deep_min"),
+                "rem_sleep_min": d.get("sleep_rem_min"),
+                "light_sleep_min": d.get("sleep_light_min"),
+                "awake_time_min": d.get("sleep_awake_min"),
                 "sleep_score": d.get("sleep_score"),
                 "avg_heart_rate": None,
                 "efficiency": None,
@@ -14970,13 +16290,24 @@ def oura_sleep_summary():
 
         daily_row = _daily_to_row(daily_today)
         ln_day = (last_night or {}).get("day")
-        if daily_row and (not last_night or (ln_day or "") < daily_row["day"]
-                         or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))):
+        daily_row_is_non_nightly = _sleep_row_is_non_nightly(daily_row)
+        daily_row_loses_to_valid_night = (
+            daily_row
+            and last_night
+            and ln_day == daily_row["day"]
+            and _is_valid_nightly_sleep_row(last_night)
+            and not _is_valid_nightly_sleep_row(daily_row)
+        )
+        if daily_row and not daily_row_is_non_nightly and not daily_row_loses_to_valid_night and (
+            not last_night or (ln_day or "") < daily_row["day"]
+            or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))
+        ):
             last_night = daily_row
 
         # Augment week_data from oura_daily range where a day is missing.
         # oura_sleep can lag behind oura_daily, so we fall back to the daily
         # cache to keep the 7-day averages meaningful.
+        daily_quality_rows = []
         try:
             if week_data is None:
                 week_data = []
@@ -14984,34 +16315,52 @@ def oura_sleep_summary():
             existing_days = {r.get("day") for r in week_data}
             for d in daily_range:
                 row = _daily_to_row(d)
+                if row:
+                    daily_quality_rows.append(row)
                 if row and row["day"] not in existing_days:
                     week_data.append(row)
                     existing_days.add(row["day"])
         except Exception:
             pass
 
+        quality_rows = list(week_data) + list(latest or []) + daily_quality_rows
+        if daily_row:
+            quality_rows.append(daily_row)
+        quality_current = (
+            daily_row
+            if not daily_row_is_non_nightly and _sleep_row_inconsistency_reason(daily_row)
+            else last_night
+        )
+        data_quality = _sleep_summary_data_quality(quality_current, quality_rows)
+        excluded_dates = set(data_quality.get("excluded_dates") or [])
+        week_data = [
+            row for row in week_data
+            if (row.get("day") not in excluded_dates or row.get("day") in valid_sleep_days)
+            and _is_valid_nightly_sleep_row(row)
+        ]
+
         # Calculate 7-day averages
-        avg_duration = 0
-        avg_score = 0
-        avg_deep = 0
-        avg_rem = 0
+        avg_duration = None
+        avg_score = None
+        avg_deep = None
+        avg_rem = None
         avg_hr = 0
 
         if week_data:
-            durations = [r.get("total_sleep_min") or 0 for r in week_data]
+            durations = [r.get("total_sleep_min") for r in week_data if r.get("total_sleep_min") is not None]
             scores = [r.get("sleep_score") or 0 for r in week_data if r.get("sleep_score")]
-            deeps = [r.get("deep_sleep_min") or 0 for r in week_data]
-            rems = [r.get("rem_sleep_min") or 0 for r in week_data]
+            deeps = [r.get("deep_sleep_min") for r in week_data if r.get("deep_sleep_min") is not None]
+            rems = [r.get("rem_sleep_min") for r in week_data if r.get("rem_sleep_min") is not None]
             hrs = [r.get("avg_heart_rate") or 0 for r in week_data if r.get("avg_heart_rate")]
 
-            avg_duration = int(sum(durations) / len(durations)) if durations else 0
-            avg_score = int(sum(scores) / len(scores)) if scores else 0
-            avg_deep = int(sum(deeps) / len(deeps)) if deeps else 0
-            avg_rem = int(sum(rems) / len(rems)) if rems else 0
+            avg_duration = int(sum(durations) / len(durations)) if durations else None
+            avg_score = int(sum(scores) / len(scores)) if scores else None
+            avg_deep = int(sum(deeps) / len(deeps)) if deeps else None
+            avg_rem = int(sum(rems) / len(rems)) if rems else None
             avg_hr = round(sum(hrs) / len(hrs), 1) if hrs else 0
 
         # Bedtime consistency
-        bedtime_variance = calculate_bedtime_variance(OURA_DB_FILE, days=7)
+        bedtime_variance = _bedtime_variance_from_rows(week_data)
 
         # Consistency status
         if bedtime_variance is None:
@@ -15028,12 +16377,12 @@ def oura_sleep_summary():
         return jsonify({
             "last_night": {
                 "date": last_night.get("day") if last_night else None,
-                "total_sleep_min": last_night.get("total_sleep_min") if last_night else 0,
-                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else 0,
-                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else 0,
-                "light_sleep_min": last_night.get("light_sleep_min") if last_night else 0,
-                "awake_time_min": last_night.get("awake_time_min") if last_night else 0,
-                "sleep_score": last_night.get("sleep_score") if last_night else 0,
+                "total_sleep_min": last_night.get("total_sleep_min") if last_night else None,
+                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else None,
+                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else None,
+                "light_sleep_min": last_night.get("light_sleep_min") if last_night else None,
+                "awake_time_min": last_night.get("awake_time_min") if last_night else None,
+                "sleep_score": last_night.get("sleep_score") if last_night else None,
                 "avg_heart_rate": last_night.get("avg_heart_rate") if last_night else 0,
                 "efficiency": last_night.get("efficiency") if last_night else 0,
             },
@@ -15045,14 +16394,17 @@ def oura_sleep_summary():
                 "avg_heart_rate": avg_hr,
             },
             "consistency": {
+                "bedtime_circular_std_dev_min": bedtime_variance,
+                # Compatibility alias for clients predating FIT-337.
                 "bedtime_variance_min": bedtime_variance,
                 "status": consistency_status,
             },
+            "data_quality": data_quality,
             "trend_data": [
                 {
                     "date": r.get("day"),
-                    "duration_min": r.get("total_sleep_min") or 0,
-                    "score": r.get("sleep_score") or 0,
+                    "duration_min": r.get("total_sleep_min"),
+                    "score": r.get("sleep_score"),
                 }
                 for r in week_data
             ]
@@ -15681,6 +17033,33 @@ def _training_recommendation_from_factors(
     return recommendation, effective_readiness
 
 
+def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
+    """Whether an Oura-owned rule changed the category at its application step."""
+    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
+    recommendation = "moderate"
+    if effective_readiness is not None:
+        if effective_readiness < 70:
+            recommendation = "recovery"
+        elif effective_readiness > 85:
+            recommendation = "intensity"
+
+    raw_recommendation = "moderate"
+    if readiness is not None:
+        if readiness < 70:
+            raw_recommendation = "recovery"
+        elif readiness > 85:
+            raw_recommendation = "intensity"
+    applied = recommendation != "moderate" and raw_recommendation == recommendation
+    if hrv_trend == "declining":
+        next_recommendation = _downgrade_training_recommendation_once(recommendation)
+        applied = applied or next_recommendation != recommendation
+        recommendation = next_recommendation
+    if ((sleep_debt or {}).get("debt_minutes") or 0) > 300:
+        next_recommendation = _downgrade_training_recommendation_once(recommendation)
+        applied = applied or next_recommendation != recommendation
+    return applied
+
+
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
     """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
@@ -15700,7 +17079,16 @@ def smart_recommendation_api():
         pass
 
     # HRV trend (best-effort)
+    hrv_sample_count = 0
     hrv_trend = get_recent_hrv_trend()
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
+        hrv_sample_count = len(hrv_values)
+    except Exception:
+        pass
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -15727,8 +17115,20 @@ def smart_recommendation_api():
     acwr_data = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
+    # FIT-271 is provenance-only: preserve the established deterministic
+    # consumption of cached Oura factors and report their direct freshness.
+    oura_usable = any((
+        readiness is not None,
+        (
+            hrv_sample_count >= 4 or hrv_trend == "declining"
+        ) and hrv_trend and hrv_trend != "unknown",
+        (sleep_debt.get("sample_count") or 0) > 0,
+    ))
+    recommendation_readiness = readiness
+    recommendation_hrv_trend = hrv_trend
+    recommendation_sleep_debt = sleep_debt
 
-    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
+    effective_readiness = _effective_readiness_from(recommendation_readiness, recovery_bonus)
 
     upper = {"chest", "back", "shoulders", "biceps", "triceps"}
     lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
@@ -15749,15 +17149,15 @@ def smart_recommendation_api():
 
     # Reasoning: mention max soreness
     reason_bits = []
-    if readiness is not None:
-        if effective_readiness is not None and round(float(effective_readiness), 1) != round(float(readiness), 1):
-            reason_bits.append(f"Readiness {readiness} (+{recovery_bonus.get('bonus_points', 0)} recovery bonus → {round(effective_readiness, 1)})")
+    if recommendation_readiness is not None:
+        if effective_readiness is not None and round(float(effective_readiness), 1) != round(float(recommendation_readiness), 1):
+            reason_bits.append(f"Readiness {recommendation_readiness} (+{recovery_bonus.get('bonus_points', 0)} recovery bonus → {round(effective_readiness, 1)})")
         else:
-            reason_bits.append(f"Readiness {readiness}")
-    if hrv_trend and hrv_trend != "unknown":
-        reason_bits.append(f"HRV trend {hrv_trend}")
-    if (sleep_debt.get('debt_minutes') or 0) > 0:
-        reason_bits.append(f"Sleep debt {sleep_debt.get('debt_minutes')} min ({sleep_debt.get('status')})")
+            reason_bits.append(f"Readiness {recommendation_readiness}")
+    if recommendation_hrv_trend and recommendation_hrv_trend != "unknown":
+        reason_bits.append(f"HRV trend {recommendation_hrv_trend}")
+    if (recommendation_sleep_debt.get('debt_minutes') or 0) > 0:
+        reason_bits.append(f"Sleep debt {recommendation_sleep_debt.get('debt_minutes')} min ({recommendation_sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
         reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
     hr_intensity = _apple_health_hr_intensity_summary(days=7)
@@ -15807,16 +17207,18 @@ def smart_recommendation_api():
         weather = None
 
     recommendation, effective_readiness = _training_recommendation_from_factors(
-        readiness,
+        recommendation_readiness,
         recovery_bonus=recovery_bonus,
-        hrv_trend=hrv_trend,
-        sleep_debt=sleep_debt,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
         acwr_data=acwr_data,
         last_completed=last_completed,
         last_hours_ago=last_hours_ago,
         weather=weather,
     )
-    whoop_context = _whoop_recommendation_context(readiness)
+    factor_recommendation = recommendation
+    whoop_context = _whoop_recommendation_context(recommendation_readiness)
+    recommendation_before_whoop = recommendation
     whoop_recommendation = apply_wearable_modifiers(
         recommendation,
         None,
@@ -15824,6 +17226,7 @@ def smart_recommendation_api():
         source_conflict=whoop_context["source_conflict"],
     )
     recommendation = whoop_recommendation["recommendation"]
+    whoop_recommendation_changed = recommendation != recommendation_before_whoop
     for explanation in whoop_context["signals"].get("explanations") or []:
         reason_bits.append(explanation)
     if whoop_context["source_conflict"].get("explanation"):
@@ -15881,68 +17284,13 @@ def smart_recommendation_api():
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(_current_data_user_id())
-    # A stored plan whose fingerprint doesn't match today's fingerprint is
-    # only safe to treat as canonical if it was actually written *today*.
-    # A same-day mismatch is process-local cache churn (worker divergence,
-    # a weather-cache refresh, etc.) that a genuine same-day swap should
-    # survive -- but a stored plan left over from a *prior* day (e.g. a
-    # calendar-day rollover, since the fingerprint includes `day`) is
-    # stale and must not be resurrected and re-persisted under today's
-    # fingerprint (FIT-256 finding 1): doing so would serve yesterday's
-    # plan forever, since it would then satisfy every future fingerprint
-    # lookup for today. On a cross-day mismatch we fall back to
-    # `current_plan` (fingerprint-scoped) / regeneration instead.
-    stored_plan_written_today = bool(
-        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today
-    )
-    canonical_plan = (
-        (stored_plan.get("plan") if stored_plan_written_today else None) or current_plan
-    )
-    if not active_open_requested or completed_sets_by_exercise:
-        if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
-            canonical_nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(canonical_plan),
-                food_log_entries=food_log_entries,
-            )
-            adapted_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                canonical_plan,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=canonical_nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                next_workout = _persist_current_workout_plan(adapted_plan, fingerprint)
-                nutrition_context = _nutrition_context_for_date(
-                    today,
-                    hard_training_planned=_workout_looks_hard(next_workout),
-                    food_log_entries=food_log_entries,
-                )
-        else:
-            next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                next_workout,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                next_workout = _persist_current_workout_plan(next_workout, fingerprint)
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
+    canonical_plan = _same_day_preserved_workout_plan(today) or current_plan
+    if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
+        next_workout = dict(canonical_plan)
+        next_workout.pop("_user_customized", None)
+    next_workout_before_whoop = copy.deepcopy(next_workout or {})
     whoop_adjusted = apply_wearable_modifiers(
         recommendation,
         next_workout,
@@ -15950,11 +17298,205 @@ def smart_recommendation_api():
         source_conflict=whoop_context["source_conflict"],
     )
     next_workout = whoop_adjusted["next_workout"]
+    whoop_workout_changed = next_workout != next_workout_before_whoop
+    whoop_modifier_effective = bool(
+        whoop_recommendation_changed
+        or whoop_workout_changed
+        or (
+            whoop_adjusted.get("applied_modifiers")
+            and next_workout.get("_whoop_modifier_signature")
+        )
+    )
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
+    recommendation_without_weather, _ = _training_recommendation_from_factors(
+        recommendation_readiness,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
+        acwr_data=acwr_data,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=None,
+    )
+    acwr_without_apple_health = calculate_acwr(WORKOUTS, include_apple_health=False)
+    recommendation_without_apple_health, _ = _training_recommendation_from_factors(
+        recommendation_readiness,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
+        acwr_data=acwr_without_apple_health,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=weather,
+    )
+    oura_fields = [
+        field
+        for field, value in (
+            ("readiness_score", recommendation_readiness),
+            (
+                "hrv_trend",
+                recommendation_hrv_trend
+                if (
+                    hrv_sample_count >= 4 or recommendation_hrv_trend == "declining"
+                ) and recommendation_hrv_trend != "unknown"
+                else None,
+            ),
+            (
+                "sleep_debt_minutes",
+                recommendation_sleep_debt.get("debt_minutes")
+                if oura_usable and (recommendation_sleep_debt.get("sample_count") or 0) > 0
+                else None,
+            ),
+        )
+        if value is not None
+    ]
+    whoop_fact = whoop_context.get("fact") or {}
+    whoop_fields = [
+        field
+        for field in ("recovery_score", "strain", "sleep_performance_pct", "sleep_need_gap_min")
+        if whoop_fact.get(field) is not None
+    ]
+    apple_health_fields = []
+    try:
+        recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)
+    except Exception:
+        recommendation_workouts = list(WORKOUTS or [])
+    apple_health_workouts_used = [
+        workout
+        for workout in recommendation_workouts
+        if isinstance(workout, dict)
+        and workout.get("source") == "apple_health"
+        and (workout_date := _parse_iso_date_or_datetime(workout.get("date"))) is not None
+        and datetime.now().date() - timedelta(days=27)
+        <= workout_date.date()
+        <= datetime.now().date()
+    ]
+    if apple_health_workouts_used:
+        apple_health_fields.append("recent_workout_load")
+    apple_health_hr_used = any(
+        isinstance(workout.get("apple_health"), dict)
+        and workout["apple_health"].get("hr_intensity_applied")
+        for workout in apple_health_workouts_used
+    )
+    if apple_health_hr_used:
+        apple_health_fields.append("workout_avg_heart_rate")
+    food_totals = nutrition_context.get("totals") or {}
+    canonical_adaptation_event_ids = set(
+        next_workout_before_whoop.get("_fit136_adaptation_event_ids") or []
+    )
+    legacy_adapted_plan = next_workout_before_whoop.get("_fit136_last_adapted_plan")
+    legacy_adaptation_marker = bool(
+        not canonical_adaptation_event_ids
+        and next_workout_before_whoop.get("_fit136_base_recommendation")
+        and legacy_adapted_plan
+    )
+    try:
+        persisted_adaptation_events = list_workout_adaptation_events(
+            _current_data_user_id(),
+            unacknowledged=False,
+            since=f"{today}T00:00:00",
+            limit=50,
+        )
+    except Exception:
+        persisted_adaptation_events = []
+    food_adaptation_events = [
+        event
+        for event in [*workout_adaptation_events, *persisted_adaptation_events]
+        if isinstance(event, dict)
+        and event.get("status") == "applied"
+        and (
+            event.get("id") in canonical_adaptation_event_ids
+            or (
+                legacy_adaptation_marker
+                and (event.get("after_remaining_plan") or {}) == legacy_adapted_plan
+            )
+        )
+    ]
+    food_adaptation_events = list({
+        event.get("id") or id(event): event
+        for event in food_adaptation_events
+    }.values())
+    food_adaptation_applied = bool(food_adaptation_events)
+    food_modifier_effective = any(
+        (event.get("before_remaining_plan") or {})
+        != (event.get("after_remaining_plan") or {})
+        for event in food_adaptation_events
+    )
+    food_fields = []
+    if food_adaptation_applied:
+        food_signal_codes = {
+            signal.get("code")
+            for event in food_adaptation_events
+            for signal in (event.get("nutrition_context") or {}).get("signals") or []
+            if isinstance(signal, dict) and signal.get("code")
+        }
+        food_field_by_signal = {
+            "under_fueled": {"calories"},
+            "low_protein": {"protein_g"},
+            "high_sodium": {"sodium_mg"},
+            "late_meal": {"meal_timing"},
+            "alcohol": {"alcohol_presence"},
+            "heavy_meal": {"calories"},
+            "mostly_carbs": {"calories", "carbs_g", "protein_g", "fat_g"},
+        }
+        food_fields = sorted({
+            field
+            for code in food_signal_codes
+            for field in food_field_by_signal.get(code, set())
+        })
+        food_fields.append("confidence")
+        if any(
+            (event.get("reason_metadata") or {}).get("same_day_fueling_coverage")
+            for event in food_adaptation_events
+        ):
+            food_fields.extend(["entry_count", "meal_timing", "meal_window_count"])
+        food_fields = sorted(set(food_fields))
+    weather_fields = []
+    if weather and weather.get("available"):
+        temperature_field = "feelslike_f" if weather.get("feelslike_f") is not None else "temp_f"
+        if weather.get(temperature_field) is not None:
+            weather_temperature = float(weather.get(temperature_field))
+            weather_fields.append(temperature_field)
+            if (
+                weather.get("humidity_pct") is not None
+                and 90 <= weather_temperature < 95
+            ):
+                weather_fields.append("humidity_pct")
+    source_inputs = {
+        "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
+        "oura_fields": oura_fields,
+        "oura_status": (freshness.get("oura") or {}).get("status"),
+        "oura_used_override": bool(oura_fields),
+        "oura_modifier_applied": _oura_modifier_rule_applied(
+            recommendation_readiness,
+            recovery_bonus,
+            recommendation_hrv_trend,
+            recommendation_sleep_debt,
+        ),
+        "whoop_fields": whoop_fields,
+        "whoop_modifier_applied": whoop_modifier_effective,
+        "apple_health_fields": apple_health_fields,
+        "apple_health_modifier_applied": (
+            apple_health_hr_used
+            or recommendation_without_apple_health != factor_recommendation
+        ),
+        "apple_health_used_override": bool(apple_health_fields),
+        "food_fields": food_fields,
+        "food_modifier_applied": food_modifier_effective,
+        "food_used_override": food_adaptation_applied,
+        "food_ignored_reason": (
+            "no_workout_adaptation"
+            if not food_adaptation_applied and any(value not in (None, 0) for value in food_totals.values())
+            else None
+        ),
+        "weather_fields": weather_fields,
+        "weather_status": "fresh" if weather_fields else "missing",
+        "weather_modifier_applied": recommendation_without_weather != factor_recommendation,
+    }
     confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
@@ -15985,6 +17527,7 @@ def smart_recommendation_api():
                 open_wearables_facts,
                 open_wearables_modifier,
                 whoop_adjusted["load_source"],
+                source_inputs,
             ),
             "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         },
@@ -16066,9 +17609,39 @@ def progressive_overload():
     return jsonify({"exercises": _calculate_progressive_overload(WORKOUTS)})
 
 
+def _normalize_set_rpe(set_row):
+    """Normalize optional per-set RPE without blocking workout completion."""
+    raw_rpe = set_row.get("rpe")
+    rpe = None
+    if not isinstance(raw_rpe, bool):
+        try:
+            candidate = float(raw_rpe)
+        except (TypeError, ValueError, OverflowError):
+            candidate = None
+        if candidate is not None and math.isfinite(candidate) and 1 <= candidate <= 10:
+            rpe = int(candidate) if candidate.is_integer() else candidate
+    set_row["rpe"] = rpe
+    set_row["rpe_observed"] = bool(
+        rpe is not None and set_row.get("rpe_observed") is True
+    )
+
+
+def _history_exercises_with_rpe_provenance(exercises):
+    """Return history-safe copies, treating legacy RPE targets as defaulted."""
+    copied = copy.deepcopy(exercises if isinstance(exercises, list) else [])
+    for exercise in copied:
+        if not isinstance(exercise, dict):
+            continue
+        for set_row in exercise.get("sets") or []:
+            if isinstance(set_row, dict) and "rpe_observed" not in set_row:
+                set_row["rpe_observed"] = False
+    return copied
+
+
 @app.route('/api/history')
 def workout_history():
     """Get past workouts with full details."""
+    _backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x["date"], reverse=True):
         total_sets = sum(len(e.get("sets", [])) for e in w.get("exercises", []))
@@ -16078,10 +17651,12 @@ def workout_history():
             for s in e.get("sets", [])
         )
         history_row = {
+            "id": w.get("id"),
+            "created_at": w.get("created_at"),
             "date": w["date"],
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -16097,6 +17672,9 @@ def workout_history():
 @app.route('/api/history-all')
 def all_history():
     """Get all history including workouts, cardio, and recovery sessions."""
+    _backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
+    _backfill_history_ids(CARDIO_DATA, CARDIO_FILE, "cardio")
+    _backfill_history_ids(RECOVERY_DATA, RECOVERY_FILE, "recovery")
     # Process workouts
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True):
@@ -16112,7 +17690,7 @@ def all_history():
             "date": w.get("date", ""),
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -16139,7 +17717,7 @@ def all_history():
 
 @app.route('/api/delete-history', methods=['POST'])
 def delete_history():
-    """Delete a history entry by type and index (index is in *sorted* order)."""
+    """Delete a history entry by its stable ID and type."""
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -16147,39 +17725,29 @@ def delete_history():
     entry_type, err2 = _coerce_str(data.get("type"), "type", required=True, max_len=16)
     if err2:
         return err2
-    index, err2 = _coerce_int(data.get("index"), "index", min_v=0, max_v=10_000)
+    entry_id, err2 = _coerce_str(data.get("id"), "id", required=True, max_len=128)
     if err2:
         return err2
 
     try:
         if entry_type == "workout":
-            sorted_workouts = sorted(enumerate(WORKOUTS), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_workouts)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_workouts[index][0]
-            deleted = WORKOUTS.pop(original_index)
-            save_json(WORKOUTS_FILE, WORKOUTS)
-            return jsonify({"status": "success", "deleted": deleted})
+            rows, filepath = WORKOUTS, WORKOUTS_FILE
+        elif entry_type == "cardio":
+            rows, filepath = CARDIO_DATA, CARDIO_FILE
+        elif entry_type == "recovery":
+            rows, filepath = RECOVERY_DATA, RECOVERY_FILE
+        else:
+            return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
 
-        if entry_type == "cardio":
-            sorted_cardio = sorted(enumerate(CARDIO_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_cardio)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_cardio[index][0]
-            deleted = CARDIO_DATA.pop(original_index)
-            save_json(CARDIO_FILE, CARDIO_DATA)
-            return jsonify({"status": "success", "deleted": deleted})
-
-        if entry_type == "recovery":
-            sorted_recovery = sorted(enumerate(RECOVERY_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_recovery)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_recovery[index][0]
-            deleted = RECOVERY_DATA.pop(original_index)
-            save_json(RECOVERY_FILE, RECOVERY_DATA)
-            return jsonify({"status": "success", "deleted": deleted})
-
-        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+        original_index = next(
+            (index for index, row in enumerate(rows) if row.get("id") == entry_id),
+            None,
+        )
+        if original_index is None:
+            return api_error("History entry not found", 404, code="not_found")
+        deleted = rows.pop(original_index)
+        save_json(filepath, rows)
+        return jsonify({"status": "success", "deleted": deleted})
     except Exception as e:
         return api_error("Failed to delete history entry", 500, code="server_error", details=str(e))
 
@@ -16204,21 +17772,25 @@ def restore_history():
         return api_error("entry must be an object", 400, code="invalid_field")
     if not isinstance(entry.get("date"), str) or not entry["date"]:
         return api_error("entry.date is required", 400, code="invalid_field")
+    entry_id, err2 = _coerce_str(entry.get("id"), "entry.id", required=True, max_len=128)
+    if err2:
+        return err2
 
     try:
         if entry_type == "workout":
-            WORKOUTS.append(entry)
-            save_json(WORKOUTS_FILE, WORKOUTS)
-            return jsonify({"status": "success", "restored": entry})
-        if entry_type == "cardio":
-            CARDIO_DATA.append(entry)
-            save_json(CARDIO_FILE, CARDIO_DATA)
-            return jsonify({"status": "success", "restored": entry})
-        if entry_type == "recovery":
-            RECOVERY_DATA.append(entry)
-            save_json(RECOVERY_FILE, RECOVERY_DATA)
-            return jsonify({"status": "success", "restored": entry})
-        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+            rows, filepath = WORKOUTS, WORKOUTS_FILE
+        elif entry_type == "cardio":
+            rows, filepath = CARDIO_DATA, CARDIO_FILE
+        elif entry_type == "recovery":
+            rows, filepath = RECOVERY_DATA, RECOVERY_FILE
+        else:
+            return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+
+        if any(row.get("id") == entry_id for row in rows):
+            return api_error("History entry already exists", 409, code="conflict")
+        rows.append(entry)
+        save_json(filepath, rows)
+        return jsonify({"status": "success", "restored": entry})
     except Exception as e:
         return api_error("Failed to restore history entry", 500, code="server_error", details=str(e))
 
@@ -16364,6 +17936,7 @@ def complete_workout():
                 set_row["notes"] = set_notes
             else:
                 set_row.pop("notes", None)
+            _normalize_set_rpe(set_row)
             if not set_row.get("set_number"):
                 set_row["set_number"] = set_idx + 1
 
@@ -16614,10 +18187,19 @@ def complete_workout():
         existing_fingerprint = (existing_by_client_id.get("offline_sync") or {}).get("fingerprint")
         existing_fingerprint = existing_fingerprint or _workout_sync_fingerprint(existing_by_client_id)
         accepted_fingerprints = {sync_fingerprint}
+        legacy_rpe_entry = copy.deepcopy(workout_entry)
+        for exercise in legacy_rpe_entry.get("exercises") or []:
+            for set_row in exercise.get("sets") or []:
+                set_row.pop("rpe_observed", None)
+                if set_row.get("rpe") is None:
+                    set_row.pop("rpe", None)
+        accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if not fatigue_provided and existing_by_client_id.get("overall_fatigue") == 5:
-            legacy_entry = dict(workout_entry)
-            legacy_entry["overall_fatigue"] = 5
-            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_entry))
+            legacy_fatigue_entry = copy.deepcopy(workout_entry)
+            legacy_fatigue_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_fatigue_entry))
+            legacy_rpe_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if existing_fingerprint in accepted_fingerprints:
             return _workout_already_synced_response(
                 existing_by_client_id,
@@ -17235,20 +18817,24 @@ def _last_n_sessions_rpe(n=3):
         r=[]
         for ex in (w.get('exercises') or []):
             for s in (ex.get('sets') or []):
-                try:r.append(float(s.get('rpe')))
-                except Exception:pass
+                observed = _observed_set_rpe(s)
+                if observed is not None: r.append(observed)
         if r: vals.append(sum(r)/len(r))
         if len(vals)>=n: break
     return vals
 
 @app.route('/api/body-recomp')
 def body_recomp():
-    hist = sorted(BODY_DATA, key=lambda x: x.get('date') or '')
+    hist = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get('date') or '',
+    )
     if not hist:
         return jsonify({"history": [], "summary": {}})
-    dates=[h.get('date') for h in hist]
-    weights=[h.get('weight_lbs') for h in hist]
-    bf=[h.get('body_fat_pct') for h in hist]
+    dated_hist = [entry for entry in hist if entry.get('date') is not None]
+    dates=[h.get('date') for h in dated_hist]
+    weights=[h.get('weight_lbs') for h in dated_hist]
+    bf=[h.get('body_fat_pct') for h in dated_hist]
     roll=_rolling_avg(weights,7)
     lean=[]; fat=[]
     for w,b in zip(weights,bf):
@@ -17256,12 +18842,13 @@ def body_recomp():
         else:
             fm = w*(b/100.0); lm=w-fm
             lean.append(round(lm,2)); fat.append(round(fm,2))
-    latest=hist[-1]
+    latest=dated_hist[-1] if dated_hist else None
     tw=USER_SETTINGS.get('target_weight_lbs')
-    curr=latest.get('weight_lbs')
+    curr=latest.get('weight_lbs') if latest else None
     eta_weeks=None
-    if tw and curr and len(weights)>=14:
-        first=weights[max(0,len(weights)-14)]
+    recent_weights = weights[-14:]
+    if tw and curr and len(recent_weights) == 14 and all(weight is not None for weight in recent_weights):
+        first=recent_weights[0]
         weekly=(curr-first)/2.0
         if weekly!=0:
             eta_weeks=round((tw-curr)/weekly,1)
@@ -17271,26 +18858,99 @@ def body_recomp():
         "summary": {"latest": latest, "target_weight_lbs": tw, "target_body_fat_pct": USER_SETTINGS.get('target_body_fat_pct'), "eta_weeks": eta_weeks}
     })
 
+def _coerce_body_tape_float(value, field_name, *, min_v, max_v, allow_none=False):
+    normalized, err = _coerce_float(
+        value,
+        field_name,
+        min_v=min_v,
+        max_v=max_v,
+        allow_none=allow_none,
+    )
+    if err:
+        return None, err
+    if normalized is not None and not math.isfinite(normalized):
+        return None, api_error(f"{field_name} must be a finite number", 400, code="invalid_field")
+    return normalized, None
+
+
+def _validate_navy_tape_context(data, *, default_sex=None):
+    """Return normalized Navy tape inputs when the request supplies any."""
+    tape_fields = ("sex", "height_in", "hip_in")
+    if not any(data.get(field) not in (None, "") for field in tape_fields):
+        return None, None
+
+    raw_sex = data.get("sex")
+    if raw_sex is None or (default_sex is not None and isinstance(raw_sex, str) and not raw_sex.strip()):
+        if default_sex is None:
+            return None, api_error("Missing field: sex", 400, code="missing_field")
+        raw_sex = default_sex
+    if not isinstance(raw_sex, str):
+        return None, api_error("sex must be male or female", 400, code="invalid_field")
+    sex = raw_sex.strip().lower()
+    if sex not in {"male", "female"}:
+        return None, api_error("sex must be male or female", 400, code="invalid_field")
+
+    height_in, err = _coerce_body_tape_float(data.get("height_in"), "height_in", min_v=48, max_v=96)
+    if err:
+        return None, err
+    neck_in, err = _coerce_body_tape_float(data.get("neck_in"), "neck_in", min_v=8, max_v=30)
+    if err:
+        return None, err
+    waist_in, err = _coerce_body_tape_float(data.get("waist_in"), "waist_in", min_v=18, max_v=80)
+    if err:
+        return None, err
+
+    if sex == "male":
+        if data.get("hip_in") not in (None, ""):
+            return None, api_error("hip_in is only supported for female measurements", 400, code="invalid_field")
+        if waist_in <= neck_in:
+            return None, api_error("waist_in must be greater than neck_in", 400, code="invalid_field")
+        return {
+            "sex": sex,
+            "height_in": height_in,
+            "neck_in": neck_in,
+            "waist_in": waist_in,
+            "hip_in": None,
+        }, None
+
+    hip_in, err = _coerce_body_tape_float(data.get("hip_in"), "hip_in", min_v=BODY_TAPE_RANGES["hips_in"][0], max_v=BODY_TAPE_RANGES["hips_in"][1])
+    if err:
+        return None, err
+    if waist_in + hip_in <= neck_in:
+        return None, api_error("waist_in plus hip_in must be greater than neck_in", 400, code="invalid_field")
+    return {
+        "sex": sex,
+        "height_in": height_in,
+        "neck_in": neck_in,
+        "waist_in": waist_in,
+        "hip_in": hip_in,
+    }, None
+
+
 @app.route('/api/body/navy-calc', methods=['POST'])
 def navy_calc():
-    data,err=get_json_body(required=True)
-    if err: return err
-    sex=(data.get('sex') or 'male').lower()
-    h,err2=_coerce_float(data.get('height_in'), 'height_in', min_v=48, max_v=96)
-    if err2:return err2
-    neck,err2=_coerce_float(data.get('neck_in'), 'neck_in', min_v=8, max_v=30)
-    if err2:return err2
-    waist,err2=_coerce_float(data.get('waist_in'), 'waist_in', min_v=18, max_v=80)
-    if err2:return err2
-    import math
-    if sex=='female':
-        hip,err2=_coerce_float(data.get('hip_in'), 'hip_in', min_v=20, max_v=80)
-        if err2:return err2
-        bf=163.205*math.log10(waist+hip-neck)-97.684*math.log10(h)-78.387
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    tape_context, err = _validate_navy_tape_context(data, default_sex="male")
+    if err:
+        return err
+    if not tape_context:
+        return api_error("Missing Navy tape measurements", 400, code="missing_field")
+
+    if tape_context["sex"] == "female":
+        bf = (
+            163.205 * math.log10(tape_context["waist_in"] + tape_context["hip_in"] - tape_context["neck_in"])
+            - 97.684 * math.log10(tape_context["height_in"])
+            - 78.387
+        )
     else:
-        bf=86.010*math.log10(max(waist-neck,0.1))-70.041*math.log10(h)+36.76
-    bf=max(3.0,min(60.0,round(bf,2)))
-    return jsonify({"body_fat_pct": bf})
+        bf = (
+            86.010 * math.log10(tape_context["waist_in"] - tape_context["neck_in"])
+            - 70.041 * math.log10(tape_context["height_in"])
+            + 36.76
+        )
+    return jsonify({"body_fat_pct": max(3.0, min(60.0, round(bf, 2)))})
 
 @app.route('/api/sleep/import', methods=['POST'])
 def sleep_import():
