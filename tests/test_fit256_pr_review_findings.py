@@ -34,7 +34,7 @@ def test_smart_recommendation_does_not_resurrect_stale_plan_across_day_rollover(
     Before the fix, smart_recommendation_api() read the stored plan via
     `get_current_workout_plan(user_id)` with NO fingerprint filter, so once
     the fingerprint rolled over (new day / settings / sync -- the
-    fingerprint embeds `day: today_s`) a due-adaptation event would adapt
+    fingerprint embeds `day: today_s`) the endpoint would serve
     *yesterday's* plan and persist it re-stamped with *today's* fingerprint.
     That poisons every subsequent fingerprint-scoped read (including
     /api/next-workout) with the stale plan, seemingly forever, because it
@@ -113,24 +113,13 @@ def test_smart_recommendation_does_not_resurrect_stale_plan_across_day_rollover(
     fresh_day2_plan["exercises"][0]["exercise"] = "Day2 Fresh Press"
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: fresh_day2_plan)
 
-    def apply_due_adaptation(plan, **_kwargs):
-        patched = copy.deepcopy(plan)
-        patched["exercises"][1]["exercise"] = "Day2 Adapted Pulldown"
-        return patched, [{"status": "applied", "reason": "test day-2 due adaptation"}]
-
-    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_due_adaptation)
-
-    evaluated = client.post("/api/workout-adaptation-events/evaluate")
     smart = client.get("/api/recommendation/smart")
 
-    assert evaluated.status_code == 200
-    assert evaluated.get_json()["evaluated_count"] == 1
     assert smart.status_code == 200
     smart_payload = smart.get_json()
     # The resurrected/stale "Incline Press" plan must NOT be served.
     assert smart_payload["next_workout"]["exercises"][0]["exercise"] != "Incline Press"
     assert smart_payload["next_workout"]["id"] == "day2-fresh-plan"
-    assert smart_payload["workout_adaptation_events"] == []
 
     # A subsequent /api/next-workout call must serve the freshly regenerated
     # plan (matching today's fingerprint), not the resurrected stale one.

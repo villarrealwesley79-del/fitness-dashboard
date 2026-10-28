@@ -65,7 +65,6 @@ def fitness_app(monkeypatch, tmp_path):
         "mesocycle": {"rpe_base": 7},
     })
     monkeypatch.setattr(module, "_compute_data_freshness", lambda *_a, **_kw: {})
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_a, **_kw: {"warnings": []})
 
     # OuraClient.get_today_metrics would otherwise raise; the route catches it,
     # but stubbing avoids the noisy traceback path.

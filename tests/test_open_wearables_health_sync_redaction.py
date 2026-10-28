@@ -535,7 +535,6 @@ def test_push_alert_preview_suppresses_direct_alerts_owned_by_open_wearables(mon
         "oura": {"status": "stale", "last_data_point": "2026-06-24"},
         "apple_health": {"status": "stale", "last_data_point": "2026-06-24"},
         "whoop": {"status": "missing", "connected": False},
-        "food": {"pending_review": False},
     })
 
     payload = module._push_alert_preview()
@@ -2037,8 +2036,6 @@ def test_open_wearables_freshness_uses_provider_aware_status(monkeypatch):
     monkeypatch.setattr(module, "_latest_oura_freshness", lambda _now: ("missing", None, None))
     monkeypatch.setattr(module, "latest_whoop_freshness", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(module, "_latest_apple_health_freshness", lambda _now: ("missing", None, None))
-    monkeypatch.setattr(module, "_latest_food_freshness", lambda _now: ("missing", None, None))
-    monkeypatch.setattr(module, "_food_target_state", lambda _now: {})
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
     monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
     monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")

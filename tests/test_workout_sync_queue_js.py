@@ -50,14 +50,13 @@ const rows = [];
 const host = { innerHTML: '', appendChild(row) { rows.push(row); }, querySelectorAll: () => [] };
 sandbox.elements['sync-queue-list'] = host;
 sandbox.document.createElement = () => ({ className: '', innerHTML: '' });
-sandbox.__fitSet.listMealQueueEntries(async () => []);
 await e.renderSyncQueueModal();
 process.stdout.write(JSON.stringify({
   flushed,
   rendered: rows.map((row) => ({ className: row.className, retry: row.innerHTML.includes('data-sync-retry=') })),
 }));
 """,
-        mocks=["syncSingleEntry", "renderSyncQueueModal", "listMealQueueEntries"],
+        mocks=["syncSingleEntry", "renderSyncQueueModal"],
     )
     assert output["flushed"] == ["pending-1", "auth-1"]
     rendered = {row["className"]: row["retry"] for row in output["rendered"]}
@@ -172,3 +171,29 @@ process.stdout.write(JSON.stringify({
             "This workout still works, but it cannot be recovered after closing or reloading this page."
         ),
     }
+
+
+def test_auth_scope_refresh_keeps_failures_retryable_and_scopes_the_draft():
+    output = run_app_js(
+        ["refreshAuthScope", "currentActiveWorkoutDraftScope"],
+        """
+const responses = [
+  new Response('{}', { status: 503 }),
+  new Response(JSON.stringify({ auth_scope: '' }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  new Response('{}', { status: 401 }),
+  new Response(JSON.stringify({ auth_scope: 'user:owner' }), { status: 200, headers: { 'content-type': 'application/json' } }),
+];
+sandbox.fetch = async () => responses.shift();
+const results = [];
+for (let i = 0; i < 4; i += 1) results.push(await e.refreshAuthScope());
+process.stdout.write(JSON.stringify({ results, scope: e.currentActiveWorkoutDraftScope() }));
+""",
+    )
+
+    assert output["results"] == [
+        {"ok": False, "status": "pending"},
+        {"ok": False, "status": "pending"},
+        {"ok": False, "status": "auth_required"},
+        {"ok": True, "scope": "user:owner"},
+    ]
+    assert output["scope"] == "user:owner"

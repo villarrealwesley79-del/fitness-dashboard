@@ -149,8 +149,6 @@ def test_dashboard_labels_thirty_day_body_trend(
     monkeypatch.setattr(module, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
     monkeypatch.setattr(module, "_cached_wttr", lambda *_args, **_kwargs: {"available": False})
     monkeypatch.setattr(module, "_compute_data_freshness", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = client.get("/api/dashboard")
 

@@ -69,14 +69,6 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
         lambda *_args, **_kwargs: {"bonus_points": 0},
     )
     monkeypatch.setattr(fitness_app, "_cached_wttr", lambda *_args, **_kwargs: {"available": False})
-    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        fitness_app,
-        "_apply_due_workout_adaptations_for_plan",
-        lambda workout, **_kwargs: (workout, []),
-    )
     monkeypatch.setattr(fitness_app, "_workout_with_auth_scope", lambda workout: workout)
     monkeypatch.setattr(
         fitness_app,
@@ -142,14 +134,6 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
         },
     )
     monkeypatch.setattr(fitness_app, "_workout_with_auth_scope", lambda workout: workout)
-    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        fitness_app,
-        "_apply_due_workout_adaptations_for_plan",
-        lambda workout, **_kwargs: (workout, []),
-    )
     fitness_app.LAST_WORKOUT_RECOMMENDATION = None
     fitness_app.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
     whoop_store.save_connection_tokens(
@@ -225,14 +209,6 @@ def test_disconnected_whoop_facts_do_not_modify_next_workout(fitness_app, monkey
         },
     )
     monkeypatch.setattr(fitness_app, "_workout_with_auth_scope", lambda workout: workout)
-    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        fitness_app,
-        "_apply_due_workout_adaptations_for_plan",
-        lambda workout, **_kwargs: (workout, []),
-    )
     fitness_app.LAST_WORKOUT_RECOMMENDATION = None
     fitness_app.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
     whoop_store.upsert_whoop_records(

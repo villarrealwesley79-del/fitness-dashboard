@@ -25,7 +25,6 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     monkeypatch.setattr(module, "get_current_workout_plan", lambda _user_id: None)
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fit286-fingerprint")
     monkeypatch.setattr(module, "_workout_with_auth_scope", lambda workout: workout)
-    monkeypatch.setattr(module.workout_adaptation, "project_event", lambda event: event)
     persisted_plans = []
 
     def persist_plan(plan, _fingerprint):
@@ -110,10 +109,9 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     assert response.status_code == 200
     payload = response.get_json()
     exercise = payload["next_workout"]["exercises"][0]
-    assert persisted_plans == []  # GET is read-only; plans are published by POST evaluate
+    assert persisted_plans == []  # GET is read-only
     assert exercise["target_sets"] == 4  # WHOOP's 0.8 clamp on the base 5 sets
     assert exercise["rationale"].count("WHOOP modifier applied") == 1
-    assert payload["workout_adaptation_events"] == []
 
     open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
     assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [
