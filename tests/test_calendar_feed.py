@@ -4,14 +4,101 @@ from __future__ import annotations
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 import calendar_feed as cf
 
-FIXTURES = Path(__file__).parent / "fixtures" / "calendar"
+# Synthetic ICS feeds, inlined because the repo forbids tracked files under tests/fixtures/.
+FIXTURES = {
+    'dst.ics': """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:daily@example.test
+DTSTART;TZID=America/New_York:20260307T090000
+DTEND;TZID=America/New_York:20260307T100000
+RRULE:FREQ=DAILY;COUNT=3
+END:VEVENT
+BEGIN:VEVENT
+UID:overnight@example.test
+DTSTART;TZID=America/New_York:20260308T010000
+DTEND;TZID=America/New_York:20260308T040000
+END:VEVENT
+END:VCALENDAR
+""",
+    'mixed.ics': """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:holiday@example.test
+DTSTART;VALUE=DATE:20261006
+DTEND;VALUE=DATE:20261007
+SUMMARY:All day
+END:VEVENT
+BEGIN:VEVENT
+UID:cancelled@example.test
+DTSTART:20261006T150000Z
+DTEND:20261006T160000Z
+STATUS:CANCELLED
+END:VEVENT
+BEGIN:VEVENT
+UID:free@example.test
+DTSTART:20261006T170000Z
+DTEND:20261006T180000Z
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
+UID:real@example.test
+DTSTART:20261006T130000Z
+DURATION:PT1H30M
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER:-PT10M
+DTSTART:20261006T000000Z
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+""",
+    'weekly.ics': """\
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//synthetic//EN
+BEGIN:VTIMEZONE
+TZID:America/New_York
+BEGIN:STANDARD
+DTSTART:19701101T020000
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:sync@example.test
+DTSTART;TZID=America/New_York:20261005T090000
+DTEND;TZID=America/New_York:20261005T100000
+RRULE:FREQ=WEEKLY;BYDAY=MO
+EXDATE;TZID=America/New_York:20261019T090000
+SUMMARY:Weekly sync
+END:VEVENT
+BEGIN:VEVENT
+UID:sync@example.test
+RECURRENCE-ID;TZID=America/New_York:20261012T090000
+DTSTART;TZID=America/New_York:20261012T140000
+DTEND;TZID=America/New_York:20261012T150000
+SEQUENCE:1
+SUMMARY:Weekly sync (moved)
+END:VEVENT
+BEGIN:VEVENT
+UID:sync@example.test
+RECURRENCE-ID;TZID=America/New_York:20261026T090000
+DTSTART;TZID=America/New_York:20261026T090000
+DTEND;TZID=America/New_York:20261026T100000
+STATUS:CANCELLED
+END:VEVENT
+END:VCALENDAR
+""",
+}
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
 OPTIONS = [20, 30, 45, 60, 75, 90]
@@ -23,8 +110,7 @@ def ny(*args):
 
 
 def parse(name_or_text, ws, we):
-    path = FIXTURES / name_or_text
-    text = path.read_text() if path.is_file() else name_or_text
+    text = FIXTURES.get(name_or_text, name_or_text)
     return cf.parse_events(text, ws, we)
 
 
