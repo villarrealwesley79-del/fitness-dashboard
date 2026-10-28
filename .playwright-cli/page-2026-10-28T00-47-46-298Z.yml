@@ -1,0 +1,113 @@
+- generic [ref=f5e2]:
+  - banner [ref=f5e3]:
+    - generic [ref=f5e4]: AI Coach
+    - button "AI coach status" [ref=f5e6] [cursor=pointer]
+  - main [ref=f5e8]:
+    - tabpanel "◉ Dash" [ref=f5e9]:
+      - generic [ref=f5e10]:
+        - generic [ref=f5e11]: Good morning.
+        - generic [ref=f5e12]: Here's your analysis for today.
+      - generic [ref=f5e13]:
+        - generic [ref=f5e14]:
+          - generic [ref=f5e15]: READINESS SCORE
+          - generic [ref=f5e16]: ›
+        - generic [ref=f5e19]:
+          - generic [ref=f5e20]:
+            - generic [ref=f5e21]: HRV
+            - generic [ref=f5e22]: "--"
+          - generic [ref=f5e23]:
+            - generic [ref=f5e24]: RHR
+            - generic [ref=f5e25]: "--"
+          - generic [ref=f5e26]:
+            - generic [ref=f5e27]: Sleep
+            - generic [ref=f5e28]: "--"
+      - generic [ref=f5e29]:
+        - generic [ref=f5e30]:
+          - generic [ref=f5e31]: AI RECOMMENDATION
+          - generic [ref=f5e32]: "--%"
+        - generic [ref=f5e35]: —
+        - generic [ref=f5e36]: —
+        - generic [ref=f5e38]: Analyzing your readiness, sleep, and training load…
+        - generic [ref=f5e39]:
+          - button "Start Workout" [ref=f5e40] [cursor=pointer]
+          - button "Adjust Plan" [ref=f5e41] [cursor=pointer]
+        - generic [ref=f5e42]:
+          - generic "WHOOP freshness" [ref=f5e43]: WHOOP —
+          - generic "Oura freshness" [ref=f5e44]: Oura —
+          - generic "Apple Health freshness" [ref=f5e45]: Apple —
+          - generic "Food log freshness" [ref=f5e46]: Food —
+        - generic [ref=f5e47]:
+          - generic [ref=f5e48]:
+            - generic [ref=f5e49]: Recommendation sources
+            - generic [ref=f5e50]: Waiting for wearable source detail…
+            - generic [ref=f5e51]: Source attribution stays visible when recovery data ages or conflicts.
+          - generic [ref=f5e52]:
+            - button "Ask AI" [ref=f5e53] [cursor=pointer]
+            - button "View details" [ref=f5e54] [cursor=pointer]
+      - generic [ref=f5e55]:
+        - generic [ref=f5e56]:
+          - generic [ref=f5e57]: TODAY'S MACROS
+          - generic [ref=f5e58]: —
+          - button "View food log ›" [ref=f5e59] [cursor=pointer]
+        - generic [ref=f5e60]:
+          - generic [ref=f5e61]: No food logged today.
+          - generic [ref=f5e62]: Macros will appear after you log a meal.
+        - generic [ref=f5e63]:
+          - generic [ref=f5e64]: Log a meal
+          - generic [ref=f5e66]:
+            - generic "Attach a photo or take one" [ref=f5e67] [cursor=pointer]:
+              - generic [ref=f5e68]: 📷
+              - generic [ref=f5e69]: Attach a photo of the meal or take a new one
+            - button "Scan a packaged-food barcode" [ref=f5e70] [cursor=pointer]:
+              - generic [ref=f5e71]: Scan
+            - textbox "Describe the meal" [ref=f5e73]:
+              - /placeholder: What did you eat?
+            - button "Log" [disabled] [ref=f5e74]
+      - generic [ref=f5e75]: TODAY AT A GLANCE
+      - generic [ref=f5e76]:
+        - generic [ref=f5e77]:
+          - generic [ref=f5e78]: Steps
+          - generic [ref=f5e79]: "--"
+          - generic [ref=f5e80]: —
+        - generic [ref=f5e81]:
+          - generic [ref=f5e82]: Active Cal
+          - generic [ref=f5e83]: "--"
+          - generic [ref=f5e84]: —
+        - generic [ref=f5e85]:
+          - generic [ref=f5e86]: Sleep
+          - generic [ref=f5e87]: "--"
+          - generic [ref=f5e88]: —
+        - generic [ref=f5e89]:
+          - generic [ref=f5e90]: Weight
+          - generic [ref=f5e91]: "--"
+          - generic [ref=f5e92]: —
+      - generic [ref=f5e93]:
+        - generic [ref=f5e94]: AI INSIGHT
+        - generic [ref=f5e95]: Gathering data…
+      - group [ref=f5e97]:
+        - generic "QUICK TRENDS" [ref=f5e98] [cursor=pointer]: ›
+  - tablist "Primary sections" [ref=f5e101]:
+    - tab "◉ Dash" [selected] [ref=f5e102] [cursor=pointer]:
+      - generic [ref=f5e103]: ◉
+      - generic [ref=f5e104]: Dash
+    - tab "♥ Vitals" [ref=f5e105] [cursor=pointer]:
+      - generic [ref=f5e106]: ♥
+      - generic [ref=f5e107]: Vitals
+    - tab "▲ Next" [ref=f5e108] [cursor=pointer]:
+      - generic [ref=f5e109]: ▲
+      - generic [ref=f5e110]: Next
+    - tab "+ Log" [ref=f5e111] [cursor=pointer]:
+      - generic [ref=f5e112]: +
+      - generic [ref=f5e113]: Log
+    - tab "⟳ History" [ref=f5e114] [cursor=pointer]:
+      - generic [ref=f5e115]: ⟳
+      - generic [ref=f5e116]: History
+    - tab "◈ Body" [ref=f5e117] [cursor=pointer]:
+      - generic [ref=f5e118]: ◈
+      - generic [ref=f5e119]: Body
+    - tab "⎔ Stats" [ref=f5e120] [cursor=pointer]:
+      - generic [ref=f5e121]: ⎔
+      - generic [ref=f5e122]: Stats
+    - tab "⚙ Settings" [ref=f5e123] [cursor=pointer]:
+      - generic [ref=f5e124]: ⚙
+      - generic [ref=f5e125]: Settings

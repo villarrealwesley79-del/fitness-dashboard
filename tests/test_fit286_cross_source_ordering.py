@@ -170,6 +170,7 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
         "load_source_summary_hidden",
         "open_wearables",
         "source_conflict",
+        "source_proof",
         "wearable_sources",
         "whoop",
     ]

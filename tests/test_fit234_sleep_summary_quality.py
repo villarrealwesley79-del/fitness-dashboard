@@ -139,6 +139,7 @@ def test_sleep_debt_returns_unavailable_when_recent_window_has_no_valid_nights(t
         "avg_sleep_min": 0.0,
         "status": "good",
         "message": "No recent sleep-duration data available from Oura cache.",
+        "sample_count": 0,  # FIT-271 (#264) gates sleep-debt provenance on samples
     }
 
 
