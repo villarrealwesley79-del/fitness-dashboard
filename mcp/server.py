@@ -221,15 +221,22 @@ class LogRejectedRedirects:
     def _store_is_full(self) -> bool:
         """Walk the OAuth store at most once a minute. Existing tokens keep working; only new connects stop."""
         if self.store and time.monotonic() - self.store_checked >= 60:
-            self.store_checked = time.monotonic()
             files = size = 0
-            for directory, _, names in os.walk(self.store):
-                for name in names:
-                    files += 1
-                    try:
-                        size += os.stat(os.path.join(directory, name)).st_size
-                    except OSError:
-                        pass
+
+            def fail(error):  # os.walk ignores scandir errors; with no free fd it would walk nothing
+                raise error
+
+            try:
+                for directory, _, names in os.walk(self.store, onerror=fail):
+                    for name in names:
+                        files += 1
+                        try:
+                            size += os.stat(os.path.join(directory, name)).st_size
+                        except OSError:
+                            pass
+            except OSError:  # cannot look: keep the last answer, say nothing, try again on the next request
+                return self.store_full
+            self.store_checked = time.monotonic()
             full = size > self.store_max[0] or files > self.store_max[1]
             if full != self.store_full:  # one line per change, never per request
                 log.warning("OAuth store %s", "is full: /register, /authorize and /consent answer 503" if full
@@ -406,7 +413,7 @@ def main() -> None:
     app, _ = build_app(cfg)
     # access_log off: /auth/callback?code=... would otherwise be written to the log.
     uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False, log_level="error",
-                limit_concurrency=100)  # 503 beyond 100 open connections: held slow requests cannot exhaust the fd table
+                limit_concurrency=100)  # 503 beyond 100 requests in flight: slow bodies cannot exhaust the fd table
 
 
 if __name__ == "__main__":
