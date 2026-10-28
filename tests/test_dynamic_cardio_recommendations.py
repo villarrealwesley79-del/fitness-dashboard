@@ -238,13 +238,10 @@ def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeyp
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = fitness_app.app.test_client().get("/api/dashboard")
 
@@ -268,13 +265,10 @@ def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app,
         lambda *_args, **_kwargs: {
             "oura": {"status": "missing"},
             "apple_health": {"status": "missing"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = fitness_app.app.test_client().get("/api/dashboard")
 
@@ -291,13 +285,10 @@ def test_dashboard_recomp_command_uses_null_for_unavailable_readiness(fitness_ap
         lambda *_args, **_kwargs: {
             "oura": {"status": "missing"},
             "apple_health": {"status": "missing"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = fitness_app.app.test_client().get("/api/dashboard")
 
@@ -315,13 +306,10 @@ def test_dashboard_recomp_command_preserves_real_zero_readiness(fitness_app, mon
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
             "apple_health": {"status": "missing"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = fitness_app.app.test_client().get("/api/dashboard")
 
@@ -344,13 +332,10 @@ def test_dashboard_uses_final_smart_signal_for_visible_cardio(fitness_app, monke
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 360})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     response = fitness_app.app.test_client().get("/api/dashboard")
 
@@ -372,13 +357,10 @@ def test_dashboard_uses_cached_weather_without_blocking_fetch(fitness_app, monke
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         fitness_app,
         "_WEATHER_CACHE",
@@ -417,13 +399,10 @@ def test_dashboard_recomputes_plan_when_readiness_changes(fitness_app, monkeypat
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
-            "food": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
     monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     client = fitness_app.app.test_client()
     first = client.get("/api/dashboard")

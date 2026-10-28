@@ -24,7 +24,7 @@ class _CountingConnection:
             setattr(self._conn, name, value)
 
 
-def test_food_log_calls_close_every_fitness_data_connection(tmp_path, monkeypatch):
+def test_body_record_calls_close_every_fitness_data_connection(tmp_path, monkeypatch):
     import data_store
 
     db_path = tmp_path / "fitness_data.db"
@@ -41,17 +41,11 @@ def test_food_log_calls_close_every_fitness_data_connection(tmp_path, monkeypatc
 
     data_store.init_data_db()
     for index in range(25):
-        data_store.add_food_log(
+        data_store.add_body_record(
             user_id=1,
-            record={
-                "client_id": f"fd-leak-{index}",
-                "date": "2026-05-29",
-                "logged_at": f"2026-05-29T12:{index:02d}:00",
-                "item_name": "test meal",
-                "calories": 500 + index,
-            },
+            record={"date": f"2026-05-{index + 1:02d}", "weight_lbs": 180 + index},
         )
-        rows = data_store.get_food_logs(user_id=1)
+        rows = data_store.get_body_data(user_id=1)
         assert rows
 
     assert len(opened) >= 51

@@ -464,7 +464,7 @@ def test_data_user_id_for_arbitrary_user_remains_unchanged(isolated_auth):
     assert isolated_auth.data_user_id_for(other.id) == other.id
 
 
-def test_designated_qa_reads_and_mutates_owner_food_logs(
+def test_designated_qa_reads_and_mutates_owner_workout_plan(
     isolated_auth, monkeypatch, tmp_path
 ):
     import data_store
@@ -476,16 +476,13 @@ def test_designated_qa_reads_and_mutates_owner_food_logs(
     isolated_auth.init_auth_db()
     qa_id = isolated_auth._local_qa_user_id()
     resolved_qa_id = isolated_auth.data_user_id_for(qa_id)
-    data_store.add_food_log(
-        user_id=owner.id,
-        record={"date": "2026-07-14", "calories": 500, "protein_g": 30},
-    )
+    data_store.save_current_workout_plan(owner.id, "fp-owner", {"id": "owner-plan"})
 
-    assert len(data_store.get_food_logs(user_id=resolved_qa_id)) == 1
-    data_store.clear_food_logs(user_id=resolved_qa_id)
+    assert data_store.get_current_workout_plan(resolved_qa_id)["plan"]["id"] == "owner-plan"
+    assert data_store.get_current_workout_plan(qa_id) is None
+    assert data_store.delete_current_workout_plan(resolved_qa_id) is True
 
-    assert data_store.get_food_logs(user_id=owner.id) == []
-    assert data_store.get_food_logs(user_id=qa_id) == []
+    assert data_store.get_current_workout_plan(owner.id) is None
 
 
 def test_app_current_data_user_id_resolves_designated_qa_to_owner(qa_app):

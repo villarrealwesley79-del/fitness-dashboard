@@ -394,6 +394,9 @@ GOAL_PARAMETERS = {
 def _settings_with_defaults(settings):
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     merged.update(settings or {})
+    # Keys left in old settings files and backups by the removed food targets.
+    for retired_key in ("daily_calorie_target", "daily_protein_target_g"):
+        merged.pop(retired_key, None)
     return merged
 
 

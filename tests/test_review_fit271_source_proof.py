@@ -4,7 +4,7 @@ import pytest
 
 from recommendation_sources import build_recommendation_source_proof
 
-SIX = {"open_wearables", "whoop", "oura", "apple_health", "food", "weather"}
+FIVE = {"open_wearables", "whoop", "oura", "apple_health", "weather"}
 NODE_KEYS = {"used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"}
 
 
@@ -17,11 +17,11 @@ def _proof(freshness, whoop_signals=None, ow_used=False, **inputs):
     )
 
 
-def test_unstubbed_smart_endpoint_on_empty_data_exposes_six_honest_sources(isolated_client):
+def test_unstubbed_smart_endpoint_on_empty_data_exposes_five_honest_sources(isolated_client):
     resp = isolated_client.get("/api/recommendation/smart")
     assert resp.status_code == 200, resp.get_data(as_text=True)[:500]
     proof = resp.get_json()["recommendation_sources"]["source_proof"]
-    assert set(proof) == SIX
+    assert set(proof) == FIVE
     for name, node in proof.items():
         assert set(node) == NODE_KEYS, name
         # Nothing exists in a fresh DATA_DIR, so nothing may claim influence.

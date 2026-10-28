@@ -84,7 +84,6 @@ stores = {
     "baselines_json": app.BASELINES_FILE,
     "body_json": app.BODY_FILE,
     "sleep_json": app.SLEEP_FILE,
-    "nutrition_json": app.NUTRITION_FILE,
     "oura_db": app.OURA_DB_FILE,
     "fitness_data_db": data_store.DATA_DB,
     "auth_db": auth.AUTH_DB,
@@ -100,7 +99,6 @@ json_defaults = {
     app.BASELINES_FILE: {},
     app.BODY_FILE: [],
     app.SLEEP_FILE: [],
-    app.NUTRITION_FILE: [],
 }
 for path, default in json_defaults.items():
     app.save_json(path, default)
@@ -121,7 +119,6 @@ print(json.dumps({name: {"path": path, "exists": os.path.exists(path)} for name,
         "baselines_json": "data_baselines.json",
         "body_json": "data_body.json",
         "sleep_json": "data_sleep.json",
-        "nutrition_json": "data_nutrition.json",
         "oura_db": "oura_daily.sqlite3",
         "fitness_data_db": "fitness_data.db",
         "auth_db": "auth.db",

@@ -7,7 +7,6 @@ def _freshness(**overrides):
         "whoop": {"status": "fresh"},
         "oura": {"status": "fresh"},
         "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh"},
     }
     base.update(overrides)
     return base
@@ -32,7 +31,6 @@ def _proof(*, freshness=None, whoop_signals=None, source_inputs=None):
             "oura_modifier_applied": True,
             "whoop_fields": ["recovery_score"],
             "apple_health_fields": ["recent_workout_load"],
-            "food_fields": ["calories", "protein_g"],
             "weather_fields": ["feelslike_f"],
             "weather_status": "fresh",
             "weather_modifier_applied": True,
@@ -41,11 +39,11 @@ def _proof(*, freshness=None, whoop_signals=None, source_inputs=None):
     )
 
 
-def test_source_proof_has_complete_six_source_contract():
+def test_source_proof_has_complete_five_source_contract():
     proof = _proof()
 
     assert set(proof) == {
-        "open_wearables", "whoop", "oura", "apple_health", "food", "weather"
+        "open_wearables", "whoop", "oura", "apple_health", "weather"
     }
     for source in proof.values():
         assert set(source) == {
@@ -111,49 +109,6 @@ def test_stale_apple_health_is_reported_used_when_legacy_load_logic_consumed_it(
     assert proof["apple_health"]["ignored_reason"] is None
 
 
-def test_missing_source_is_explicitly_ignored():
-    proof = _proof(
-        freshness=_freshness(food={"status": "missing"}),
-        source_inputs={"food_fields": []},
-    )
-
-    assert proof["food"]["used_for_recommendation"] is False
-    assert proof["food"]["ignored_reason"] == "missing_data"
-
-
-def test_fresh_food_without_adaptation_is_not_claimed_as_used():
-    proof = _proof(source_inputs={
-        "food_fields": [],
-        "food_modifier_applied": False,
-        "food_ignored_reason": "no_workout_adaptation",
-    })
-
-    assert proof["food"] == {
-        "used_for_recommendation": False,
-        "fields_used": [],
-        "modifier_applied": False,
-        "ignored_reason": "no_workout_adaptation",
-    }
-
-
-def test_stale_food_is_reported_used_when_an_adaptation_was_applied():
-    proof = _proof(
-        freshness=_freshness(food={"status": "stale"}),
-        source_inputs={
-            "food_fields": ["calories"],
-            "food_modifier_applied": True,
-            "food_used_override": True,
-        },
-    )
-
-    assert proof["food"] == {
-        "used_for_recommendation": True,
-        "fields_used": ["calories"],
-        "modifier_applied": True,
-        "ignored_reason": None,
-    }
-
-
 def test_display_only_whoop_never_claims_recommendation_use():
     proof = _proof(whoop_signals={
         "display_only": True,
@@ -196,7 +151,7 @@ def test_payload_builder_exposes_source_proof_without_removing_existing_contract
     assert "open_wearables" in payload
     assert "whoop" in payload
     assert set(payload["source_proof"]) == {
-        "open_wearables", "whoop", "oura", "apple_health", "food", "weather"
+        "open_wearables", "whoop", "oura", "apple_health", "weather"
     }
 
 

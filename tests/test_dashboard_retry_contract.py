@@ -516,7 +516,7 @@ def test_open_wearables_marker_tolerates_timezone_sleep_events():
 def test_next_workout_cache_invalidation_is_kept_in_backend_mutation_paths():
     app_py = (ROOT / "app.py").read_text()
     settings_body = app_py.split("def settings():", 1)[1].split("@app.route('/api/settings/equipment'", 1)[0]
-    equipment_body = app_py.split("def settings_equipment():", 1)[1].split("@app.route('/api/personal-vocab'", 1)[0]
+    equipment_body = app_py.split("def settings_equipment():", 1)[1].split("@app.route('/api/exercises/alternatives/<muscle_group>')", 1)[0]
     assert "global LAST_WORKOUT_RECOMMENDATION" in settings_body
     assert "LAST_WORKOUT_RECOMMENDATION = None" in settings_body
     assert "global LAST_WORKOUT_RECOMMENDATION" in equipment_body

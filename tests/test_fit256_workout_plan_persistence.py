@@ -73,9 +73,6 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: None)
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(module, "_apply_open_wearables_recommendation_guard", lambda rec, _facts: (rec, None))
-    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *args, **kwargs: [])
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *args, **kwargs: {})
-    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", lambda plan, **kwargs: (plan, []))
     monkeypatch.setattr(module, "get_oura_daily", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {"open_wearables": {}})
     monkeypatch.setattr(module, "_whoop_recommendation_context", lambda _readiness: {"signals": {}, "source_conflict": None})
@@ -104,7 +101,7 @@ def test_persist_current_workout_plan_uses_authoritative_saved_plan(monkeypatch,
     persisted_plan = module._persist_current_workout_plan(submitted_plan, "fp-user-1")
 
     assert save_calls == [
-        (1, "fp-user-1", submitted_plan, {"publish_adaptation_event_ids": None})
+        (1, "fp-user-1", submitted_plan, {})
     ]
     assert persisted_plan == authoritative_plan
     assert module.LAST_WORKOUT_RECOMMENDATION is persisted_plan
@@ -584,7 +581,6 @@ def test_dashboard_regeneration_rereads_concurrent_winner_across_fingerprint(
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
     )
-    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
     generated = _plan_with_id(module, "fresh-dashboard-plan")
     winner = _plan_with_id(module, "concurrent-dashboard-winner")
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
@@ -660,7 +656,6 @@ def test_dashboard_delete_race_serves_generated_plan_without_persisting_it(
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
     )
-    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
     generated = _plan_with_id(module, "losing-dashboard-generated-plan")
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
     original_save = module.save_current_workout_plan
@@ -675,41 +670,6 @@ def test_dashboard_delete_race_serves_generated_plan_without_persisting_it(
     assert response.status_code == 200
     assert response.get_json()["next_workout"]["id"] == "losing-dashboard-generated-plan"
     assert data_store.get_current_workout_plan(1) is None
-
-
-def test_repeated_adaptation_event_polling_does_not_backfill_plan_tables(
-    monkeypatch,
-    tmp_path,
-):
-    module, client, _state = _client(monkeypatch, tmp_path)
-    trace = []
-    original_connect = data_store.sqlite3.connect
-
-    def traced_connect(*args, **kwargs):
-        connection = original_connect(*args, **kwargs)
-        connection.set_trace_callback(trace.append)
-        return connection
-
-    monkeypatch.setattr(data_store.sqlite3, "connect", traced_connect)
-    for _ in range(3):
-        response = client.get("/api/workout-adaptation-events?unacknowledged=false")
-        assert response.status_code == 200
-        assert response.get_json()["events"] == []
-
-    plan_table_dml = []
-    for statement in trace:
-        normalized = statement.strip().upper()
-        if (
-            normalized.startswith("INSERT")
-            or normalized.startswith("UPDATE")
-            or normalized.startswith("DELETE")
-        ) and (
-            "WORKOUT_PLAN_GENERATIONS" in normalized
-            or "CURRENT_WORKOUT_PLANS" in normalized
-        ):
-            plan_table_dml.append(statement)
-    assert plan_table_dml == []
-    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == []
 
 
 def test_current_plan_lookup_uses_atomic_plan_snapshot(monkeypatch, tmp_path):

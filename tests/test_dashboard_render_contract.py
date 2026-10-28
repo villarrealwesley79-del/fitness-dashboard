@@ -161,7 +161,6 @@ sandbox.__fitSet.renderRecommendationSourceSummary((dash, reco, freshness) => {
     whoop: freshness.whoop,
   });
 });
-sandbox.__fitSet.renderMacroCard(() => {});
 sandbox.__fitSet.sparkline(() => {});
 sandbox.__fitSet.paintRetryChip(() => {});
 e.paintDashboardFromState();
@@ -169,7 +168,7 @@ process.stdout.write(JSON.stringify(captured));
 """,
         mocks=[
             "renderFreshnessChips", "renderRecommendationSourceSummary",
-            "renderMacroCard", "sparkline", "paintRetryChip",
+            "sparkline", "paintRetryChip",
         ],
     )
     assert output == [{
