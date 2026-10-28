@@ -3983,6 +3983,15 @@
                 logged.source_label = sourceKey === 'watch' ? 'Strength - Logged + Watch' : 'Strength - Logged + Open Wearables';
                 logged.watch_duration_minutes = row.duration_minutes || row.duration || logged.watch_duration_minutes || null;
                 logged.watch_activity_label = row.original_label || row.activity_type || row.activity || logged.watch_activity_label || null;
+                // Metrics come from the first Open Wearables-backed row folded in; later
+                // rows never overwrite or add to them (no sums across sessions).
+                const hasWearableMetrics = ['calories_burned', 'avg_heart_rate', 'max_heart_rate'].some((field) => row[field] != null);
+                if (!logged.wearable_metrics_source && hasWearableMetrics && (row.source === 'open_wearables' || row.open_wearables_metrics)) {
+                    logged.wearable_calories_burned = row.calories_burned ?? null;
+                    logged.wearable_avg_heart_rate = row.avg_heart_rate ?? null;
+                    logged.wearable_max_heart_rate = row.max_heart_rate ?? null;
+                    logged.wearable_metrics_source = 'Open Wearables';
+                }
                 return;
             }
             visibleWatch.push(row);
@@ -4223,9 +4232,13 @@
                 });
             } else {
                 const exNames = (w.exercises || []).map((e) => e.machine || e.exercise).filter(Boolean).slice(0, 3).join(', ');
-                const sourceMeta = Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')
+                const mergedLabel = Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')
                     ? ` · merged Watch ${w.watch_duration_minutes ? Math.round(w.watch_duration_minutes) + ' min' : 'strength'}`
                     : '';
+                const wearableMeta = w.wearable_metrics_source
+                    ? ` · ${w.wearable_metrics_source}: ${loggedWearableMetricParts(w).join(' · ')}`
+                    : '';
+                const sourceMeta = mergedLabel + wearableMeta;
                 row.innerHTML = `
                     <div class="w-date">${fmtDate(w.date)}</div>
                     <div>
@@ -4319,6 +4332,18 @@
         }
         const rounded = Math.round(Number(value));
         return unit ? `${rounded} ${unit}` : String(rounded);
+    }
+
+    function loggedWearableMetricParts(item) {
+        // Dash (never 0) for any metric the wearable did not report.
+        return [
+            [item.wearable_calories_burned, 'kcal'],
+            [item.wearable_avg_heart_rate, 'bpm avg'],
+            [item.wearable_max_heart_rate, 'bpm max'],
+        ].map(([value, unit]) => {
+            const text = formatOptionalWorkoutMetric(value, unit);
+            return text === '\u2014' ? `\u2014 ${unit}` : text;
+        });
     }
 
     function historyCaloriesForDisplay(item) {
@@ -4513,12 +4538,22 @@
                 </button>
             </div>
         `;
+        const [loggedKcal, loggedAvgHr, loggedMaxHr] = item.wearable_metrics_source ? loggedWearableMetricParts(item) : [];
+        const wearableMetricsHtml = item.wearable_metrics_source ? `
+            <div class="workout-source-line"><span class="src-tag src-open-wearables">${escapeHtml(String(item.wearable_metrics_source).toUpperCase())}</span></div>
+            <dl class="workout-metrics-list">
+                <div><dt>Calories burned</dt><dd>${escapeHtml(loggedKcal)}</dd></div>
+                <div><dt>Average heart rate</dt><dd>${escapeHtml(loggedAvgHr)}</dd></div>
+                <div><dt>Maximum heart rate</dt><dd>${escapeHtml(loggedMaxHr)}</dd></div>
+            </dl>
+        ` : '';
         body.innerHTML = `
             <div class="workout-detail-kpis">
                 <div><span>${fmtInt(totalSets)}</span><label>sets</label></div>
                 <div><span>${fmtKilo(totalVolume)}</span><label>lbs</label></div>
                 <div><span>${fmtInt(item.duration_minutes || 0)}</span><label>minutes</label></div>
             </div>
+            ${wearableMetricsHtml}
             ${adherenceHtml}
             ${analyzeBtnHtml}
             ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}

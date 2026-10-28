@@ -777,3 +777,64 @@ def test_workout_fetch_accepts_events_key_and_bounds_pagination(fitness_app, mon
         lambda url, headers=None, **_kwargs: {"events": [{"id": "e1"}], "pagination": {"has_more": False}},
     )
     assert fitness_app._fetch_open_wearables_workout_data()["workouts"] == {"data": [{"id": "e1"}]}
+
+
+def test_logged_lift_shows_folded_open_wearables_metrics_once():
+    result = run_app_js(
+        [
+            "normalizeWatchHistoryRow", "normalizeOpenWearablesHistoryRow",
+            "mergeOpenWearablesHistory", "mergeStrengthHistorySources",
+            "openWorkoutDetail", "loggedWearableMetricParts",
+        ],
+        """
+const el = () => ({ innerHTML: '', textContent: '', hidden: true, addEventListener() {} });
+sandbox.elements['modal-workout-detail'] = el();
+sandbox.elements['workout-detail-body'] = el();
+sandbox.elements['workout-detail-title'] = el();
+const detail = (item) => { e.openWorkoutDetail(item); return sandbox.elements['workout-detail-body'].innerHTML; };
+const lift = { id: 'lift-1', date: '2026-07-12', source: 'lifted', total_sets: 3 };
+const watch = e.normalizeWatchHistoryRow({ id: 'aw-1', date: '2026-07-12', activity_type: 'Traditional Strength Training', start: '2026-07-12T07:00:00-05:00' });
+const ow = (extra) => e.normalizeOpenWearablesHistoryRow({ id: 'open_wearables:w1', date: '2026-07-12', activity_type: 'strength_training',
+  session_type: 'strength_training', start_time: '2026-07-12T12:00:00Z', ...extra });
+const run = (watchRows, owRows, lifts = [lift]) => e.mergeStrengthHistorySources(lifts, e.mergeOpenWearablesHistory(watchRows, owRows));
+
+const matched = run([watch], [ow({ calories_burned: 320, avg_heart_rate: 120, max_heart_rate: 160 })]);
+const owOnly = run([], [ow({ calories_burned: 320, avg_heart_rate: 120, max_heart_rate: 160 })]);
+const noMax = run([], [ow({ calories_burned: 320, avg_heart_rate: 120, max_heart_rate: null })]);
+const noOw = run([watch], []);
+// Two distinct wearable sessions fold into one lift: first fold target wins, never summed.
+const second = e.normalizeOpenWearablesHistoryRow({ id: 'open_wearables:w2', date: '2026-07-12', activity_type: 'strength_training',
+  session_type: 'strength_training', start_time: '2026-07-12T20:00:00Z', calories_burned: 100, avg_heart_rate: 90, max_heart_rate: 110 });
+const several = run([], [ow({ calories_burned: 320, avg_heart_rate: 120, max_heart_rate: 160 }), second]);
+process.stdout.write(JSON.stringify({
+  matchedCount: matched.length, matchedRow: matched[0], matchedHtml: detail(matched[0]),
+  owOnlyCount: owOnly.length, owOnlyRow: owOnly[0],
+  noMaxParts: e.loggedWearableMetricParts(noMax[0]), noMaxHtml: detail(noMax[0]),
+  noOwRow: noOw[0], noOwHtml: detail(noOw[0]),
+  severalCount: several.length, severalRow: several[0],
+}));
+""",
+    )
+
+    assert result["matchedCount"] == 1
+    assert result["matchedRow"]["wearable_calories_burned"] == 320
+    assert result["matchedRow"]["wearable_avg_heart_rate"] == 120
+    assert result["matchedRow"]["wearable_max_heart_rate"] == 160
+    assert result["matchedRow"]["wearable_metrics_source"] == "Open Wearables"
+    assert "OPEN WEARABLES" in result["matchedHtml"]
+    assert "320 kcal" in result["matchedHtml"]
+    assert "120 bpm" in result["matchedHtml"] and "160 bpm" in result["matchedHtml"]
+    assert result["owOnlyCount"] == 1
+    assert result["owOnlyRow"]["wearable_calories_burned"] == 320
+    # Absent max HR is a dash, never 0.
+    assert result["noMaxParts"] == ["320 kcal", "120 bpm avg", "— bpm max"]
+    assert "<dd>— bpm max</dd>" in result["noMaxHtml"]
+    assert "<dd>0" not in result["noMaxHtml"]
+    # No Open Wearables data: nothing is invented on the logged row.
+    assert "wearable_metrics_source" not in result["noOwRow"]
+    assert "Average heart rate" not in result["noOwHtml"]
+    # Several wearable rows: metrics come from the first fold target, not a sum.
+    assert result["severalCount"] == 1
+    assert result["severalRow"]["wearable_calories_burned"] == 320
+    assert result["severalRow"]["wearable_avg_heart_rate"] == 120
+    assert result["severalRow"]["wearable_max_heart_rate"] == 160
