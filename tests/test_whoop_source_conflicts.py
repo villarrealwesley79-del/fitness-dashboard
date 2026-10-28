@@ -46,6 +46,11 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
         "get_oura_daily",
         lambda *_args, **_kwargs: {"readiness_score": 88, "sleep_score": 80, "hrv": 40},
     )
+    monkeypatch.setattr(
+        fitness_app,
+        "_latest_oura_freshness",
+        lambda *_args, **_kwargs: ("fresh", fitness_app._today_str(), datetime.now().isoformat()),
+    )
     monkeypatch.setattr(fitness_app, "get_oura_daily_range", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "stable")
     monkeypatch.setattr(
