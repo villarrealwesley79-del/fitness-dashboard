@@ -20,14 +20,11 @@ def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit382-open-wearables-secret")
     module = importlib.import_module("app")
     original_workouts = list(module.WORKOUTS)
-    original_lm_studio = getattr(module, "_lm_studio", None)
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     module.WORKOUTS.clear()
-    monkeypatch.setattr(module, "_lm_studio", None)
     monkeypatch.setattr(module, "_load_apple_health_recommendation_workouts", lambda **_kwargs: [])
     yield module
     module.WORKOUTS[:] = original_workouts
-    module._lm_studio = original_lm_studio
     module.app.config.update(LOGIN_DISABLED=False)
 
 
@@ -278,18 +275,6 @@ def test_open_wearables_workouts_endpoint_does_not_cache_configured_hub_failure(
     assert response.get_json()["error"]["code"] == "open_wearables_workouts_unavailable"
 
 
-def test_ai_history_context_includes_nullable_open_wearables_metrics(fitness_app, monkeypatch):
-    row = _normalized_workout(max_hr=None)
-    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [row], raising=False)
-
-    history = fitness_app._ai_history_context()
-
-    open_wearables = next(item for item in history if item["source"] == "open_wearables")
-    assert open_wearables["calories_burned"] == 386.4
-    assert open_wearables["avg_heart_rate"] == 148
-    assert open_wearables["max_heart_rate"] is None
-
-
 def test_cross_source_merge_uses_unique_utc_second_and_preserves_base_values(fitness_app):
     apple = _apple_health_workout(start="2026-07-12T07:00:00.900-05:00", avg_hr=0)
     open_wearables = {**_normalized_workout(), "activity_type": "Tempo Run"}
@@ -341,64 +326,6 @@ def test_cross_source_merge_accepts_canonical_activity_candidate(fitness_app):
 
     assert len(merged) == 1
     assert merged[0]["calories_burned"] == 386.4
-
-
-def test_ai_history_context_dedupes_unique_pair_and_keeps_ambiguous_collisions(
-    fitness_app,
-    monkeypatch,
-):
-    apple = _apple_health_workout()
-    open_wearables = _normalized_workout()
-    monkeypatch.setattr(fitness_app, "_load_apple_health_recommendation_workouts", lambda **_kwargs: [apple])
-    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [open_wearables])
-
-    unique_history = fitness_app._ai_history_context()
-
-    assert len(unique_history) == 1
-    assert unique_history[0]["source"] == "apple_health"
-    assert unique_history[0]["calories_burned"] == 386.4
-    assert unique_history[0]["avg_heart_rate"] == 148
-    assert unique_history[0]["max_heart_rate"] == 176
-
-    duplicate_apple = {**apple, "id": "apple-health:second"}
-    monkeypatch.setattr(
-        fitness_app,
-        "_load_apple_health_recommendation_workouts",
-        lambda **_kwargs: [apple, duplicate_apple],
-    )
-
-    ambiguous_history = fitness_app._ai_history_context()
-
-    assert len(ambiguous_history) == 3
-    assert sum(row["source"] == "apple_health" for row in ambiguous_history) == 2
-    assert sum(row["source"] == "open_wearables" for row in ambiguous_history) == 1
-
-
-def test_ai_history_context_applies_limit_after_combining_sources(fitness_app, monkeypatch):
-    apple_rows = [
-        _apple_health_workout(start=f"2026-01-{day:02d}T12:00:00Z")
-        for day in range(1, 11)
-    ]
-    newest_open_wearables = {
-        **_normalized_workout(),
-        "date": "2026-07-14",
-        "start_time": "2026-07-14T12:00:00Z",
-    }
-    monkeypatch.setattr(
-        fitness_app,
-        "_load_apple_health_recommendation_workouts",
-        lambda **_kwargs: apple_rows,
-    )
-    monkeypatch.setattr(
-        fitness_app,
-        "_load_open_wearables_workouts",
-        lambda: [newest_open_wearables],
-    )
-
-    history = fitness_app._ai_history_context(limit=5)
-
-    assert len(history) == 5
-    assert history[0]["id"] == newest_open_wearables["id"]
 
 
 def test_history_cross_source_merge_runtime_is_unique_and_collision_safe():
@@ -565,155 +492,23 @@ process.stdout.write(JSON.stringify(out));
     }
 
 
-def test_analyze_open_wearables_workout_carries_metrics_without_fabrication(fitness_app, monkeypatch):
-    row = _normalized_workout(max_hr=None)
-    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [row], raising=False)
-
-    response = fitness_app.app.test_client().post(
-        "/api/workout/analyze",
-        json={"workout_id": row["id"]},
-    )
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["workout"]["source"] == "open_wearables"
-    assert payload["workout"]["calories_burned"] == 386.4
-    assert payload["workout"]["avg_heart_rate"] == 148
-    assert payload["workout"]["max_heart_rate"] is None
-    assert payload["context_used"]["open_wearables_metrics"] == {
-        "calories_burned": 386.4,
-        "avg_heart_rate": 148,
-        "max_heart_rate": None,
-    }
-
-
-def test_analyze_open_wearables_workout_passes_metrics_to_model_context(fitness_app, monkeypatch):
-    row = _normalized_workout()
-    captured = {}
-
-    class FakeLmStudio:
-        LM_STUDIO_MODEL_VERSION = "fit382-test-model"
-        ANALYZE_PROMPT_VERSION = "fit382-test-prompt"
-
-        class LmStudioError(Exception):
-            pass
-
-        @staticmethod
-        def analyze_workout(target, context):
-            captured["target"] = target
-            captured["context"] = context
-            return {
-                "summary": "Source-backed workout summary.",
-                "wins": [],
-                "concerns": [],
-                "comparison": "No comparison.",
-                "next_session_cue": "Keep the next session steady.",
-                "_meta": {},
-            }
-
-    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [row], raising=False)
-    monkeypatch.setattr(fitness_app, "_lm_studio", FakeLmStudio())
-    monkeypatch.setattr(fitness_app, "_ai_cache_get", lambda _key: None)
-    monkeypatch.setattr(fitness_app, "_ai_cache_put", lambda _key, _payload: None)
-
-    response = fitness_app.app.test_client().post(
-        "/api/workout/analyze",
-        json={"workout_id": row["id"]},
-    )
-
-    assert response.status_code == 200
-    assert captured["target"]["source"] == "open_wearables"
-    assert captured["context"]["open_wearables_metrics"] == {
-        "calories_burned": 386.4,
-        "avg_heart_rate": 148,
-        "max_heart_rate": 176,
-    }
-
-
-def test_open_wearables_analysis_cache_key_includes_workout_identity(fitness_app, monkeypatch):
-    first = _normalized_workout(max_hr=None)
-    first.update({"calories_burned": None, "avg_heart_rate": None})
-    second = {
-        **first,
-        "id": "open_wearables:second-workout",
-        "external_id": "second-workout",
-        "activity_type": "Cycling",
-        "session_type": "cycling",
-        "duration_minutes": 75,
-    }
-    cache_keys = []
-
-    class FakeLmStudio:
-        LM_STUDIO_MODEL_VERSION = "fit382-cache-model"
-        ANALYZE_PROMPT_VERSION = "fit382-cache-prompt"
-
-        class LmStudioError(Exception):
-            pass
-
-        @staticmethod
-        def analyze_workout(target, _context):
-            return {
-                "summary": target["id"],
-                "wins": [],
-                "concerns": [],
-                "comparison": "No comparison.",
-                "next_session_cue": "Keep steady.",
-                "_meta": {},
-            }
-
-    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [first, second])
-    monkeypatch.setattr(fitness_app, "_lm_studio", FakeLmStudio())
-    monkeypatch.setattr(fitness_app, "_ai_cache_get", lambda _key: None)
-    monkeypatch.setattr(fitness_app, "_ai_cache_put", lambda key, _payload: cache_keys.append(key))
-
-    client = fitness_app.app.test_client()
-    assert client.post("/api/workout/analyze", json={"workout_id": first["id"]}).status_code == 200
-    assert client.post("/api/workout/analyze", json={"workout_id": second["id"]}).status_code == 200
-
-    assert len(cache_keys) == 2
-    assert cache_keys[0] != cache_keys[1]
-
-
-def test_logged_workout_analysis_response_does_not_add_empty_wearable_fields(fitness_app):
-    payload = fitness_app._workout_analysis_response(
-        {"id": "logged-1", "date": "2026-07-12", "source": "lifted"},
-        {"summary": "Logged workout", "wins": [], "concerns": []},
-        [],
-        {},
-        None,
-        {"set_note_count": 0, "workout_notes_present": False, "cardio_notes_present": False},
-    )
-
-    assert "source" not in payload["workout"]
-    assert "calories_burned" not in payload["workout"]
-    assert "open_wearables_metrics" not in payload["context_used"]
-
-
 def test_history_ui_contract_fetches_and_renders_open_wearables_metrics():
     result = run_app_js(
         ["openWorkoutDetail", "formatOptionalWorkoutMetric", "mergeStrengthHistorySources"],
         """
 const el = () => ({ innerHTML: '', textContent: '', hidden: false, handlers: {}, addEventListener(type, fn) { this.handlers[type] = fn; } });
-const modal = el(), body = el(), title = el(), analyze = el();
+const modal = el(), body = el(), title = el();
 sandbox.elements['modal-workout-detail'] = modal;
 sandbox.elements['workout-detail-body'] = body;
 sandbox.elements['workout-detail-title'] = title;
-sandbox.elements['btn-analyze-open-wearables'] = analyze;
-let hiddenWhenAnalyzeOpened = null;
-let analyzeRequest = null;
-sandbox.__fitSet.openAnalyzeModal((request) => { hiddenWhenAnalyzeOpened = modal.hidden; analyzeRequest = request; });
 e.openWorkoutDetail({ id: 'open_wearables:w1', source: 'open_wearables', date: '2026-07-12', activity_type: 'Outdoor Run', provider_source: 'whoop', duration_minutes: 42, calories_burned: null, avg_heart_rate: 148, max_heart_rate: null });
-analyze.handlers.click();
 process.stdout.write(JSON.stringify({
   html: body.innerHTML,
   title: title.textContent,
-  hiddenWhenAnalyzeOpened,
-  analyzeRequest,
   missing: e.formatOptionalWorkoutMetric(null, 'kcal'),
   zero: e.formatOptionalWorkoutMetric(0, 'bpm'),
 }));
 """,
-        mocks=["openAnalyzeModal"],
     )
 
     html = result["html"]
@@ -725,8 +520,7 @@ process.stdout.write(JSON.stringify({
     assert result["zero"] == "0 bpm"
     assert "<dd>0 kcal</dd>" not in html
     assert "148 bpm" in html
-    assert result["hiddenWhenAnalyzeOpened"] is True
-    assert result["analyzeRequest"] == {"workout_id": "open_wearables:w1"}
+    assert "Analyze" not in html and "analyze" not in html
     css = (Path(__file__).resolve().parents[1] / "static" / "css" / "style.css").read_text()
     assert ".workout-metrics-list" in css
 
@@ -736,7 +530,6 @@ def test_open_wearables_history_row_escapes_hostile_labels():
         ["openWorkoutDetail"],
         _detail_scenario(
             "{ source: 'open_wearables', date: '2026-07-12', activity_type: 'Run', provider_source: '<img src=x onerror=alert(1)>', notes: '<script>x</script>' }",
-            extra_elements="sandbox.elements['btn-analyze-open-wearables'] = { addEventListener() {} };",
         ) + "process.stdout.write(JSON.stringify(sandbox.elements['workout-detail-body'].innerHTML));",
     )
 

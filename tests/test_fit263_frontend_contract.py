@@ -22,68 +22,12 @@ sandbox.elements['tab-dashboard'] = panels[0];
 sandbox.elements['tab-log'] = panels[1];
 sandbox.document.querySelectorAll = (selector) => selector === '.tab-content' ? panels : [];
 sandbox.scrollTo = () => {};
-e.switchTab('btn-ai-status');
+e.switchTab('btn-adjust-plan');
 process.stdout.write(JSON.stringify({ currentTab: e.state.currentTab }));
 """,
         mocks=["loadTab"],
     )
     assert output == {"currentTab": "tab-dashboard"}
-
-
-def test_ai_health_poll_skips_hidden_documents():
-    output = run_app_js(
-        ["boot"],
-        """
-sandbox.elements['ai-status-dot'] = { className: '' };
-sandbox.setInterval = () => null;
-sandbox.addEventListener = () => {};
-let visibilityHandler;
-sandbox.document.addEventListener = (name, handler) => {
-  if (name === 'visibilitychange') visibilityHandler = handler;
-};
-const apiCalls = [];
-sandbox.__fitSet.api(async (path) => {
-  apiCalls.push(path);
-  return { reachable: true, model_loaded: true };
-});
-[
-  'renderGreeting', 'wireEvents', 'switchTabFromHash',
-  'renderSyncBanner', 'registerServiceWorker',
-  'settleActiveWorkoutDraftAfterAuthScope', 'scheduleAuthScopeRetry',
-  'flushSyncQueue', 'saveActiveWorkoutDraftBeforePageHidden',
-].forEach((name) => sandbox.__fitSet[name](() => {}));
-sandbox.__fitSet.refreshAuthScope(async () => ({ status: 'ready' }));
-e.boot();
-await new Promise((resolve) => setTimeout(resolve, 0));
-const afterBoot = apiCalls.length;
-sandbox.document.visibilityState = 'hidden';
-visibilityHandler();
-await new Promise((resolve) => setTimeout(resolve, 0));
-const whileHidden = apiCalls.length;
-sandbox.document.visibilityState = 'visible';
-visibilityHandler();
-await new Promise((resolve) => setTimeout(resolve, 0));
-process.stdout.write(JSON.stringify({
-  afterBoot,
-  whileHidden,
-  afterVisible: apiCalls.length,
-  dot: sandbox.elements['ai-status-dot'].className,
-}));
-""",
-        mocks=[
-            "renderGreeting", "wireEvents", "switchTabFromHash",
-            "renderSyncBanner", "registerServiceWorker",
-            "settleActiveWorkoutDraftAfterAuthScope", "scheduleAuthScopeRetry",
-            "flushSyncQueue", "saveActiveWorkoutDraftBeforePageHidden",
-            "refreshAuthScope", "api",
-        ],
-    )
-    assert output == {
-        "afterBoot": 1,
-        "whileHidden": 1,
-        "afterVisible": 2,
-        "dot": "ai-dot ok",
-    }
 
 
 def test_loader_docs_describe_dom_ready_app_bundle_boot():

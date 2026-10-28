@@ -14,7 +14,7 @@ Kept:
 Being removed (not part of the product):
 
 - Food and nutrition logging, including photo logging.
-- In-app AI (the local-model coach and vision features).
+- In-app AI (the local-model coach, vision and fact-query features): removed. The app never calls a model, and the coach is deterministic. AI assistants read your data through the MCP endpoint instead.
 
 ## Access and privacy
 
@@ -142,28 +142,6 @@ OW_PORTAL_URL=
 OW_SIDECAR_ENV_PATH=
 OW_ALLOWED_HOSTS=
 SECRET_KEY=
-LM_STUDIO_URL=
-LM_STUDIO_MODEL=
-LM_STUDIO_PRIMARY_URL=
-LM_STUDIO_PRIMARY_MODEL=
-LM_STUDIO_FALLBACK_URL=
-LM_STUDIO_FALLBACK_MODEL=
-LM_STUDIO_TIMEOUT_SEC=
-LM_STUDIO_PREFLIGHT_TIMEOUT_SEC=
-VISION_ESTIMATOR_PROVIDER=lm_studio
-# Primary vision route, normally the ASUS GX10 LM Studio instance.
-VISION_LM_STUDIO_URL=
-VISION_LM_STUDIO_MODEL=
-# Optional lower-memory model on the primary vision route. Set this explicitly
-# to a host-verified smaller VLM; there is no safe 30B default for contended hosts.
-VISION_LM_STUDIO_LOW_MEMORY_MODEL=
-# Fallback vision route, normally the Mac Studio LM Studio instance.
-VISION_LM_STUDIO_FALLBACK_URL=
-VISION_LM_STUDIO_FALLBACK_MODEL=
-VISION_LOCAL_TIMEOUT_SEC=
-VISION_LM_STUDIO_PREFLIGHT_TIMEOUT_SEC=
-OLLAMA_URL=
-VISION_OLLAMA_MODEL=
 ```
 
 Do not commit real values for these variables.

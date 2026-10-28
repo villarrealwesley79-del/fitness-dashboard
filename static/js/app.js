@@ -1,5 +1,5 @@
 /* =======================================================
-   AI Coach Feed — Analytical Dashboard (consolidated)
+   Fitness Dashboard — Analytical Dashboard (consolidated)
    One boot, one tab loader, real API endpoints, SVG charts.
    ======================================================= */
 
@@ -39,11 +39,6 @@
             mobileInvite: null,
             providerActions: [],
             config: null,
-        },
-        aiFactUi: {
-            queryInFlight: false,
-            pendingSuggestionId: null,
-            actionInFlight: false,
         },
         whoopUi: {
             connectInFlight: false,
@@ -1418,8 +1413,8 @@
 
     // FIT-111: derive every group chip from the LIVE inner-chip state in
     // the DOM. No `freshness` parameter — that way the same helper stays
-    // accurate after async renderers (renderAiCoachHealth /
-    // renderPushSection / enablePush / disablePush / sendPushTest)
+    // accurate after async renderers (renderPushSection / enablePush /
+    // disablePush / sendPushTest)
     // update the inner chips. Each of those callers calls this at the
     // tail of their work; safe to call any time after the initial
     // settings render.
@@ -1451,13 +1446,6 @@
         applyGroupChip($('settings-group-summary-notifications'),
             push.cls,
             push.text || 'Not configured');
-
-        // Coaching setup: mirror the AI primary chip (the only one with
-        // a live freshness signal in this group).
-        const ai = _readChipState($('ai-primary-state'));
-        applyGroupChip($('settings-group-summary-coaching'),
-            ai.cls,
-            ai.text ? `AI ${ai.text.toLowerCase()}` : 'Configured');
 
         // Maintenance: mirror the last-backup chip.
         const backup = _readChipState($('last-backup'));
@@ -1598,19 +1586,6 @@
         renderRecommendationSourceSummary(state.dashboard, state.reco, state.dashboard && state.dashboard.freshness);
         const modal = $('modal-reco-sources');
         const trigger = $('btn-reco-sources');
-        if (!modal) return;
-        modal.__fit192Close = function () {
-            modal.hidden = true;
-            if (trigger) trigger.setAttribute('aria-expanded', 'false');
-        };
-        modal.hidden = false;
-        if (trigger) trigger.setAttribute('aria-expanded', 'true');
-        focusOpenModal(modal);
-    }
-
-    function openAiFactQueryModal() {
-        const modal = $('modal-ai-fact-query');
-        const trigger = $('btn-open-ai-fact-query');
         if (!modal) return;
         modal.__fit192Close = function () {
             modal.hidden = true;
@@ -2868,7 +2843,7 @@
             if (await getOuraStatus(true) == null) throw new Error('readiness retry failed');
         });
         paintRetryChip('reco-retry', state.recoError, 'recoError', async () => {
-            // The AI Recommendation chip covers BOTH dashboard and reco
+            // The Recommendation chip covers BOTH dashboard and reco
             // because the card chrome is fed by both endpoints. getDashboard
             // throws on failure (unlike the other fetchers); getReco swallows
             // and returns null. Either failing surfaces the chip.
@@ -3770,21 +3745,8 @@
                         <div class="w-summary"><span class="src-tag src-lifted">STRENGTH</span>${escapeHtml(exNames || '—')}</div>
                         <div class="w-meta">${w.total_sets || 0} sets · ${w.duration_minutes || 0} min${escapeHtml(sourceMeta)}</div>
                     </div>
-                    <div class="w-analyze-wrap">
-                        <div class="w-volume">${fmtKilo(w.total_volume)} lbs</div>
-                        <button class="ex-analyze-btn" type="button" data-analyze-id="${escapeHtml(w.id || '')}" data-analyze-date="${escapeHtml(w.date || '')}" title="Analyze this workout" aria-label="Analyze workout from ${escapeHtml(w.date || '')}">↗</button>
-                    </div>
+                    <div class="w-volume">${fmtKilo(w.total_volume)} lbs</div>
                 `;
-                const btn = row.querySelector('.ex-analyze-btn');
-                if (btn) {
-                    btn.addEventListener('click', (ev) => {
-                        ev.stopPropagation();
-                        const req = btn.dataset.analyzeId
-                            ? { workout_id: btn.dataset.analyzeId }
-                            : { workout_date: btn.dataset.analyzeDate };
-                        openAnalyzeModal(req, `Analysis · ${fmtDate(btn.dataset.analyzeDate)}`);
-                    });
-                }
                 row.addEventListener('click', () => openWorkoutDetail(w));
                 row.addEventListener('keydown', (ev) => {
                     if (ev.key === 'Enter' || ev.key === ' ') {
@@ -3910,21 +3872,8 @@
                     <div><dt>Average heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, 'bpm'))}</dd></div>
                     <div><dt>Maximum heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, 'bpm'))}</dd></div>
                 </dl>
-                ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
-                <div class="workout-detail-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-open-wearables">Analyze workout</button>
-                </div>
+                ${item.notes ? `<div class="workout-detail-section"><div class="workout-detail-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             `;
-            const analyzeBtn = $('btn-analyze-open-wearables');
-            if (analyzeBtn) {
-                analyzeBtn.addEventListener('click', () => {
-                    modal.hidden = true;
-                    openAnalyzeModal(
-                        { workout_id: item.id },
-                        `Analysis · ${fmtDate(item.date)}`,
-                    );
-                });
-            }
             modal.hidden = false;
             return;
         }
@@ -3945,7 +3894,7 @@
                     <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, ''))}</span><label>avg HR</label></div>
                     <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, ''))}</span><label>max HR</label></div>
                 </div>
-                ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+                ${item.notes ? `<div class="workout-detail-section"><div class="workout-detail-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             `;
             modal.hidden = false;
             return;
@@ -4007,7 +3956,7 @@
         // that the user didn't do, so adherence stays honest.
         const skippedHtml = skipped.length ? `
             <div class="workout-detail-section">
-                <div class="analyze-label">SKIPPED</div>
+                <div class="workout-detail-label">SKIPPED</div>
                 <div class="workout-detail-skipped">
                     ${skipped.map((name) =>
                         `<span class="skipped-exercise">${escapeHtml(name)}</span>`
@@ -4042,7 +3991,7 @@
         const cardio = item.cardio || null;
         const cardioHtml = cardio ? `
             <div class="workout-detail-section">
-                <div class="analyze-label">CARDIO</div>
+                <div class="workout-detail-label">CARDIO</div>
                 <div class="workout-note">
                     ${cardio.completed ? 'Completed' : 'Planned'} · ${escapeHtml(cardio.activity_type || (cardio.recommendation || {}).type || 'Cardio')} · ${escapeHtml(cardio.duration_minutes || (cardio.recommendation || {}).duration_minutes || 0)} min
                     ${cardio.notes ? `<div class="workout-set-note">${escapeHtml(cardio.notes)}</div>` : ''}
@@ -4050,19 +3999,6 @@
             </div>
         ` : '';
 
-        // FIT-14: in-modal Analyze button so the user doesn't have to
-        // close the detail to find the row's analyze affordance. Reuses
-        // the existing openAnalyzeModal which is read-only and does NOT
-        // mutate LAST_WORKOUT_RECOMMENDATION (verified by FIT-14 tests).
-        const analyzeBtnHtml = `
-            <div class="workout-detail-actions">
-                <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-detail"
-                    data-analyze-id="${escapeHtml(item.id || '')}"
-                    data-analyze-date="${escapeHtml(item.date || '')}">
-                    Analyze workout
-                </button>
-            </div>
-        `;
         const [loggedKcal, loggedAvgHr, loggedMaxHr] = item.wearable_metrics_source ? loggedWearableMetricParts(item) : [];
         const wearableMetricsHtml = item.wearable_metrics_source ? `
             <div class="workout-source-line"><span class="src-tag src-open-wearables">${escapeHtml(String(item.wearable_metrics_source).toUpperCase())}</span></div>
@@ -4080,30 +4016,14 @@
             </div>
             ${wearableMetricsHtml}
             ${adherenceHtml}
-            ${analyzeBtnHtml}
-            ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+            ${item.notes ? `<div class="workout-detail-section"><div class="workout-detail-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             <div class="workout-detail-section">
-                <div class="analyze-label">EXERCISES</div>
+                <div class="workout-detail-label">EXERCISES</div>
                 ${exerciseHtml || '<div class="empty">No exercises logged.</div>'}
             </div>
             ${skippedHtml}
             ${cardioHtml}
         `;
-
-        // Wire the Analyze button. Build the same request shape the
-        // history-row analyze button uses (id preferred, date fallback).
-        const analyzeBtn = $('btn-analyze-detail');
-        if (analyzeBtn) {
-            analyzeBtn.addEventListener('click', () => {
-                const id = analyzeBtn.dataset.analyzeId;
-                const date = analyzeBtn.dataset.analyzeDate;
-                const request = id ? { workout_id: id }
-                    : date ? { workout_date: date }
-                    : { latest: true };
-                modal.hidden = true;
-                openAnalyzeModal(request, `Analyze · ${fmtDate(item.date)}`);
-            });
-        }
 
         modal.hidden = false;
     }
@@ -4757,9 +4677,8 @@
         renderOuraFreshnessDetail(oura, ouraFreshness);
         // FIT-111: populate the four settings group header chips so the
         // user gets a glance-level signal per section. Reads live chip
-        // state from the DOM, so renderAiCoachHealth + renderPushSection
-        // also call it after their async updates to keep the headers in
-        // lockstep.
+        // state from the DOM, so renderPushSection also calls it after its
+        // async updates to keep the headers in lockstep.
         renderSettingsGroupSummaries();
 
         // Apple Health — prefer the real sync-status endpoint over
@@ -4813,10 +4732,6 @@
                 $('weather-state').className = 'state-chip ok';
             }
         } catch {}
-
-        // FIT-15: AI Coach health + 24h metrics card.
-        renderAiCoachHealth();
-        startAiCoachHealthRefresh();
 
         // FIT-40: Web Push permission flow + alert surfaces.
         renderPushSection();
@@ -4873,78 +4788,6 @@
         } finally {
             state.openWearablesUi.syncInFlight = false;
             await renderSettings();
-        }
-    }
-
-    async function askAiFactQuestion() {
-        if (state.aiFactUi.queryInFlight) return;
-        const input = $('ai-fact-question');
-        const answerEl = $('ai-fact-answer');
-        const actions = $('ai-fact-suggestion-actions');
-        const question = input ? String(input.value || '').trim() : '';
-        if (!question) {
-            if (answerEl) answerEl.textContent = 'Ask about strength history, wearable sources, or freshness.';
-            if (actions) actions.hidden = true;
-            state.aiFactUi.pendingSuggestionId = null;
-            return;
-        }
-        state.aiFactUi.queryInFlight = true;
-        state.aiFactUi.pendingSuggestionId = null;
-        if (actions) actions.hidden = true;
-        const btn = $('btn-ai-fact-query');
-        if (btn) btn.disabled = true;
-        if (answerEl) answerEl.textContent = 'Checking sanitized history and wearable facts…';
-        try {
-            const payload = await api('/api/ai/facts/query', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question, suggest: true }),
-            });
-            const evidenceCount = Array.isArray(payload && payload.evidence) ? payload.evidence.length : 0;
-            if (answerEl) answerEl.textContent = `${payload.answer || 'No answer available.'}${evidenceCount ? ` · ${evidenceCount} evidence item${evidenceCount === 1 ? '' : 's'}` : ''}`;
-            if (payload && payload.suggested_action_id) {
-                state.aiFactUi.pendingSuggestionId = payload.suggested_action_id;
-                if (actions) actions.hidden = false;
-            }
-        } catch (error) {
-            if (answerEl) answerEl.textContent = 'AI fact query failed. No records were changed.';
-            toast('AI fact query failed.', 'err');
-        } finally {
-            state.aiFactUi.queryInFlight = false;
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    async function resolveAiSuggestion(decision) {
-        const suggestionId = state.aiFactUi.pendingSuggestionId;
-        if (!suggestionId || state.aiFactUi.actionInFlight) return;
-        state.aiFactUi.actionInFlight = true;
-        const approveBtn = $('btn-ai-suggestion-approve');
-        const rejectBtn = $('btn-ai-suggestion-reject');
-        if (approveBtn) approveBtn.disabled = true;
-        if (rejectBtn) rejectBtn.disabled = true;
-        try {
-            const payload = await api(`/api/ai/suggestions/${encodeURIComponent(suggestionId)}/${decision}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-            });
-            const status = payload && payload.suggestion && payload.suggestion.status;
-            const answerEl = $('ai-fact-answer');
-            if (answerEl) {
-                answerEl.textContent = status === 'approved'
-                    ? 'Suggestion approved. No records were changed in this version.'
-                    : 'Suggestion rejected. No records were changed.';
-            }
-            state.aiFactUi.pendingSuggestionId = null;
-            const actions = $('ai-fact-suggestion-actions');
-            if (actions) actions.hidden = true;
-        } catch (error) {
-            toast('AI suggestion action failed.', 'err');
-        } finally {
-            state.aiFactUi.actionInFlight = false;
-            if (approveBtn) approveBtn.disabled = false;
-            if (rejectBtn) rejectBtn.disabled = false;
         }
     }
 
@@ -5026,322 +4869,6 @@
             state.reco = null;
             await renderSettings();
         }
-    }
-
-    // ── FIT-15: AI Coach health + metrics ─────────────────────────
-    // Threshold matches FIT-20's planned "Apply Adjustment" warning so
-    // both surfaces flip on/off together when the local model is flaky.
-    const AI_COACH_FALLBACK_PCT_WARNING = 20.0;
-    const AI_COACH_REFRESH_MS = 30000;
-    let _aiCoachRefreshTimer = null;
-
-    function startAiCoachHealthRefresh() {
-        // Avoid stacking intervals if renderSettings is called repeatedly.
-        if (_aiCoachRefreshTimer) clearInterval(_aiCoachRefreshTimer);
-        _aiCoachRefreshTimer = setInterval(() => {
-            // Pause refresh when the user is on a different tab — saves
-            // network and keeps the tab quiet. The next tab activation
-            // calls renderSettings -> renderAiCoachHealth anyway.
-            if (state.currentTab !== 'tab-settings') return;
-            renderAiCoachHealth();
-        }, AI_COACH_REFRESH_MS);
-    }
-
-    // FIT-166: friendly host names rendered on the AI coach card.
-    // The adapter returns generic role names ("primary"/"fallback"), so
-    // the UI maps them to the deployment's real hosts. If the adapter
-    // ever starts returning a non-generic name, prefer it over the
-    // default — this keeps the UI honest if hardware changes.
-    const AI_PRIMARY_HOST_DEFAULT = 'ASUS GX10';
-    const AI_FALLBACK_HOST_DEFAULT = 'Mac Studio';
-
-    function _aiHostName(check, fallbackLabel) {
-        if (!check) return fallbackLabel;
-        const raw = (check.name || '').trim();
-        const generic = raw === '' || raw === 'primary' || raw === 'fallback';
-        return generic ? fallbackLabel : raw;
-    }
-
-    function _aiFallbackHostName(fallback) {
-        return fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback';
-    }
-
-    function _setAiCoachUnavailable(message) {
-        // Degraded mode: the rest of Settings keeps working. Acceptance
-        // criterion: "Metrics refresh periodically without breaking the
-        // app if the route is unavailable."
-        const primaryState = $('ai-primary-state');
-        const fallbackState = $('ai-fallback-state');
-        const metricsPct = $('ai-metrics-fallback-pct');
-        const metricsDetail = $('ai-metrics-detail');
-        const primaryDetail = $('ai-primary-detail');
-        const fallbackDetail = $('ai-fallback-detail');
-        const warnRow = $('ai-coach-warning-row');
-        const primaryDot = $('ai-primary-dot');
-        const fallbackDot = $('ai-fallback-dot');
-        if (primaryState) { primaryState.textContent = 'Unavailable'; primaryState.className = 'state-chip unknown'; }
-        if (fallbackState) { fallbackState.textContent = 'Unavailable'; fallbackState.className = 'state-chip unknown'; }
-        if (metricsPct) { metricsPct.textContent = '—'; metricsPct.className = 'state-chip unknown'; }
-        if (primaryDetail) primaryDetail.textContent = message || 'Health endpoint unreachable';
-        if (fallbackDetail) fallbackDetail.textContent = '';
-        if (metricsDetail) metricsDetail.textContent = 'Metrics unavailable';
-        if (warnRow) warnRow.hidden = true;
-        if (primaryDot) primaryDot.className = 'int-dot';
-        if (fallbackDot) fallbackDot.className = 'int-dot';
-        // FIT-166: card-level headline degrades to "unavailable" too,
-        // matching the existing per-row chips so the card doesn't look
-        // half-painted when the health route is unreachable.
-        const unavailableHeadline = {
-            stateText: 'AI offline',
-            hostText: 'health endpoint unreachable',
-            chipText: 'Offline',
-            chipCls: 'state-chip stale',
-            dotCls: 'int-dot',
-            detail: message || 'Health endpoint unreachable',
-            showSep: true,
-        };
-        _renderAiCoachHeadline(unavailableHeadline);
-        _announceAiCoachHeadline(unavailableHeadline);
-    }
-
-    function _renderAiCoachHeadline(parts) {
-        const state = $('ai-coach-headline-state');
-        const host = $('ai-coach-headline-host');
-        const sep = $('ai-coach-headline-sep');
-        const chip = $('ai-coach-headline-chip');
-        const dot = $('ai-coach-headline-dot');
-        const detail = $('ai-coach-headline-detail');
-        if (state) state.textContent = parts.stateText;
-        if (host) host.textContent = parts.hostText;
-        if (sep) sep.hidden = !parts.showSep;
-        if (chip) { chip.textContent = parts.chipText; chip.className = parts.chipCls; }
-        if (dot) dot.className = parts.dotCls;
-        if (detail) detail.textContent = parts.detail || '';
-    }
-
-    // FIT-177: Screen-reader announcement for AI Coach headline state
-    // changes. _renderAiCoachHeadline stays as the visual DOM paint; the
-    // polite live region writes through this helper. The semantic key
-    // intentionally excludes `detail` so a copy tweak in the detail line
-    // (e.g. swapping the model name) doesn't re-announce an unchanged
-    // host-routing state. `undefined` is the first-transition sentinel
-    // (vs. `''` which is "we already announced empty"), so the very
-    // first render announces. Early return when unchanged keeps the
-    // 30-second poll from re-announcing the same state.
-    let _lastAiCoachAnnouncementKey;
-
-    function _announceAiCoachHeadline(parts) {
-        const key = `${parts.stateText}|${parts.hostText}|${parts.chipText}`;
-        if (_lastAiCoachAnnouncementKey === key) return;
-        _lastAiCoachAnnouncementKey = key;
-        const region = $('ai-coach-headline-announcement');
-        if (!region) return;
-        const sep = parts.hostText ? ' · ' : '';
-        region.textContent = `AI coach: ${parts.stateText}${sep}${parts.hostText}`;
-    }
-
-    function _aiPrimaryUnavailableReason(primary, primaryHost) {
-        if (!primary || !primary.reachable) return `${primaryHost} unreachable`;
-        if (!primary.model_loaded) return `${primaryHost} model not loaded`;
-        return `${primaryHost} not serving traffic`;
-    }
-
-    function _aiCoachHeadlineFromHealth(health) {
-        // Three states the FIT-166 acceptance criteria call out:
-        //   1. Primary healthy           → "Ready · <primary host>"        (ok)
-        //   2. Primary down, fallback up → "Fallback active · <fallback host>" (warn)
-        //   3. Both down / unavailable   → "AI offline"                    (stale)
-        const primary = (health && health.primary) || null;
-        const fallback = (health && health.fallback) || null;
-        const activeRole = (health && health.active_role) || null;
-        const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
-        const fallbackHost = _aiFallbackHostName(fallback);
-        const primaryOk = !!(primary && primary.reachable && primary.model_loaded);
-        const fallbackOk = !!(fallback && fallback.reachable && fallback.model_loaded);
-
-        if (primaryOk && activeRole !== 'fallback') {
-            return {
-                stateText: 'Ready',
-                hostText: primaryHost,
-                chipText: 'Online',
-                chipCls: 'state-chip ok',
-                dotCls: 'int-dot int-dot-on',
-                detail: `Serving from ${primaryHost}.`,
-                showSep: true,
-            };
-        }
-        if (fallbackOk) {
-            return {
-                stateText: 'Fallback active',
-                hostText: fallbackHost,
-                chipText: 'Fallback',
-                chipCls: 'state-chip warn',
-                dotCls: 'int-dot',
-                detail: `${_aiPrimaryUnavailableReason(primary, primaryHost)} — ${fallbackHost} is serving traffic.`,
-                showSep: true,
-            };
-        }
-        return {
-            stateText: 'AI offline',
-            hostText: fallback ? `${primaryHost} & ${fallbackHost} unavailable` : `${primaryHost} unavailable`,
-            chipText: 'Offline',
-            chipCls: 'state-chip stale',
-            dotCls: 'int-dot',
-            detail: 'No AI host is serving traffic — deterministic plan remains the source of truth.',
-            showSep: true,
-        };
-    }
-
-    function _aiCheckLabel(check) {
-        if (!check) return { text: 'Not configured', cls: 'state-chip unknown' };
-        if (!check.reachable) return { text: 'Unreachable', cls: 'state-chip stale' };
-        if (!check.model_loaded) return { text: 'Model not loaded', cls: 'state-chip warn' };
-        return { text: 'Ready', cls: 'state-chip ok' };
-    }
-
-    function _renderAiHealthFields(health) {
-        const primary = (health && health.primary) || null;
-        const fallback = (health && health.fallback) || null;
-        const activeRole = (health && health.active_role) || null;
-
-        const primaryState = $('ai-primary-state');
-        const fallbackState = $('ai-fallback-state');
-        const primaryDetail = $('ai-primary-detail');
-        const fallbackDetail = $('ai-fallback-detail');
-        const primaryDot = $('ai-primary-dot');
-        const fallbackDot = $('ai-fallback-dot');
-        // FIT-166: friendly host labels alongside the role tag.
-        const primaryHostEl = $('ai-primary-host');
-        const fallbackHostEl = $('ai-fallback-host');
-        const fallbackRoleEl = $('ai-fallback-role');
-        const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
-        const fallbackHost = _aiFallbackHostName(fallback);
-        if (primaryHostEl) primaryHostEl.textContent = primaryHost;
-        if (fallbackHostEl) fallbackHostEl.textContent = fallbackHost;
-        if (fallbackRoleEl) fallbackRoleEl.hidden = !fallback;
-
-        const pLabel = _aiCheckLabel(primary);
-        const fLabel = fallback ? _aiCheckLabel(fallback) : { text: 'Primary only', cls: 'state-chip unknown' };
-
-        if (primaryState) {
-            primaryState.textContent = pLabel.text + (activeRole === 'primary' ? ' · active' : '');
-            primaryState.className = pLabel.cls;
-        }
-        if (fallbackState) {
-            fallbackState.textContent = fLabel.text + (activeRole === 'fallback' ? ' · active' : '');
-            fallbackState.className = fLabel.cls;
-        }
-        if (primaryDetail) {
-            // Model identity is fine to surface; raw model traces and
-            // prompt content are explicitly NOT in the health payload.
-            primaryDetail.textContent = (primary && (primary.model || primary.url)) || 'Not configured';
-        }
-        if (fallbackDetail) {
-            fallbackDetail.textContent = fallback
-                ? (fallback.model || fallback.url || '')
-                : 'Fallback uses the primary route.';
-        }
-        if (primaryDot) primaryDot.className = 'int-dot' + (primary && primary.reachable && primary.model_loaded ? ' int-dot-on' : '');
-        if (fallbackDot) fallbackDot.className = 'int-dot' + (fallback && fallback.reachable && fallback.model_loaded ? ' int-dot-on' : '');
-
-        const headlineParts = _aiCoachHeadlineFromHealth(health);
-        _renderAiCoachHeadline(headlineParts);
-        _announceAiCoachHeadline(headlineParts);
-    }
-
-    function _renderAiMetricsFields(metrics) {
-        const metricsPct = $('ai-metrics-fallback-pct');
-        const metricsDetail = $('ai-metrics-detail');
-        const warnRow = $('ai-coach-warning-row');
-        const warnPct = $('ai-coach-warning-pct');
-
-        const total = (metrics && metrics.adjust_requests) || 0;
-        const fallbackPct = metrics && typeof metrics.fallback_pct === 'number' ? metrics.fallback_pct : null;
-        const cachePct = metrics && typeof metrics.cache_hit_pct === 'number' ? metrics.cache_hit_pct : null;
-        const avgLatencyMs = metrics && typeof metrics.avg_latency_ms === 'number' ? metrics.avg_latency_ms : null;
-
-        if (metricsPct) {
-            if (total === 0 || fallbackPct === null) {
-                metricsPct.textContent = 'No data';
-                metricsPct.className = 'state-chip unknown';
-            } else {
-                metricsPct.textContent = `${fallbackPct.toFixed(1)}% fallback`;
-                metricsPct.className = 'state-chip ' + (fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING ? 'stale' : 'ok');
-            }
-        }
-        if (metricsDetail) {
-            if (total === 0) {
-                metricsDetail.textContent = 'No AI requests in the last 24h';
-            } else {
-                const parts = [`${total} request${total === 1 ? '' : 's'}`];
-                if (cachePct !== null) parts.push(`${cachePct.toFixed(1)}% cache hit`);
-                if (avgLatencyMs !== null) parts.push(`${avgLatencyMs}ms avg`);
-                metricsDetail.textContent = parts.join(' · ');
-            }
-        }
-        if (warnRow && warnPct) {
-            const shouldWarn = fallbackPct !== null && fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING && total > 0;
-            warnRow.hidden = !shouldWarn;
-            if (shouldWarn) warnPct.textContent = `${fallbackPct.toFixed(1)}%`;
-        }
-    }
-
-    async function renderAiCoachHealth() {
-        // Both calls in parallel; either failing means the UI degrades
-        // gracefully without breaking the rest of Settings.
-        const healthPromise = api('/api/ai/health').catch(() => null);
-        const metricsPromise = api('/api/ai/metrics').catch(() => null);
-        const [health, metrics] = await Promise.all([healthPromise, metricsPromise]);
-        if (!health && !metrics) {
-            _setAiCoachUnavailable('Health & metrics endpoints unreachable');
-            return;
-        }
-        if (health) {
-            // Degraded payload when the adapter failed to import:
-            // {reachable: false, error: "adapter not loaded"} with no
-            // primary/fallback. Treat that the same as a 5xx so the UI
-            // doesn't render "Primary: Not configured / Fallback: Same
-            // as primary" instead of showing the real error.
-            if (health.reachable === false && !health.primary) {
-                _setAiCoachUnavailable(health.error || 'AI adapter unavailable');
-            } else {
-                _renderAiHealthFields(health);
-            }
-        } else {
-            const primaryState = $('ai-primary-state');
-            const fallbackState = $('ai-fallback-state');
-            if (primaryState) { primaryState.textContent = 'Unavailable'; primaryState.className = 'state-chip unknown'; }
-            if (fallbackState) { fallbackState.textContent = 'Unavailable'; fallbackState.className = 'state-chip unknown'; }
-            // FIT-166: keep the headline coherent when /api/ai/health
-            // is reachable enough to give us a 0-byte / non-JSON
-            // response but /api/ai/metrics still succeeded.
-            const offlineHeadline = {
-                stateText: 'AI offline',
-                hostText: 'health endpoint unreachable',
-                chipText: 'Offline',
-                chipCls: 'state-chip stale',
-                dotCls: 'int-dot',
-                detail: 'Health endpoint unreachable',
-                showSep: true,
-            };
-            _renderAiCoachHeadline(offlineHeadline);
-            _announceAiCoachHeadline(offlineHeadline);
-        }
-        if (metrics) {
-            _renderAiMetricsFields(metrics);
-        } else {
-            const metricsPct = $('ai-metrics-fallback-pct');
-            const metricsDetail = $('ai-metrics-detail');
-            const warnRow = $('ai-coach-warning-row');
-            if (metricsPct) { metricsPct.textContent = '—'; metricsPct.className = 'state-chip unknown'; }
-            if (metricsDetail) metricsDetail.textContent = 'Metrics unavailable';
-            // Don't leave a stale "flaky" warning on screen if /api/ai/metrics
-            // fails after a previous refresh exposed a high fallback rate.
-            if (warnRow) warnRow.hidden = true;
-        }
-        // FIT-111 (Codex audit): re-derive the settings group chips
-        // after the inner AI chips finish updating asynchronously.
-        renderSettingsGroupSummaries();
     }
 
     // ── FIT-40/FIT-92: Web Push permission flow + test delivery ───
@@ -7829,9 +7356,8 @@
         const subEl = $('saved-sub');
         const statsEl = $('saved-stats');
         const adherenceEl = $('saved-adherence');
-        const analyzeBtn = $('btn-saved-analyze');
         const dismissBtn = $('btn-saved-dismiss');
-        if (!modal || !titleEl || !subEl || !statsEl || !analyzeBtn || !dismissBtn) return;
+        if (!modal || !titleEl || !subEl || !statsEl || !dismissBtn) return;
         const dateLabel = summary.date ? fmtDate(summary.date) : 'today';
         if (summary.queued) {
             titleEl.textContent = 'Queued for sync.';
@@ -7849,8 +7375,6 @@
                 queuedNoteEl.hidden = true;
             }
         }
-        analyzeBtn.disabled = !!summary.queued;
-        analyzeBtn.title = summary.queued ? 'Available after sync completes' : '';
         statsEl.innerHTML = '';
         const cells = [
             { label: 'Exercises', value: String(summary.exercises_count || 0) },
@@ -7893,13 +7417,6 @@
             switchTab('tab-history');
         }
         modal.__fit192Close = dismissToHistory;
-        const freshAnalyze = analyzeBtn.cloneNode(true);
-        analyzeBtn.parentNode.replaceChild(freshAnalyze, analyzeBtn);
-        freshAnalyze.addEventListener('click', () => {
-            detachBackdrop();
-            modal.hidden = true;
-            openAnalyzeModal({ latest: true }, `Analysis · ${dateLabel}`);
-        });
         const freshDismiss = dismissBtn.cloneNode(true);
         dismissBtn.parentNode.replaceChild(freshDismiss, dismissBtn);
         freshDismiss.addEventListener('click', () => closeModal(modal));
@@ -8122,6 +7639,7 @@
     }
 
     function openAdjust() {
+        adjustPresetIntent = null;
         const modal = $('modal-adjust');
         const textarea = $('adjust-constraint');
         const result = $('adjust-result');
@@ -8162,102 +7680,6 @@
             // Trigger a re-render so the user sees the current server-canonical plan.
             state.nextWorkout = state.dashboard.next_workout;
             if (state.currentTab === 'tab-workout') renderNextWorkout();
-        }
-    }
-
-    async function openAnalyzeModal(request, titleOverride) {
-        const modal = $('modal-analyze');
-        const titleEl = $('analyze-title');
-        const loading = $('analyze-loading');
-        const content = $('analyze-content');
-        const errEl = $('analyze-error');
-        if (titleOverride) titleEl.textContent = titleOverride;
-        loading.hidden = false;
-        loading.textContent = 'AI coach reviewing your session…';
-        content.hidden = true;
-        errEl.hidden = true;
-        modal.hidden = false;
-
-        try {
-            const payload = await api('/api/workout/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(request || { latest: true }),
-            });
-
-            if (payload.status === 'fallback' && !payload.analysis) {
-                loading.hidden = true;
-                errEl.hidden = false;
-                errEl.textContent = `AI coach unavailable — ${payload.reason || 'try again later'}.`;
-                return;
-            }
-
-            const w = payload.workout || {};
-            const a = payload.analysis || {};
-            titleEl.textContent = w.date ? `Analysis · ${fmtDate(w.date)}` : 'Workout Analysis';
-
-            $('analyze-summary').textContent = a.summary || '—';
-
-            const winsEl = $('analyze-wins');
-            const concernsEl = $('analyze-concerns');
-            winsEl.innerHTML = '';
-            concernsEl.innerHTML = '';
-            (a.wins || []).forEach((w) => {
-                const li = document.createElement('li');
-                li.textContent = w;
-                winsEl.appendChild(li);
-            });
-            (a.concerns || []).forEach((c) => {
-                const li = document.createElement('li');
-                li.textContent = c;
-                concernsEl.appendChild(li);
-            });
-            $('analyze-wins-section').style.display = (a.wins || []).length ? '' : 'none';
-            $('analyze-concerns-section').style.display = (a.concerns || []).length ? '' : 'none';
-
-            $('analyze-comparison').textContent = a.comparison || '—';
-            if (a.next_session_cue) {
-                $('analyze-cue').textContent = a.next_session_cue;
-                $('analyze-cue-section').style.display = '';
-            } else {
-                $('analyze-cue-section').style.display = 'none';
-            }
-
-            const m = payload.meta || {};
-            const ctx = payload.context_used || {};
-            const noteBits = [];
-            if (ctx.set_note_count) noteBits.push(`${ctx.set_note_count} set note${ctx.set_note_count === 1 ? '' : 's'}`);
-            if (ctx.workout_notes_present) noteBits.push('workout note');
-            if (ctx.cardio_notes_present) noteBits.push('cardio note');
-            const notesSection = $('analyze-notes-section');
-            const notesContext = $('analyze-notes-context');
-            if (notesSection && notesContext) {
-                if (noteBits.length) {
-                    notesContext.textContent = `AI analysis received ${noteBits.join(', ')} for this session.`;
-                    notesSection.hidden = false;
-                } else {
-                    notesContext.textContent = '';
-                    notesSection.hidden = true;
-                }
-            }
-            const contextBits = [];
-            if (payload.status === 'fallback') contextBits.push('fallback analysis');
-            if (ctx.recent_session_count) contextBits.push(`${ctx.recent_session_count} recent sessions`);
-            if (ctx.readiness_available) contextBits.push('readiness');
-            if (noteBits.length) contextBits.push('notes reviewed');
-            contextBits.push(m.model_version || m.model || 'local model');
-            if (m.fallback_reason) contextBits.push(m.fallback_reason);
-            if (m.elapsed_ms) contextBits.push(`${m.elapsed_ms}ms`);
-            if (payload.cache_hit) contextBits.push('cached');
-            $('analyze-meta').textContent = contextBits.join(' · ');
-
-            loading.hidden = true;
-            content.hidden = false;
-        } catch (e) {
-            console.error(e);
-            loading.hidden = true;
-            errEl.hidden = false;
-            errEl.textContent = 'Request failed — please try again.';
         }
     }
 
@@ -8312,9 +7734,10 @@
     const ADJUST_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
     const ADJUST_KIND_TABLE = {
         changed:   { label: 'Plan updated',     cls: 'adjust-kind-changed',   stateMsg: 'Updated. Review the new plan below or start it now.', stateCls: 'adjust-state ok' },
-        unchanged: { label: 'No net change',    cls: 'adjust-kind-unchanged', stateMsg: 'Coach considered the change but kept the plan.',       stateCls: 'adjust-state' },
-        refused:   { label: 'Coach left as is', cls: 'adjust-kind-refused',   stateMsg: 'Coach declined to change the plan.',                   stateCls: 'adjust-state' },
+        unchanged: { label: 'No net change',    cls: 'adjust-kind-unchanged', stateMsg: 'The change could not be applied; the plan is as it was.', stateCls: 'adjust-state' },
     };
+    // Preset chips send a structured edit; typing in the box clears it.
+    let adjustPresetIntent = null;
 
     function saveAdjustIntent(constraint, payload) {
         try {
@@ -8326,8 +7749,6 @@
                 applied_notes: Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [],
                 skipped_notes: Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [],
                 recommendation: payload && payload.recommendation ? payload.recommendation : null,
-                meta: payload && payload.meta ? payload.meta : {},
-                cache_hit: !!(payload && payload.cache_hit),
             };
             sessionStorage.setItem(ADJUST_INTENT_KEY, JSON.stringify(entry));
         } catch (e) {
@@ -8369,13 +7790,8 @@
         const rawKind = (payload && payload.result_kind) || (notes.length ? 'changed' : 'unchanged');
         const kind = ADJUST_KIND_TABLE[rawKind] ? rawKind : 'changed';
         const kindMeta = ADJUST_KIND_TABLE[kind];
-        const modelSummary = (payload && payload.summary || '').trim();
-        const fallbackSummary = kind === 'changed'
-            ? 'Adjustment applied.'
-            : kind === 'refused'
-                ? 'The coach decided no structural change was warranted.'
-                : 'The constraint was within the algorithm\'s envelope; no net change applied.';
-        const summaryText = modelSummary || fallbackSummary;
+        const summaryText = (payload && payload.summary || '').trim()
+            || (kind === 'changed' ? 'Adjustment applied.' : 'No net change applied.');
         summaryEl.innerHTML = `<span class="adjust-kind ${kindMeta.cls}">${escapeHtml(kindMeta.label)}</span><span class="adjust-summary-text">${escapeHtml(summaryText)}</span>`;
         if (kind === 'changed' && notes.length) {
             notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
@@ -8384,14 +7800,10 @@
             notesEl.innerHTML = skippedNotes.length
                 ? '<div class="dim">Nothing was changed:</div><ul>' + skippedNotes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul><div class="dim">The original plan stands.</div>'
                 : '<div class="dim">No change was applied. The original plan stands.</div>';
-        } else if (kind === 'refused') {
-            notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
         } else {
             notesEl.innerHTML = '';
         }
-        const meta = (payload && payload.meta) || {};
-        const cacheHit = !!(payload && payload.cache_hit);
-        metaEl.textContent = `${meta.model_version || meta.model || 'local model'} · ${meta.elapsed_ms || '?'} ms${cacheHit ? ' · cached' : ''}`;
+        metaEl.textContent = '';
         result.hidden = false;
         if (restoredBanner) restoredBanner.hidden = !opts.restored;
         if (opts.restored && opts.savedAt) {
@@ -8436,12 +7848,12 @@
         const metaEl = $('adjust-meta');
         const previewEl = $('adjust-plan-preview');
         const constraint = (textarea.value || '').trim();
-        if (!constraint) { stateEl.textContent = 'Tell the coach what to adjust.'; stateEl.className = 'adjust-state err'; return; }
+        if (!constraint) { stateEl.textContent = 'Pick a quick edit or type an exercise swap.'; stateEl.className = 'adjust-state err'; return; }
         if (constraint.length > 280) { stateEl.textContent = 'Keep it under 280 chars.'; stateEl.className = 'adjust-state err'; return; }
 
         btn.disabled = true;
-        btn.textContent = 'Consulting coach…';
-        stateEl.textContent = 'Calling local LM Studio model (usually 2–8s)…';
+        btn.textContent = 'Applying…';
+        stateEl.textContent = '';
         stateEl.className = 'adjust-state';
         result.hidden = true;
         if (previewEl) { previewEl.hidden = true; previewEl.innerHTML = ''; }
@@ -8451,11 +7863,11 @@
             const payload = await api('/api/workout/adjust', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ constraint }),
+                body: JSON.stringify(adjustPresetIntent ? { constraint, intent: adjustPresetIntent } : { constraint }),
             });
 
             if (payload.status === 'fallback') {
-                stateEl.textContent = 'AI coach unavailable — plan unchanged. ' + (payload.reason || '');
+                stateEl.textContent = 'Plan unchanged. ' + (payload.reason || '');
                 stateEl.className = 'adjust-state err';
                 finalBtnLabel = 'Retry';
                 return;
@@ -8463,6 +7875,7 @@
 
             renderAdjustResult(payload, { restored: false });
             saveAdjustIntent(constraint, payload);
+            adjustPresetIntent = null;
         } catch (e) {
             console.error(e);
             stateEl.textContent = 'Request failed — keeping the original plan.';
@@ -8547,7 +7960,9 @@
         qsa('.chip-preset').forEach((b) => b.addEventListener('click', () => {
             const ta = $('adjust-constraint');
             if (ta) { ta.value = b.dataset.preset || ''; ta.focus(); }
+            try { adjustPresetIntent = b.dataset.intent ? JSON.parse(b.dataset.intent) : null; } catch (e) { adjustPresetIntent = null; }
         }));
+        $('adjust-constraint') && $('adjust-constraint').addEventListener('input', () => { adjustPresetIntent = null; });
         $('btn-complete-workout') && $('btn-complete-workout').addEventListener('click', completeWorkout);
         $('sync-banner') && $('sync-banner').addEventListener('click', openSyncQueueModal);
         $('btn-sync-retry-all') && $('btn-sync-retry-all').addEventListener('click', async () => {
@@ -8555,7 +7970,6 @@
             await renderSyncQueueModal();
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
-        $('btn-open-ai-fact-query') && $('btn-open-ai-fact-query').addEventListener('click', openAiFactQueryModal);
         $('btn-open-wearables-setup') && $('btn-open-wearables-setup').addEventListener('click', openOpenWearablesSetupModal);
         $('btn-open-wearables-bootstrap') && $('btn-open-wearables-bootstrap').addEventListener('click', handleOpenWearablesPrimarySetupAction);
         $('btn-open-wearables-portal') && $('btn-open-wearables-portal').addEventListener('click', () => openOpenWearablesPortal());
@@ -8565,15 +7979,6 @@
         $('btn-open-wearables-setup-save') && $('btn-open-wearables-setup-save').addEventListener('click', saveOpenWearablesSetup);
         $('btn-open-wearables-setup-check') && $('btn-open-wearables-setup-check').addEventListener('click', checkOpenWearables);
         $('btn-sync-open-wearables') && $('btn-sync-open-wearables').addEventListener('click', syncOpenWearables);
-        $('btn-ai-fact-query') && $('btn-ai-fact-query').addEventListener('click', askAiFactQuestion);
-        $('btn-ai-suggestion-approve') && $('btn-ai-suggestion-approve').addEventListener('click', () => resolveAiSuggestion('approve'));
-        $('btn-ai-suggestion-reject') && $('btn-ai-suggestion-reject').addEventListener('click', () => resolveAiSuggestion('reject'));
-        $('ai-fact-question') && $('ai-fact-question').addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter') {
-                ev.preventDefault();
-                askAiFactQuestion();
-            }
-        });
         $('btn-connect-whoop') && $('btn-connect-whoop').addEventListener('click', connectWhoop);
         $('btn-whoop-connect-live') && $('btn-whoop-connect-live').addEventListener('click', startWhoopConnectFromModal);
         $('btn-whoop-import-submit') && $('btn-whoop-import-submit').addEventListener('click', importWhoopCsvFromModal);
@@ -8609,10 +8014,6 @@
         });
         watchModalFocus();
 
-        // AI status button (top right)
-        $('btn-ai-status') && $('btn-ai-status').addEventListener('click', toggleAiPopover);
-        document.addEventListener('click', closeAiPopoverOnOutsideClick, true);
-
         // FIT-117: custom-exercise swap form.
         const swapForm = $('swap-custom-form');
         if (swapForm) {
@@ -8623,83 +8024,11 @@
         }
     }
 
-    // --- AI coach status (header button) -----------------------
-    let aiStatusTimer = null;
-
-    async function refreshAiStatus() {
-        if (document.visibilityState === 'hidden') return;
-        const dot = $('ai-status-dot');
-        if (!dot) return;
-        try {
-            const h = await api('/api/ai/health');
-            if (h.reachable && h.model_loaded) dot.className = 'ai-dot ok';
-            else if (h.reachable) dot.className = 'ai-dot warn';
-            else dot.className = 'ai-dot err';
-        } catch {
-            dot.className = 'ai-dot err';
-        }
-    }
-
-    async function toggleAiPopover() {
-        const pop = $('popover-ai');
-        if (!pop) return;
-        if (!pop.hidden) { pop.hidden = true; return; }
-
-        pop.hidden = false;
-        $('pop-reachable').textContent = '…';
-        $('pop-model-loaded').textContent = '…';
-        $('pop-requests').textContent = '…';
-        $('pop-latency').textContent = '…';
-        $('pop-cache').textContent = '…';
-        $('pop-fallbacks').textContent = '…';
-        $('pop-foot').textContent = 'Checking LM Studio…';
-
-        try {
-            const [h, m] = await Promise.all([
-                api('/api/ai/health'),
-                api('/api/ai/metrics?hours=24').catch(() => null),
-            ]);
-            $('pop-reachable').textContent = h.reachable ? 'Yes' : 'No';
-            $('pop-model-loaded').textContent = h.model_loaded ? 'Yes' : h.reachable ? 'No' : '—';
-            if (m) {
-                $('pop-requests').textContent = m.adjust_requests || 0;
-                $('pop-latency').textContent = m.avg_latency_ms ? `${(m.avg_latency_ms / 1000).toFixed(2)}s` : '—';
-                $('pop-cache').textContent = m.adjust_requests ? `${m.cache_hit_pct}%` : '—';
-                const fb = m.fallbacks || 0;
-                $('pop-fallbacks').textContent = fb;
-                if (fb > 0 && m.recent) {
-                    const lastFallback = m.recent.find((r) => r.outcome === 'fallback');
-                    $('pop-foot').textContent = lastFallback
-                        ? `Last fallback: ${lastFallback.reason || 'unknown'}`
-                        : h.reachable ? 'LM Studio reachable' : 'LM Studio unreachable';
-                } else {
-                    $('pop-foot').textContent = h.reachable ? 'LM Studio reachable · all calls clean 24h' : 'LM Studio unreachable';
-                }
-            } else {
-                $('pop-foot').textContent = h.reachable ? 'LM Studio reachable · metrics unavailable' : 'LM Studio unreachable';
-            }
-        } catch (e) {
-            $('pop-foot').textContent = 'Status check failed.';
-        }
-    }
-
-    function closeAiPopoverOnOutsideClick(ev) {
-        const pop = $('popover-ai');
-        const btn = $('btn-ai-status');
-        if (!pop || pop.hidden) return;
-        if (pop.contains(ev.target) || (btn && btn.contains(ev.target))) return;
-        pop.hidden = true;
-    }
-
-
     function boot() {
         renderGreeting();
         wireEvents();
         switchTabFromHash(true);
         window.addEventListener('hashchange', switchTabFromHash);
-        refreshAiStatus();
-        if (aiStatusTimer) clearInterval(aiStatusTimer);
-        aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
         registerServiceWorker();
         refreshAuthScope({ timeoutMs: 2500 })
@@ -8715,7 +8044,6 @@
         window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
-            else refreshAiStatus();
         });
         window.addEventListener('online', () => {
             refreshAuthScope()

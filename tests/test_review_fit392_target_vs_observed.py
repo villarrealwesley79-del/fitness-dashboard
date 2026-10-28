@@ -14,7 +14,6 @@ def fitness_app(monkeypatch):
     for name in ("WORKOUTS", "COMPLETED_WORKOUTS", "CARDIO_DATA", "WORKOUT_RECOMMENDATIONS"):
         monkeypatch.setattr(module, name, [])
     monkeypatch.setattr(module, "save_json", lambda *_a, **_k: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_a, **_k: None)
     return module
 
 

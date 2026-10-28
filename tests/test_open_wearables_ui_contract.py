@@ -271,27 +271,3 @@ process.stdout.write(JSON.stringify(e.mergeStrengthHistorySources(lifts, watch))
     assert output[0]["date"] == "2026-07-16"
     assert output[0]["source"] in ("lifted", "merged")
 
-
-def test_ai_fact_query_markup_is_suggestion_safe():
-    html = (ROOT / "templates" / "index.html").read_text()
-    settings_html = html.split('id="tab-settings"', 1)[1].split('<nav class="tab-bar"', 1)[0]
-    dashboard_html = html.split('id="tab-dashboard"', 1)[1].split('id="tab-vitals"', 1)[0]
-    for token in ('id="modal-ai-fact-query"', 'id="ai-fact-question"', 'id="ai-fact-suggestion-actions"', 'id="btn-ai-suggestion-approve"', 'id="btn-ai-suggestion-reject"'):
-        assert token in html
-    assert 'id="ai-fact-question"' not in settings_html
-    assert 'id="btn-open-ai-fact-query"' in dashboard_html
-
-
-def test_ai_suggestion_resolution_posts_decision_without_mutating_records():
-    output = run_app_js(
-        ["resolveAiSuggestion", "state"],
-        """
-    let captured;
-    e.state.aiFactUi.pendingSuggestionId = 'suggestion-1';
-    sandbox.__fitSet.api(async (path, options) => { captured = { path, body: JSON.parse(options.body) }; return { suggestion: { status: 'approved' } }; });
-await e.resolveAiSuggestion('approve');
-process.stdout.write(JSON.stringify(captured));
-""",
-        mocks=["api"],
-    )
-    assert output == {"path": "/api/ai/suggestions/suggestion-1/approve", "body": {}}

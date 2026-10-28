@@ -233,7 +233,7 @@ def test_swap_does_not_consult_legacy_recommendation_list_or_workout_index(monke
     assert response.status_code == 200
 
     app_source = Path("app.py").read_text()
-    handler = app_source[app_source.index("def swap_workout_exercise"):app_source.index("# ==================== AI COACH", app_source.index("def swap_workout_exercise"))]
+    handler = app_source[app_source.index("def swap_workout_exercise"):app_source.index("def _apply_intent_patch", app_source.index("def swap_workout_exercise"))]
     assert "workout_index" not in handler
     assert "WORKOUT_RECOMMENDATIONS" not in handler
 
