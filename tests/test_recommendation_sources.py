@@ -145,3 +145,12 @@ def test_open_wearables_modifier_never_hardens_recommendation():
 
     assert recommendation == "moderate"
     assert modifier["applied"] is False
+
+
+def test_open_wearables_not_used_when_no_fact_feeds_the_recommendation():
+    proof = build_open_wearables_recommendation_source(
+        {"status": "fresh"},
+        facts=[{"provider_id": "open_wearables", "metric": "hrv", "value": 60}],
+    )
+    assert proof["used_for_recommendation"] is False
+    assert proof["influence"] == "none"

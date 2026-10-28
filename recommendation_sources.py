@@ -23,7 +23,9 @@ def build_open_wearables_recommendation_source(
     status = freshness.get("status") or ("fresh" if facts else ("connected" if providers else "missing"))
     if facts and modifier.get("applied") and status == "missing":
         status = "fresh"
-    used = bool(facts) and status in {"fresh", "aging", "connected"}
+    # Only facts the recommendation reads count; HRV, RHR and SpO2 alone do not.
+    consumed = any(isinstance(f, dict) and (f.get("metric") in {"sleep_duration", "active_minutes"} or is_whoop_recovery(f)) for f in facts)
+    used = consumed and status in {"fresh", "aging", "connected"}
     provider_labels = [p.get("label") or p.get("provider_id") for p in providers if isinstance(p, dict)]
     detail = "Open Wearables is the wearable hub."
     if modifier.get("applied"):

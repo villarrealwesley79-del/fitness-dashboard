@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import open_wearables_hub as hub
 
 
@@ -75,11 +77,12 @@ def test_out_of_range_recovery_scores_are_excluded_not_clamped():
 
 
 def test_ingest_drops_out_of_range_recovery_scores(tmp_path):
+    today = datetime.now().date()
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     count = hub.store_wearable_facts(
-        {"fetched_at": "2026-10-28T10:00:00Z", "recovery_summary": {"data": [
-            {"date": "2026-10-28", "recovery_score": -1, "source": {"provider": "whoop"}},
-            {"date": "2026-10-27", "recovery_score": 55, "source": {"provider": "whoop"}},
+        {"fetched_at": datetime.now(timezone.utc).isoformat(), "recovery_summary": {"data": [
+            {"date": today.isoformat(), "recovery_score": -1, "source": {"provider": "whoop"}},
+            {"date": (today - timedelta(days=1)).isoformat(), "recovery_score": 55, "source": {"provider": "whoop"}},
         ]}},
         db_file=db_file, profile_key="p", activity_extractor=lambda _p: [],
         sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
@@ -104,3 +107,16 @@ def test_proof_counts_recovery_score_only_when_whoop_attributed():
     assert proof_for("whoop")["fields_used"] == ["recovery_score"]
     oura = proof_for("oura")
     assert oura["fields_used"] == [] and oura["used_for_recommendation"] is False
+
+
+def test_ingest_drops_boolean_recovery_scores(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    count = hub.store_wearable_facts(
+        {"fetched_at": datetime.now(timezone.utc).isoformat(), "recovery_summary": {"data": [
+            {"date": datetime.now().date().isoformat(), "recovery_score": True, "source": {"provider": "whoop"}},
+        ]}},
+        db_file=db_file, profile_key="p", activity_extractor=lambda _p: [],
+        sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+    )
+    assert count == 0
+    assert hub.recommendation_facts(db_file, "p") == []

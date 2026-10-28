@@ -203,6 +203,8 @@ def _first_value(row: dict, *keys):
 
 def _number(row: dict, *keys):
     value = _first_value(row, *keys)
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value) if value is not None else None
     except (TypeError, ValueError):
