@@ -9834,6 +9834,7 @@
                 result_kind: payload && payload.result_kind ? payload.result_kind : null,
                 summary: payload && payload.summary ? payload.summary : '',
                 applied_notes: Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [],
+                skipped_notes: Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [],
                 recommendation: payload && payload.recommendation ? payload.recommendation : null,
                 meta: payload && payload.meta ? payload.meta : {},
                 cache_hit: !!(payload && payload.cache_hit),
@@ -9873,6 +9874,8 @@
         const restoredBanner = $('adjust-restored-banner');
         if (!stateEl || !result || !summaryEl || !notesEl || !metaEl) return;
         const notes = Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [];
+        const skippedNotes = (Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [])
+            .map((n) => String(n || '').trim()).filter(Boolean);
         const rawKind = (payload && payload.result_kind) || (notes.length ? 'changed' : 'unchanged');
         const kind = ADJUST_KIND_TABLE[rawKind] ? rawKind : 'changed';
         const kindMeta = ADJUST_KIND_TABLE[kind];
@@ -9887,7 +9890,10 @@
         if (kind === 'changed' && notes.length) {
             notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
         } else if (kind === 'unchanged') {
-            notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
+            // FIT-265: say why nothing changed (e.g. exercise not found), not just "clamped".
+            notesEl.innerHTML = skippedNotes.length
+                ? '<div class="dim">Nothing was changed:</div><ul>' + skippedNotes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul><div class="dim">The original plan stands.</div>'
+                : '<div class="dim">No change was applied. The original plan stands.</div>';
         } else if (kind === 'refused') {
             notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
         } else {
