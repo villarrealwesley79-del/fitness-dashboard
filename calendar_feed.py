@@ -18,6 +18,8 @@ from dateutil.rrule import rrulestr
 
 _HOST = "calendar.google.com"
 _MAX_INSTANCES = 1000  # per recurring event inside the window
+_FREQS = {"DAILY", "WEEKLY", "MONTHLY", "YEARLY"}
+_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # most days each month can have
 _DURATION = re.compile(
     r"^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$"
 )
@@ -44,9 +46,7 @@ def validate_ical_url(url: str) -> str:
         and "#" not in url
         and p.scheme == "https"
         and p.netloc == _HOST  # rejects userinfo, ports and other hosts
-        and p.path.startswith("/calendar/ical/")
-        and "/private-" in p.path
-        and p.path.endswith(".ics")
+        and re.fullmatch(r"/calendar/ical/[^/]+/private-[^/]+/[^/]+\.ics", p.path)
     ):
         raise ValueError(
             "Use the 'Secret address in iCal format' from Google Calendar settings "
@@ -141,6 +141,23 @@ def _duration(value: str) -> timedelta:
     return -delta if m.group(1) == "-" else delta
 
 
+def _rule_possible(rule_text: str) -> bool:
+    """False for rules whose walk from an old DTSTART would be slow or never match.
+
+    shortcut: sub-daily rules are dropped (an old DTSTART makes dateutil walk every second/hour);
+    only the month/day-of-month combinations that cannot exist (Feb 30) are screened, so other
+    impossible rules can still cost up to ~2 s each. Upgrade if a real feed does that.
+    """
+    parts = dict(p.partition("=")[::2] for p in rule_text.upper().split(";"))
+    if parts.get("FREQ") not in _FREQS:
+        return False
+    months = [int(m) for m in parts.get("BYMONTH", "").split(",") if m]
+    if any(not 1 <= m <= 12 for m in months):
+        return False
+    days = [abs(int(d)) for d in parts.get("BYMONTHDAY", "").split(",") if d]
+    return not (months and days) or any(d <= _MONTH_DAYS[m - 1] for m in months for d in days)
+
+
 def _first(props: dict, name: str):
     return props[name][0] if name in props else None
 
@@ -170,6 +187,8 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
             for v in val.split(",")
             if v.strip()
         }
+        if not _rule_possible(props["RRULE"][0][1]):
+            return []
         rule = rrulestr(props["RRULE"][0][1], dtstart=start)
         starts = [
             s
@@ -242,6 +261,7 @@ def free_windows(busy, window_start: datetime, window_end: datetime, min_minutes
     """
     out, cursor = [], window_start
     for s, e in [*sorted(busy), (window_end, window_end)]:
+        s = min(s, window_end)  # a busy interval after the window must not stretch the last gap
         if s - cursor >= timedelta(minutes=min_minutes):
             out.append((cursor, s))
         cursor = max(cursor, e)
@@ -250,6 +270,7 @@ def free_windows(busy, window_start: datetime, window_end: datetime, min_minutes
 
 def fit_session(windows, wanted_minutes: int, time_options) -> dict:
     """Longest-window fit, rounded down to a time option; fits=False if even the smallest won't."""
+    wanted_minutes = max(wanted_minutes, min(time_options, default=0))  # below the smallest option -> smallest
     longest = max(windows, key=lambda w: w[1] - w[0], default=None)
     room = int((longest[1] - longest[0]).total_seconds() // 60) if longest else 0
     usable = min(wanted_minutes, room)
@@ -262,7 +283,7 @@ def fit_session(windows, wanted_minutes: int, time_options) -> dict:
         }
     minutes = max(options)
     start, end = next(w for w in windows if w[1] - w[0] >= timedelta(minutes=minutes))  # earliest that holds it
-    shortened = minutes < wanted_minutes
+    shortened = room < wanted_minutes  # only the calendar shortens; rounding down to an option does not
     return {
         "fits": True, "minutes": minutes, "window_start": start, "window_end": end, "shortened": shortened,
         "reason": f"Longest free window is {room} minutes." if shortened else None,

@@ -268,6 +268,23 @@ def test_fully_busy_or_too_short_does_not_fit():
         assert "20" in fit["reason"]
 
 
+def test_free_windows_never_extend_past_window_end():
+    out = cf.free_windows([(ny(2026, 10, 6, 22), ny(2026, 10, 6, 23))], ny(2026, 10, 6, 6), ny(2026, 10, 6, 21))
+    assert out == [(ny(2026, 10, 6, 6), ny(2026, 10, 6, 21))]
+
+
+def test_fit_reason_does_not_blame_the_calendar_when_it_has_room():
+    win = [(ny(2026, 10, 6, 8), ny(2026, 10, 6, 10))]  # 120 minutes
+    fit = cf.fit_session(win, 50, OPTIONS)
+    assert (fit["minutes"], fit["shortened"], fit["reason"]) == (45, False, None)  # rounding, not the calendar
+    assert cf.fit_session(win, 150, OPTIONS)["shortened"] is True
+
+
+def test_short_wanted_time_with_a_big_window_is_not_reported_as_no_window():
+    fit = cf.fit_session([(ny(2026, 10, 6, 8), ny(2026, 10, 6, 10))], 15, OPTIONS)
+    assert (fit["fits"], fit["minutes"], fit["shortened"]) == (True, 20, False)
+
+
 # --- URL validation and fetch ----------------------------------------------------
 
 
@@ -286,6 +303,8 @@ def test_valid_url_is_accepted_and_stripped():
         "https://calendar.google.com/calendar/ical/x/public/basic.ics",
         "https://calendar.google.com/other/x/private-abc/basic.ics",
         "https://calendar.google.com/calendar/ical/x/private-abc/basic.html",
+        "https://calendar.google.com/calendar/ical/x/private-a/../../../x.ics",
+        "https://calendar.google.com/calendar/ical/x/public/basic.ics/private-.ics",
         URL + "?next=http://evil.example",
         URL + "?",
         URL + "#frag",
@@ -356,3 +375,32 @@ def test_fetch_errors_never_contain_the_url(error):
 def test_default_opener_refuses_redirects():
     handler = cf._NoRedirect()
     assert handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/") is None
+
+
+# --- hostile recurrence rules stay cheap ------------------------------------------
+
+
+def _timed(rrule: str, dtstart: str = "20200101T090000Z") -> str:
+    return (
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:h\n"
+        f"DTSTART:{dtstart}\nDTEND:{dtstart[:9]}100000Z\n{rrule}\nEND:VEVENT\nEND:VCALENDAR\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "rrule",
+    ["RRULE:FREQ=SECONDLY", "RRULE:FREQ=MINUTELY", "RRULE:FREQ=HOURLY;BYMONTH=2;BYMONTHDAY=30",
+     "RRULE:FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30", "RRULE:FREQ=YEARLY;BYMONTH=4,6;BYMONTHDAY=31",
+     "RRULE:FREQ=DAILY;BYMONTH=13"],
+)
+def test_sub_daily_and_impossible_rrules_are_dropped_fast(rrule):
+    import time
+
+    t = time.monotonic()
+    events = cf.parse_events(_timed(rrule), ny(2026, 10, 6), ny(2026, 10, 7))
+    assert events == [] and time.monotonic() - t < 0.5
+
+
+def test_possible_month_day_rule_still_expands():
+    events = cf.parse_events(_timed("RRULE:FREQ=MONTHLY;BYMONTHDAY=-1"), ny(2026, 10, 30), ny(2026, 11, 1))
+    assert len(events) == 1

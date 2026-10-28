@@ -2,6 +2,8 @@
 
 The daily plan can fit around your calendar using Google's private iCal feed. It is read-only: the app never writes to your calendar.
 
+> Status: this PR adds only the feed library (`calendar_feed.py`). The Settings field and the storage behaviour described below arrive with the wiring PR.
+
 ## Where the address is
 
 1. Open Google Calendar on a computer (the phone app does not show it).
