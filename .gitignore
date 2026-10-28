@@ -50,3 +50,6 @@ templates/**/*.bak*
 server*.log
 fitness.log
 .gstack/
+
+# Playwright CLI snapshots from browser QA runs
+.playwright-cli/
