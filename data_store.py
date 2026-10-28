@@ -704,14 +704,17 @@ def init_data_db():
         }
         if "published_at" not in existing_adaptation_event_cols:
             conn.execute("ALTER TABLE workout_adaptation_events ADD COLUMN published_at TEXT")
-            if "status" in existing_adaptation_event_cols:
-                conn.execute(
-                    """
-                    UPDATE workout_adaptation_events
-                       SET published_at = created_at
-                     WHERE status = 'applied'
-                    """
-                )
+        # The ALTER above autocommits but this UPDATE and the adapted_plan_json ALTER
+        # below commit together, so an interrupted upgrade (published_at present,
+        # adapted_plan_json absent) re-runs the backfill; only pre-upgrade rows exist then.
+        if "adapted_plan_json" not in existing_adaptation_event_cols and "status" in existing_adaptation_event_cols:
+            conn.execute(
+                """
+                UPDATE workout_adaptation_events
+                   SET published_at = created_at
+                 WHERE status = 'applied' AND published_at IS NULL
+                """
+            )
         if "adapted_plan_json" not in existing_adaptation_event_cols:
             conn.execute(
                 "ALTER TABLE workout_adaptation_events ADD COLUMN adapted_plan_json TEXT"

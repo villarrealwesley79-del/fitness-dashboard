@@ -578,9 +578,17 @@
     }
 
     async function refreshWorkoutAdaptationVisiblePlan() {
+        // The dashboard and the active workout refresh independently: a dashboard
+        // outage must not block the workout update or the event feed read.
+        let dashboardOk = true;
         try {
             await getDashboard(true);
             paintDashboardFromState();
+        } catch (err) {
+            console.warn('adapted dashboard refresh failed:', err);
+            dashboardOk = false;
+        }
+        try {
             await getNextWorkout(true);
             await renderNextWorkout();
             if (workoutAdaptationNoticeState.pendingAppliedPlanRevision != null) {
@@ -589,7 +597,10 @@
                 );
                 workoutAdaptationNoticeState.pendingAppliedPlanRevision = null;
             }
-            workoutAdaptationNoticeState.refreshPending = false;
+            workoutAdaptationNoticeState.refreshPending = !dashboardOk;
+            if (!dashboardOk) {
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
             return true;
         } catch (err) {
             console.warn('adapted workout refresh failed:', err);

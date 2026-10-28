@@ -5521,16 +5521,12 @@ def api_dashboard():
     if not using_stored_customization:
         persisted = _persist_current_workout_plan(next_workout, fingerprint)
         if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            # A concurrent log may have deleted the plan; serve the generated
+            # plan unpersisted rather than failing the read-only dashboard.
             next_workout = _current_workout_plan_for_fingerprint(
                 fingerprint,
                 durable_only=True,
-            )
-            if next_workout is None:
-                return api_error(
-                    "Workout plan changed while this request was in progress. Refresh and retry.",
-                    409,
-                    code="workout_plan_conflict",
-                )
+            ) or next_workout
         else:
             next_workout = persisted or next_workout
     whoop_adjusted = _wearable_adjusted_for_display(

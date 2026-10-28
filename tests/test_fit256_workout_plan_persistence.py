@@ -644,7 +644,7 @@ def test_next_workout_delete_race_returns_conflict_without_losing_payload(
     assert data_store.get_current_workout_plan(1) is None
 
 
-def test_dashboard_delete_race_returns_conflict_without_losing_payload(
+def test_dashboard_delete_race_serves_generated_plan_without_persisting_it(
     monkeypatch,
     tmp_path,
 ):
@@ -672,10 +672,8 @@ def test_dashboard_delete_race_returns_conflict_without_losing_payload(
     monkeypatch.setattr(module, "save_current_workout_plan", save_then_delete)
     response = client.get("/api/dashboard")
 
-    assert response.status_code == 409
-    payload = response.get_json()
-    assert payload["error"]["code"] == "workout_plan_conflict"
-    assert "next_workout" not in payload
+    assert response.status_code == 200
+    assert response.get_json()["next_workout"]["id"] == "losing-dashboard-generated-plan"
     assert data_store.get_current_workout_plan(1) is None
 
 
