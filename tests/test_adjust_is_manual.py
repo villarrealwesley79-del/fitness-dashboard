@@ -35,8 +35,7 @@ def _plan(module):
     }
 
 
-@pytest.fixture()
-def client(monkeypatch, tmp_path):
+def _make_client(monkeypatch, tmp_path, edit_plan=None):
     monkeypatch.setenv("SECRET_KEY", "per1583-secret")
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
@@ -50,7 +49,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "WORKOUTS", [])
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
-    monkeypatch.setattr(module, "generate_next_workout", lambda *_a, **_k: _plan(module))
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_a, **_k: edit_plan(_plan(module)) if edit_plan else _plan(module))
 
     def no_socket(*_args, **_kwargs):
         raise AssertionError("adjust must not open a socket")
@@ -61,6 +60,11 @@ def client(monkeypatch, tmp_path):
     test_client = module.app.test_client()
     assert test_client.get("/api/next-workout").status_code == 200
     return test_client
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    return _make_client(monkeypatch, tmp_path)
 
 
 def _adjust(client, body):
@@ -114,6 +118,32 @@ def test_drop_cardio_on_a_plan_without_cardio_reports_nothing(client):
     assert response.status_code == 200
     assert payload["result_kind"] != "changed"
     assert not any("Cardio" in note for note in payload.get("applied_notes") or [])
+
+
+def test_no_cardio_preset_drops_a_real_generated_cardio_block(monkeypatch, tmp_path):
+    # Shape generate_next_workout builds for included cardio: no include_cardio key.
+    client = _make_client(monkeypatch, tmp_path, lambda plan: {
+        **plan, "cardio": {"type": "Rower", "duration_minutes": 20, "zone": 2, "intensity": "easy"}})
+    response = _adjust(client, {"constraint": "No cardio today", "intent": {"drop_cardio": True}})
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["result_kind"] == "changed"
+    assert "Removed: Cardio finisher — per your request" in payload["applied_notes"]
+    assert client.get("/api/next-workout").get_json()["next_workout"]["cardio"] is None
+
+
+def test_time_box_note_is_honest_when_one_exercise_exceeds_it(monkeypatch, tmp_path):
+    def long_first(plan):
+        plan["exercises"][0]["target_sets"] = 12
+        return plan
+
+    client = _make_client(monkeypatch, tmp_path, long_first)
+    response = _adjust(client, {"constraint": "10 minutes", "intent": {"duration_cap_min": 10}})
+
+    trimmed = next(n for n in response.get_json()["applied_notes"] if n.startswith("Trimmed:"))
+    assert "fits 10 min window" not in trimmed
+    assert "shortest plan" in trimmed
 
 
 @pytest.mark.parametrize("intent", [

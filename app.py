@@ -6093,12 +6093,14 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 break
             minutes_used += ex_minutes
             kept.append(ex)
+        new_estimated_minutes = int(minutes_used + 10)
         if len(kept) < len(exercises):
-            dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
-            applied_notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            dropped = ", ".join(ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):])
+            fits = new_estimated_minutes <= duration_cap
+            tail = f"fits {int(duration_cap)} min window" if fits else f"kept the first exercise; shortest plan is {new_estimated_minutes} min"
+            applied_notes.append(f"Trimmed: {dropped} — {tail}")
             exercises = kept
         old_estimated_minutes = recommendation.get("estimated_minutes")
-        new_estimated_minutes = int(minutes_used + 10)
         recommendation["estimated_minutes"] = new_estimated_minutes
         if old_estimated_minutes != new_estimated_minutes:
             applied_notes.append(
@@ -6106,7 +6108,9 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio") and (recommendation.get("cardio") or {}).get("include_cardio"):
+    cardio = recommendation.get("cardio")
+    # Included cardio has no include_cardio key; only the skip shapes carry False.
+    if intent.get("drop_cardio") and cardio and cardio.get("include_cardio", True) is not False:
         recommendation["cardio"] = None
         applied_notes.append("Removed: Cardio finisher — per your request")
 
