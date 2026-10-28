@@ -410,3 +410,89 @@ def test_possible_month_day_rule_still_expands():
 def test_negative_duration_event_is_dropped():
     ics = _timed("RRULE:FREQ=DAILY").replace("DTEND:20200101T100000Z", "DURATION:-PT1H")
     assert cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7)) == []
+
+
+# --- PR #355 fix round -------------------------------------------------------------
+
+
+def _busy(text, ws, we):
+    return cf.busy_intervals(cf.parse_events(text, ws, we), ws, we)
+
+
+def test_dst_spring_forward_recurring_overnight_event_overlapping_window_start():
+    ics = vevent("UID:night", "DTSTART;TZID=America/New_York:20260301T203000",
+                 "DTEND;TZID=America/New_York:20260302T053000", "RRULE:FREQ=DAILY")
+    ws, we = ny(2026, 3, 8, 6), ny(2026, 3, 8, 21)
+    b = _busy(ics, ws, we)
+    assert b and b[0][0] == ws
+
+
+@pytest.mark.parametrize(
+    "rrule",
+    ["RRULE:FREQ=DAILY;BYHOUR=" + ",".join(map(str, range(24))) + ";BYMINUTE=" + ",".join(map(str, range(60))),
+     "RRULE:FREQ=DAILY;BYHOUR=" + ",".join(map(str, range(24))) + ";BYMINUTE=" + ",".join(map(str, range(60)))
+     + ";BYSECOND=" + ",".join(map(str, range(60))),
+     "RRULE:FREQ=DAILY;BYEASTER=1"],
+)
+def test_dense_expansions_and_byeaster_are_dropped_fast(rrule):
+    import time
+
+    t = time.monotonic()
+    assert cf.parse_events(_timed(rrule, "19900101T090000Z"), ny(2026, 10, 6), ny(2026, 10, 7)) == []
+    assert time.monotonic() - t < 1
+
+
+def test_byeaster_event_does_not_abort_the_feed():
+    text = vevent("UID:bad", "DTSTART:20261006T090000Z", "DTEND:20261006T100000Z", "RRULE:FREQ=DAILY;BYEASTER=400") + vevent(
+        "UID:ok", "DTSTART:20261006T130000Z", "DTEND:20261006T140000Z")
+    assert [e.uid for e in parse(text, ny(2026, 10, 6), ny(2026, 10, 7))] == ["ok"]
+
+
+def test_any_exception_from_one_event_is_isolated(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("dateutil surprise")
+
+    monkeypatch.setattr(cf, "rrulestr", boom)
+    text = vevent("UID:bad", "DTSTART:20261006T090000Z", "DTEND:20261006T100000Z", "RRULE:FREQ=DAILY") + vevent(
+        "UID:ok", "DTSTART:20261006T130000Z", "DTEND:20261006T140000Z")
+    assert [e.uid for e in parse(text, ny(2026, 10, 6), ny(2026, 10, 7))] == ["ok"]
+
+
+def _mins(w):
+    return (w[1].astimezone(UTC) - w[0].astimezone(UTC)).total_seconds() / 60
+
+
+def test_spring_forward_window_counts_real_elapsed_minutes():
+    ws, we = ny(2026, 3, 8, 1, 30), ny(2026, 3, 8, 3, 30)  # 60 real minutes
+    wins = cf.free_windows([], ws, we)
+    assert [_mins(w) for w in wins] == [60]
+    r = cf.fit_session(wins, 90, OPTIONS)
+    assert r["minutes"] == 60 and r["shortened"] is True
+
+
+def test_fall_back_repeated_hour_is_compared_in_real_time():
+    ws, we = ny(2026, 11, 1, 0, 30), ny(2026, 11, 1, 3)  # 00:30 EDT -> 03:00 EST, 150 real minutes
+    start = datetime(2026, 11, 1, 6, 15, tzinfo=UTC).astimezone(NY)  # second 01:15, EST
+    end = datetime(2026, 11, 1, 6, 45, tzinfo=UTC).astimezone(NY)
+    b = cf.busy_intervals([cf.Event("x", start, end, False)], ws, we)
+    assert [(s.astimezone(UTC).hour * 60 + s.astimezone(UTC).minute, e.astimezone(UTC).hour * 60 + e.astimezone(UTC).minute) for s, e in b] == [(375, 405)]
+    assert [_mins(w) for w in cf.free_windows(b, ws, we)] == [105, 75]
+    # EDT 01:30 -> EST 01:15 is 45 real minutes though the wall clock runs backwards
+    s2 = datetime(2026, 11, 1, 5, 30, tzinfo=UTC).astimezone(NY)
+    assert len(cf.busy_intervals([cf.Event("y", s2, start, False)], ws, we)) == 1
+
+
+def test_rdate_adds_instances_and_exdate_can_remove_them():
+    base = ["UID:r", "DTSTART:20261005T090000Z", "DTEND:20261005T100000Z"]
+    ws, we = ny(2026, 10, 6), ny(2026, 10, 7)
+    b = _busy(vevent(*base, "RDATE:20261006T090000Z"), ws, we)
+    assert [(s.astimezone(UTC).hour, e.astimezone(UTC).hour) for s, e in b] == [(9, 10)]
+    b = _busy(vevent(*base, "RRULE:FREQ=WEEKLY;COUNT=2", "RDATE:20261006T090000Z"), ws, we)
+    assert len(b) == 1
+    b = _busy(vevent(*base, "RRULE:FREQ=WEEKLY;COUNT=2", "RDATE:20261006T090000Z", "EXDATE:20261006T090000Z"), ws, we)
+    assert b == []
+
+
+def test_rdate_period_values_are_skipped_not_fatal():
+    text = vevent("UID:p", "DTSTART:20261006T090000Z", "DTEND:20261006T100000Z", "RDATE;VALUE=PERIOD:20261007T090000Z/PT1H")
+    assert len(parse(text, ny(2026, 10, 6), ny(2026, 10, 7))) == 1

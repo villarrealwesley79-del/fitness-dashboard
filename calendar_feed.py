@@ -142,14 +142,20 @@ def _duration(value: str) -> timedelta:
 
 
 def _rule_possible(rule_text: str) -> bool:
-    """False for rules whose walk from an old DTSTART would be slow or never match.
+    """False for rules whose walk from an old DTSTART would be slow, never match, or crash dateutil.
 
-    shortcut: sub-daily rules are dropped (an old DTSTART makes dateutil walk every second/hour);
-    only the month/day-of-month combinations that cannot exist (Feb 30) are screened, so other
-    impossible rules can still cost up to ~2 s each. Upgrade if a real feed does that.
+    shortcut: sub-daily rules, dense BYHOUR x BYMINUTE x BYSECOND grids (> 24 times a day) and
+    BYEASTER (a dateutil extension that crashes) are dropped, and month/day-of-month pairs that
+    cannot exist (Feb 30) are screened. Other impossible rules (BYYEARDAY=366 with BYMONTH=1) are
+    still unbounded, so W6-wiring must parse with a per-feed time cap. Upgrade if a real feed does that.
     """
     parts = dict(p.partition("=")[::2] for p in rule_text.upper().split(";"))
-    if parts.get("FREQ") not in _FREQS or int(parts.get("INTERVAL", "1")) < 1:  # INTERVAL=0 makes dateutil loop forever
+    if parts.get("FREQ") not in _FREQS or int(parts.get("INTERVAL", "1")) < 1 or "BYEASTER" in parts:  # INTERVAL=0 makes dateutil loop forever
+        return False
+    n = 1
+    for k in ("BYHOUR", "BYMINUTE", "BYSECOND"):
+        n *= len([v for v in parts.get(k, "").split(",") if v]) or 1
+    if n > 24:
         return False
     months = [int(m) for m in parts.get("BYMONTH", "").split(",") if m]
     if any(not 1 <= m <= 12 for m in months):
@@ -180,33 +186,37 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
     dur = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)  # real elapsed time across DST
     if dur < timedelta(0):  # negative DURATION/DTEND before DTSTART: nothing to block
         return []
-    if rid is not None or "RRULE" not in props:
+    u = lambda d: d.astimezone(timezone.utc)  # same-zone aware datetimes compare by wall clock; UTC is real time
+    if rid is not None:
         starts = [start]
     else:
-        ex = {
-            _dt(p, v, tz)[0].astimezone(timezone.utc)
-            for p, val in props.get("EXDATE", [])
+        dates = lambda name: [  # RDATE VALUE=PERIOD is skipped; Google does not emit it
+            _dt(p, v, tz)[0]
+            for p, val in props.get(name, [])
+            if p.get("VALUE") != "PERIOD"
             for v in val.split(",")
             if v.strip()
-        }
-        if not _rule_possible(props["RRULE"][0][1]):
-            return []
-        rule = rrulestr(props["RRULE"][0][1], dtstart=start)
-        starts = [
-            s
-            for s in islice(takewhile(lambda s: s < we, rule.xafter(ws - dur, inc=True)), _MAX_INSTANCES)
-            if s.astimezone(timezone.utc) not in ex and (uid, s.astimezone(timezone.utc)) not in overridden
         ]
+        ex = {u(d) for d in dates("EXDATE")}
+        starts = [start]
+        if "RRULE" in props:
+            starts = []
+            if _rule_possible(props["RRULE"][0][1]):
+                rule = rrulestr(props["RRULE"][0][1], dtstart=start)
+                starts = list(islice(takewhile(lambda s: u(s) < u(we), rule.xafter(u(ws) - dur, inc=True)), _MAX_INSTANCES))
+        starts = [s for s in starts + dates("RDATE") if u(s) not in ex and (uid, u(s)) not in overridden]
     out = []
     for s in starts:
-        e = (s.astimezone(timezone.utc) + dur).astimezone(s.tzinfo)
-        if s < we and e > ws:
+        e = (u(s) + dur).astimezone(s.tzinfo)
+        if u(s) < u(we) and u(e) > u(ws):
             out.append(Event(uid, s, e, False))
     return out
 
 
 def parse_events(ics_text: str, window_start: datetime, window_end: datetime) -> list[Event]:
     """Events overlapping the window, recurrences expanded inside it. Never raises on bad ICS.
+
+    RDATE (DATE / DATE-TIME) adds instances like RRULE does; RDATE;VALUE=PERIOD is skipped.
 
     window_start must be timezone-aware; floating (zoneless) times take its zone.
     """
@@ -222,7 +232,7 @@ def parse_events(ics_text: str, window_start: datetime, window_end: datetime) ->
             rid = _dt(*rid, tz)[0].astimezone(timezone.utc) if rid else None
             seq = _first(props, "SEQUENCE")
             seq = int(seq[1]) if seq else 0
-        except (ValueError, KeyError, OverflowError, TypeError):
+        except Exception:  # per-event isolation is the contract: one bad event never aborts the feed
             continue
         if (uid, rid) not in chosen or seq >= chosen[(uid, rid)][0]:
             chosen[(uid, rid)] = (seq, props)
@@ -231,8 +241,8 @@ def parse_events(ics_text: str, window_start: datetime, window_end: datetime) ->
     for (uid, rid), (_, props) in chosen.items():
         try:
             out += _instances(uid, rid, props, tz, window_start, window_end, overridden)
-        except (ValueError, KeyError, OverflowError, TypeError):
-            continue  # shortcut: one bad event (unknown TZID, bad RRULE) is dropped, not reported
+        except Exception:  # per-event isolation is the contract; shortcut: a bad event is dropped, not reported
+            continue
     return out
 
 
@@ -241,10 +251,12 @@ def parse_events(ics_text: str, window_start: datetime, window_end: datetime) ->
 
 def busy_intervals(events, window_start: datetime, window_end: datetime) -> list[tuple[datetime, datetime]]:
     """Timed events clipped to the window and merged. All-day events are ignored."""
+    u = lambda d: d.astimezone(timezone.utc)  # real time, not wall clock, across DST
+    ws, we = u(window_start), u(window_end)
     clipped = sorted(
-        (max(e.start, window_start), min(e.end, window_end))
+        (max(u(e.start), ws), min(u(e.end), we))
         for e in events
-        if not e.all_day and e.end > window_start and e.start < window_end and e.end > e.start
+        if not e.all_day and u(e.end) > ws and u(e.start) < we and u(e.end) > u(e.start)
     )
     merged: list[list[datetime]] = []
     for s, e in clipped:
@@ -261,11 +273,13 @@ def free_windows(busy, window_start: datetime, window_end: datetime, min_minutes
 
     For today pass window_start = max(now, training_hours_start) so past slots are not offered.
     """
-    out, cursor = [], window_start
-    for s, e in [*sorted(busy), (window_end, window_end)]:
-        s = min(s, window_end)  # a busy interval after the window must not stretch the last gap
+    u, tz = (lambda d: d.astimezone(timezone.utc)), window_start.tzinfo  # compare in real time across DST
+    we = u(window_end)
+    out, cursor = [], u(window_start)
+    for s, e in [*sorted((u(s), u(e)) for s, e in busy), (we, we)]:
+        s = min(s, we)  # a busy interval after the window must not stretch the last gap
         if s - cursor >= timedelta(minutes=min_minutes):
-            out.append((cursor, s))
+            out.append((cursor.astimezone(tz), s.astimezone(tz)))
         cursor = max(cursor, e)
     return out
 
@@ -273,8 +287,9 @@ def free_windows(busy, window_start: datetime, window_end: datetime, min_minutes
 def fit_session(windows, wanted_minutes: int, time_options) -> dict:
     """Longest-window fit, rounded down to a time option; fits=False if even the smallest won't."""
     wanted_minutes = max(wanted_minutes, min(time_options, default=0))  # below the smallest option -> smallest
-    longest = max(windows, key=lambda w: w[1] - w[0], default=None)
-    room = int((longest[1] - longest[0]).total_seconds() // 60) if longest else 0
+    span = lambda w: w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)  # real elapsed time
+    longest = max(windows, key=span, default=None)
+    room = int(span(longest).total_seconds() // 60) if longest else 0
     usable = min(wanted_minutes, room)
     options = [o for o in time_options if o <= usable]
     if not options:
@@ -284,7 +299,7 @@ def fit_session(windows, wanted_minutes: int, time_options) -> dict:
             "reason": f"No free window of at least {smallest} minutes.",
         }
     minutes = max(options)
-    start, end = next(w for w in windows if w[1] - w[0] >= timedelta(minutes=minutes))  # earliest that holds it
+    start, end = next(w for w in windows if span(w) >= timedelta(minutes=minutes))  # earliest that holds it
     shortened = room < wanted_minutes  # only the calendar shortens; rounding down to an option does not
     return {
         "fits": True, "minutes": minutes, "window_start": start, "window_end": end, "shortened": shortened,
