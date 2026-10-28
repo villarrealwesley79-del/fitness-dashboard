@@ -5,6 +5,7 @@ import copy
 import pytest
 
 import app as fitness_app
+from js_runtime import run_app_js
 
 
 @pytest.fixture(autouse=True)
@@ -156,11 +157,24 @@ def test_new_cardio_and_recovery_rows_receive_stable_ids(monkeypatch, tmp_path):
     assert isinstance(recovery["id"], str) and recovery["id"]
 
 
-def test_history_ui_deletes_by_id_and_undoes_with_returned_payload():
-    source = (fitness_app.os.path.dirname(fitness_app.__file__) + "/static/js/app.js")
-    with open(source, encoding="utf-8") as handle:
-        javascript = handle.read()
-
-    assert "JSON.stringify({ type: 'workout', id: workout.id })" in javascript
-    assert "restoreDeletedWorkout(deletedEntry)" in javascript
-    assert "index: workout._origIndex" not in javascript
+def test_history_delete_posts_id_and_undo_restores_returned_payload():
+    out = run_app_js(["performDeleteWorkout", "state"], """
+const requests = [];
+let undo = null;
+sandbox.__fitSet.api(async (path, opts) => {
+  requests.push({ path, body: JSON.parse(opts.body) });
+  if (path === '/api/delete-history') return { deleted: { id: 'w-abc', date: '2026-07-12', exercises: [] } };
+  return { status: 'success' };
+});
+sandbox.__fitSet.renderHistory(async () => {});
+sandbox.__fitSet.toast(() => {});
+sandbox.__fitSet.toastUndo((_msg, fn) => { undo = fn; });
+await e.performDeleteWorkout({ id: 'w-abc', _origIndex: 3, date: '2026-07-12' }, null);
+await e.performDeleteWorkout({ _origIndex: 0, date: '2026-07-12' }, null);  // no id: must not post an index
+if (undo) await undo();
+process.stdout.write(JSON.stringify(requests));
+""", mocks=["api", "renderHistory", "toast", "toastUndo"])
+    assert out[0] == {"path": "/api/delete-history", "body": {"type": "workout", "id": "w-abc"}}
+    assert out[1] == {"path": "/api/restore-history",
+                      "body": {"type": "workout", "entry": {"id": "w-abc", "date": "2026-07-12", "exercises": []}}}
+    assert len(out) == 2
