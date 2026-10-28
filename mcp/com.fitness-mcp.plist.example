@@ -25,6 +25,7 @@
     <key>MCP_STORAGE_ENCRYPTION_KEY_FILE</key><string>/Users/REPLACE_USER/.fitness-mcp/storage-key</string>
     <key>MCP_BOT_TOKEN_SHA256</key><string>REPLACE_WITH_SHA256_OF_BOT_TOKEN</string>
     <key>MCP_EXTRA_REDIRECT_URIS</key><string></string>
+    <key>FASTMCP_LOG_LEVEL</key><string>ERROR</string>
     <key>FITNESS_API_BASE</key><string>http://127.0.0.1:5050</string>
     <key>FITNESS_READ_TOKEN_FILE</key><string>/Users/REPLACE_USER/REPLACE_DATA_DIR/.mcp-read-token</string>
   </dict>

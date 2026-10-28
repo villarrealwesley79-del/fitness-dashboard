@@ -162,6 +162,7 @@ def register(mcp: FastMCP, dash: Dashboard) -> None:
         return {
             "nights": _since(_rows(sleep.get("history"), (
                 "date", "sleep_duration_min", "deep_sleep_min", "rem_sleep_min", "light_sleep_min",
+                "deep_min", "rem_min", "light_min",  # imported nights (manual, Apple Watch) use these names
                 "awake_min", "sleep_score", "efficiency", "avg_heart_rate", "avg_hrv", "source",
             )), days),
             **_pick(sleep, ("consistency_score", "sleep_perf_correlation")),
@@ -174,6 +175,7 @@ def register(mcp: FastMCP, dash: Dashboard) -> None:
     async def get_open_windows(day: str = "today") -> dict:
         if day not in ("today", "tomorrow"):
             raise ToolError("day must be 'today' or 'tomorrow'.")
+        # Expected shape (W6 route must match): {status, day, windows:[{start,end,minutes}], busy:[{start,end}]}
         raw = await dash.get("/api/calendar/windows", day=day)
         if raw is None:  # route not shipped, or no calendar feed configured
             return {"status": "unconfigured", "day": day}

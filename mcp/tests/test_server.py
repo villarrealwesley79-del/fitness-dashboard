@@ -57,7 +57,7 @@ ROUTES = {
     "/api/progressive-overload": {"exercises": [{"exercise": "Chest Press", "last_weight": 100, "x": LEAK, "history": [{"date": TODAY, "weight": 100, "x": LEAK}]}]},
     "/api/body-history": {"trend": "stable", "history": [{"date": TODAY, "weight_lbs": 180, "notes": LEAK}]},
     "/api/body-recomp": {"summary": {"latest": {"date": TODAY, "weight_lbs": 180, "notes": LEAK}, "target_weight_lbs": 175, "x": LEAK}},
-    "/api/sleep/analytics": {"history": [{"date": TODAY, "sleep_duration_min": 450, "notes": LEAK}], "consistency_score": 90},
+    "/api/sleep/analytics": {"history": [{"date": TODAY, "sleep_duration_min": 450, "deep_min": 80, "notes": LEAK}], "consistency_score": 90},
     "/api/freshness": {"freshness": FRESH},
 }
 
@@ -216,6 +216,7 @@ def test_tools_return_only_documented_fields(client):
     plan = outputs["get_today_plan"]
     assert plan["next_workout"]["exercises"] == [{"exercise": "Chest Press", "target_sets": 3, "target_reps": 8}]
     assert set(plan["data_freshness"]) == {"open_wearables", "oura", "whoop", "apple_health"}
+    assert outputs["get_sleep_recovery"]["nights"][0]["deep_min"] == 80  # imported-night key name survives
     history = outputs["get_workout_history"]
     assert [w["date"] for w in history["workouts"]] == [TODAY]  # the 2001 session is outside `days`
     assert history["workouts"][0]["exercises"] == [{"name": "Chest Press", "sets": [{"weight_lbs": 100, "reps": 8, "rpe": 7}]}]
@@ -253,13 +254,15 @@ def test_refused_uri_cannot_forge_log_lines(client, caplog):
     assert caplog.text.count("\n") <= 1 and "\\n" in caplog.text
 
 
-def test_anonymous_endpoints_are_rate_limited():
+def test_anonymous_endpoints_are_rate_limited(caplog):
     async def ok(scope, receive, send):
         await PlainTextResponse("ok")(scope, receive, send)
 
     limited = TestClient(LogRejectedRedirects(ok, limit=3), base_url="http://127.0.0.1:8765")
-    codes = [limited.post("/register").status_code for _ in range(4)] + [limited.get("/authorize").status_code]
+    with caplog.at_level(logging.WARNING, logger="fitness_mcp"):
+        codes = [limited.post("/register").status_code for _ in range(4)] + [limited.get("/authorize").status_code]
     assert codes == [200, 200, 200, 429, 429]
+    assert caplog.text.count("rate limited") == 1  # a flood must not grow the log per request
     assert limited.get("/mcp").status_code == 200  # other paths are not counted
 
 

@@ -44,7 +44,7 @@ Put `$TOKEN` only in the bot's own config. The server stores just the hash. Leav
 ### 3. Flask read token
 
 ```sh
-openssl rand -hex 32 > "$DATA_DIR/.mcp-read-token" && chmod 600 "$DATA_DIR/.mcp-read-token"
+(umask 077; openssl rand -hex 32 > "$DATA_DIR/.mcp-read-token")
 ```
 
 `DATA_DIR` is the dashboard's data directory. Flask accepts this token only for a fixed list of GET routes, only from a loopback peer with a loopback `Host`, and never when any `X-Forwarded-*`, `Forwarded` or `Tailscale-*` header is present (Funnel traffic also arrives from 127.0.0.1). If the file is missing, empty or readable by group/others, the feature is off. Point `FITNESS_READ_TOKEN_FILE` at the same file.
@@ -106,7 +106,7 @@ Tell the assistant to block calendar time with its own calendar connector. This 
 - FastMCP [#4265](https://github.com/PrefectHQ/fastmcp/issues/4265): refresh-token rotation has no grace window, so Claude can disconnect on refresh. [#4854](https://github.com/PrefectHQ/fastmcp/issues/4854): a GitHub 5xx can end sessions. Both open; pinned to 4.1.4.
 - The host/origin guard refuses any request carrying a cross-origin `Origin` header (403), including discovery and `/register`. Vendor back ends don't send one, but a client that does OAuth from the browser would be blocked. If a first connect fails with 403, the fix is `allowed_origins` for that client's origin in `mcp/server.py`; not added speculatively.
 - Tool output can carry prompt injection; read-only tools limit the damage.
-- `/register` and `/authorize` are anonymous and each call leaves a file in `MCP_STORAGE_DIR` that FastMCP never cleans up. The server answers 429 after 60 calls per hour in total (one global window; behind Funnel every peer looks like 127.0.0.1). A flood can therefore block a new connect for up to an hour, but it cannot fill the disk. Existing connections keep working.
+- `/register` and `/authorize` are anonymous and each call leaves a file in `MCP_STORAGE_DIR` that FastMCP never cleans up. The server answers 429 after 60 calls per hour in total (one global window; behind Funnel every peer looks like 127.0.0.1). A flood can therefore block a new connect for up to an hour; existing connections keep working. Anonymous traffic can add at most about 60 `refused` lines plus one `rate limited` line per hour (the rate limit logs once per window), and the plist sets `FASTMCP_LOG_LEVEL=ERROR`, which silences FastMCP's own warnings (bad-token and client-metadata fetch failures). The trade-off is that FastMCP warnings such as upstream refresh failures are not logged either. The log file is not rotated.
 - Open Wearables' own MCP is deliberately not proxied: it is stdio-only and unauthenticated, and its API key can delete users and workouts.
 
 ## Tests

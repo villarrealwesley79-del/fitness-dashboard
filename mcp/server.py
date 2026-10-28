@@ -110,7 +110,7 @@ class LogRejectedRedirects:
 
     Also caps both anonymous endpoints: each call writes a file that is never cleaned up.
     shortcut: one global fixed window, not per client (behind Funnel every peer is 127.0.0.1);
-    a flood can lock the owner out of connecting for up to an hour, but cannot fill the disk.
+    a flood can lock the owner out of connecting for up to an hour. It writes one log line per window.
     """
 
     def __init__(self, app, limit: int = 60, window: int = 3600):
@@ -125,7 +125,8 @@ class LogRejectedRedirects:
             self.started, self.count = time.monotonic(), 0
         self.count += 1
         if self.count > self.limit:
-            log.warning("%s rate limited: more than %d calls in %d s", path, self.limit, self.window)
+            if self.count == self.limit + 1:  # one line per window, or a flood grows the log without bound
+                log.warning("%s rate limited: more than %d calls in %d s", path, self.limit, self.window)
             return await PlainTextResponse("Too many requests", status_code=429)(scope, receive, send)
         refused = False
 
