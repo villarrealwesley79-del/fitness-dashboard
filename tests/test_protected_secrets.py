@@ -117,3 +117,12 @@ def test_keychain_round_trip_preserves_long_secret():
         assert ps._keychain_find(service, account) == secret
     finally:
         ps._keychain_delete(service, account)
+
+
+def test_prefixed_fallback_beats_stale_keychain_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ps, "_keychain_find", lambda *_a: "stale-value")
+    path = tmp_path / "secret"
+    path.write_text(ps._encode_protected_secret_file_value("fresh-value"))
+
+    assert ps.load_protected_secret("svc", "acct", fallback_path=str(path)) == "fresh-value"

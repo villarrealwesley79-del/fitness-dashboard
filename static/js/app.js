@@ -2037,9 +2037,12 @@
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
         const freshness = (reco && reco.freshness) || (dash && dash.freshness) || null;
+        const openWearablesSource = ((dash && dash.recommendation_sources) || (reco && reco.recommendation_sources) || {}).open_wearables;
         const wearableStatuses = [
             freshness && freshness.oura && freshness.oura.status,
             freshness && freshness.apple_health && freshness.apple_health.status,
+            // WHOOP arrives only via Open Wearables: count the hub only when it supplied usable facts.
+            openWearablesSource && (openWearablesSource.used_for_recommendation ? 'fresh' : 'missing'),
         ].filter(Boolean);
         const wearableStale = wearableStatuses.indexOf('stale') >= 0;
         const wearableAllMissing = wearableStatuses.length > 0 && wearableStatuses.every(function (s) { return s === 'missing'; });

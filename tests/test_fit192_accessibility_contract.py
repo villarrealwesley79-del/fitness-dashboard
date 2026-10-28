@@ -335,3 +335,25 @@ def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
     assert "/static/js/app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
     assert "fitness-dashboard-v20260716-fit392-rpe" in sw
+
+
+def test_settings_hash_route_and_reco_sources_modal_aria_state():
+    """Port of deleted test_whoop_hash_routes_settings_and_recommendation_modal_tracks_aria_state."""
+    output = run_app_js(
+        ["initialTabFromHash", "openRecoSourcesModal"],
+        """
+sandbox.location.hash = '#settings';
+const tab = e.initialTabFromHash();
+const modal = { hidden: true };
+const trigger = { attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } };
+sandbox.elements['modal-reco-sources'] = modal;
+sandbox.elements['btn-reco-sources'] = trigger;
+sandbox.__fitSet.renderRecommendationSourceSummary(() => {});
+sandbox.__fitSet.focusOpenModal(() => {});
+e.openRecoSourcesModal();
+modal.__fit192Close();
+process.stdout.write(JSON.stringify({ tab, expanded: trigger.attrs['aria-expanded'], hidden: modal.hidden }));
+""",
+        mocks=["renderRecommendationSourceSummary", "focusOpenModal"],
+    )
+    assert output == {"tab": "tab-settings", "expanded": "false", "hidden": True}

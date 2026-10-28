@@ -22,6 +22,8 @@ import math
 import re
 from typing import Callable
 
+from recommendation_sources import is_whoop_recovery
+
 from wearable_fact_store import (
     WearableDailyFact,
     canonical_fact_date,
@@ -960,6 +962,8 @@ def store_wearable_facts(
             before_count = len(facts)
             for metric, (aliases, unit) in mappings.items():
                 value = _number(row, *aliases)
+                if metric == "recovery_score" and value is not None and not 0 <= value <= 100:
+                    value = None
                 if value is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", metric, value, unit,
@@ -1353,13 +1357,14 @@ RECOVERY_RPE_CAP = 7.0
 def _latest_whoop_recovery(facts):
     scores = []
     for fact in facts:
-        providers = {str(fact.get(key) or "").lower() for key in ("provider_id", "source_provider")}
-        if fact.get("metric") != "recovery_score" or "whoop" not in providers:
+        if not is_whoop_recovery(fact):
             continue
         try:
-            scores.append((str(fact.get("date") or ""), float(fact.get("value"))))
+            value = float(fact.get("value"))
         except (TypeError, ValueError):
             continue
+        if 0 <= value <= 100:  # out-of-range scores are excluded, never clamped
+            scores.append((str(fact.get("date") or ""), value))
     if not scores:
         return None
     latest = max(day for day, _ in scores)
@@ -1397,7 +1402,7 @@ def conservative_modifier(facts) -> dict:
     if recovery is not None and recovery < RECOVERY_CAUTION_BELOW:
         deload = recovery < RECOVERY_DOWNGRADE_BELOW
         applied.append("recovery_deload" if deload else "recovery_caution")
-        rpe_cap = None if deload else RECOVERY_RPE_CAP
+        rpe_cap = RECOVERY_RPE_CAP
         details.append(f"Open Wearables recovery score {int(round(recovery))} (provider: whoop, via: open_wearables)")
 
     return {

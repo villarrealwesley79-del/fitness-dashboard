@@ -4496,7 +4496,7 @@ def gym_now():
             include_open_wearables_readiness=False,
         )
         workout["_fit136_lightweight_no_ow"] = True
-    # Render the wearable-adjusted (deload/caution-clamped) view so /gym-now
+    # Render the wearable-adjusted (RPE-capped) view so /gym-now
     # shows the same sets/RPE as /api/next-workout during an active modifier;
     # the persisted plan stays the base plan (FIT-256 finding 2, display-only).
     workout = _wearable_display_adjusted_plan(workout)
@@ -7265,6 +7265,7 @@ def open_wearables_whoop_callback():
         response = jsonify({"status": "success", "provider": "whoop", "source": "open_wearables"})
     body, status = response if isinstance(response, tuple) else (response, None)
     body.headers["Cache-Control"] = "no-store"  # the code and state are in the URL
+    body.headers["Pragma"] = "no-cache"
     body.headers["Referrer-Policy"] = "no-referrer"
     return (body, status) if status else body
 

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 
+def is_whoop_recovery(fact) -> bool:
+    """The only recovery_score the guard and its proof count: one attributed to WHOOP."""
+    if not isinstance(fact, dict) or fact.get("metric") != "recovery_score":
+        return False
+    return "whoop" in {str(fact.get(key) or "").lower() for key in ("provider_id", "source_provider")}
+
+
 def build_open_wearables_recommendation_source(
     freshness: dict | None,
     providers: list[dict] | None = None,
@@ -40,13 +47,6 @@ def build_open_wearables_recommendation_source(
         "facts_used": len(facts),
         "applied_modifiers": modifier.get("applied_modifiers") or [],
     }
-
-
-def conservative_conflict_message(conflicts: list[dict] | None) -> str | None:
-    if not conflicts:
-        return None
-    first = conflicts[0]
-    return first.get("message") or first.get("summary") or "Wearable sources disagree, so the recommendation stays conservative."
 
 
 def build_recommendation_source_proof(
@@ -96,7 +96,7 @@ def build_recommendation_source_proof(
     open_fields = [
         fact.get("metric")
         for fact in source_inputs.get("open_wearables_facts") or []
-        if isinstance(fact, dict) and fact.get("metric") in {"sleep_duration", "active_minutes", "recovery_score"}
+        if isinstance(fact, dict) and (fact.get("metric") in {"sleep_duration", "active_minutes"} or is_whoop_recovery(fact))
     ]
     open_used = bool(open_fields) and bool(open_wearables_source.get("used_for_recommendation"))
     open_status = str(open_wearables_source.get("freshness") or "missing")

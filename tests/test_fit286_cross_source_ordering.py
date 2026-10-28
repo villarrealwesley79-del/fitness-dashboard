@@ -100,7 +100,7 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     exercise = payload["next_workout"]["exercises"][0]
     assert persisted_plans == []  # GET is read-only
     assert exercise["target_sets"] == 5  # no WHOOP set clamp any more
-    assert exercise["rpe_target"] == 8  # recovery 20 is a downgrade, not the 34-66 RPE cap
+    assert exercise["rpe_target"] == 7  # recovery 20 also gets the RPE cap: worse recovery never shows harder targets
 
     open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
     # Sleep and recovery both fire, but the recommendation is downgraded once.

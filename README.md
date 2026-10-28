@@ -163,7 +163,7 @@ WHOOP data reaches the app only through Open Wearables (the direct WHOOP OAuth,
 CSV import and token store were removed). The Open Wearables sidecar env holds
 the WHOOP client credentials; `/api/whoop/callback` only hands WHOOP's OAuth
 redirect to Open Wearables and keeps no tokens. A recent WHOOP recovery score
-below 34 downgrades the recommendation once; 34-66 caps the displayed RPE.
+below 67 caps the displayed RPE at 7, and below 34 also downgrades the recommendation once.
 
 Open Wearables setup is exposed through Settings as a non-technical wearable
 wrapper. The app can prepare the local hub profile from the local Open Wearables

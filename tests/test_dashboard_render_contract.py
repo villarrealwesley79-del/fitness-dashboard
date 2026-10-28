@@ -170,3 +170,33 @@ process.stdout.write(JSON.stringify({ empty, malformed }));
         "empty": '<div class="empty">Log a few workouts to start tracking progress.</div>',
         "malformed": '<div class="empty">Log a few workouts to start tracking progress.</div>',
     }
+
+
+def test_dashboard_counts_whoop_via_open_wearables_as_wearable_data():
+    output = run_app_js(
+        ["paintDashboardFromState", "state"],
+        """
+const element = () => ({
+  textContent: '', innerHTML: '', hidden: false, firstChild: null,
+  classList: { toggle() {}, remove() {}, add() {}, contains() { return false; } }, removeChild() {},
+});
+['readiness-gauge-svg', 'dash-hrv', 'dash-rhr', 'dash-sleep', 'reco-title', 'reco-intensity', 'reco-why',
+ 'reco-confidence-pct', 'insight-title', 'insight-body'].forEach((id) => { sandbox.elements[id] = element(); });
+sandbox.__fitSet.gaugeChart(() => {});
+const missing = { status: 'missing' };
+const paint = (openWearablesUsed) => {
+  e.state.oura = null; e.state.ouraSleep = null;
+  e.state.dashboard = {
+    freshness: { oura: missing, apple_health: missing },
+    recommendation_sources: { open_wearables: { used_for_recommendation: openWearablesUsed } },
+  };
+  e.state.reco = { recommendation: 'strength', reasoning: 'WHOOP recovery 80' };
+  e.paintDashboardFromState();
+  return sandbox.elements['reco-why'].textContent;
+};
+process.stdout.write(JSON.stringify({ withOw: paint(true), withoutOw: paint(false) }));
+""",
+        mocks=["gaugeChart"],
+    )
+    assert "No recent wearable data" not in output["withOw"]
+    assert "No recent wearable data" in output["withoutOw"]
