@@ -13,6 +13,7 @@ SENSITIVE_FILE_PATTERNS = {
     ".health-sync-token",
     ".apple-health-first-sync",
     ".open-wearables-password",
+    ".mcp-read-token",
     ".whoop-protected-material*",
     ".env",
     ".env.*",
@@ -62,7 +63,8 @@ def _matches_dockerignore_rule(path: str, rule: str) -> bool:
 
     if normalized_rule.endswith("/"):
         directory = normalized_rule.strip("/")
-        return normalized == directory or normalized.startswith(f"{directory}/")
+        parts = normalized.split("/")
+        return any(fnmatch.fnmatchcase("/".join(parts[: i + 1]), directory) for i in range(len(parts)))
 
     rule_without_root = normalized_rule.lstrip("/")
     if "/" in rule_without_root:
@@ -122,6 +124,7 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         ".health-sync-token",
         ".apple-health-first-sync",
         ".open-wearables-password",
+        ".mcp-read-token",
         ".whoop-protected-material-example.json",
         ".env",
     ):
@@ -131,10 +134,17 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         "support/.flask-secret",
         "support/.health-sync-token",
         "support/.open-wearables-password",
+        "support/.mcp-read-token",
         "support/.whoop-protected-material-example.json",
         "support/.env.prod",
     ):
         assert _is_dockerignored(path), f"{path} must be excluded from Docker context"
+
+
+def test_dockerignore_excludes_the_mcp_virtualenvs() -> None:
+    rules = _dockerignore_lines()
+    assert "mcp/.venv*/" in rules and "**/.venv*/" in rules
+    assert _is_dockerignored("mcp/.venv311") and _is_dockerignored("mcp/.venv314")
 
 
 def test_gitignore_excludes_protected_fallback_files() -> None:
@@ -146,6 +156,7 @@ def test_gitignore_excludes_protected_fallback_files() -> None:
 
     assert ".open-wearables-password" in rules
     assert ".whoop-protected-material*" in rules
+    assert ".mcp-*" in rules  # covers .mcp-read-token at any depth
 
 
 def test_docker_build_context_has_no_sensitive_files() -> None:
