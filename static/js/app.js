@@ -1246,7 +1246,7 @@
         if (lastLive >= 0) parts[lastLive] += ' via Open Wearables'; // archive rows were not fetched from Open Wearables
         const when = syncedAt ? new Date(syncedAt) : null;
         if (when && !isNaN(when.getTime())) {
-            parts.push(when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+            parts.push('checked ' + when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
         }
         return 'Sources: ' + parts.join(' · ');
     }

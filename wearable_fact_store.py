@@ -963,6 +963,8 @@ SOURCE_PREFERENCE = {
 # scores are different models, not the same quantity, so they are never merged
 # (the WHOOP recovery guard covers a red WHOOP score on its own).
 CONFLICT_TOLERANCE = {"sleep_duration": 60.0}
+# A shorter night is not a night (a strap taken off); it never wins or triggers a conflict.
+MIN_NIGHT_SLEEP_MIN = 60.0
 _KIND_RANK = {"summary": 0, "event": 1}
 
 
@@ -997,8 +999,9 @@ def preferred_daily_facts(
     end: str,
     profile_key: str | int | None = None,
     today: str | None = None,
+    only_provider: str | None = None,
 ) -> dict[str, dict[str, dict]]:
-    """One fact per date and metric: {date: {metric: fact}}.
+    """One fact per date and metric: {date: {metric: fact}}; only_provider keeps one provider's facts.
 
     Order: the domain's provider preference, then a live (non-archive) fact over an
     archive one, then summary over event, then the newest write. Every reader of
@@ -1021,6 +1024,8 @@ def preferred_daily_facts(
         if value is None:
             continue
         provider = fact_provider(row["provider_id"], row["source_provider"])
+        if only_provider and provider != only_provider:
+            continue
         preference = SOURCE_PREFERENCE.get(_default_metric_domain(row["metric"]), [])
         rank = (
             preference.index(provider) if provider in preference else len(preference),
@@ -1029,23 +1034,31 @@ def preferred_daily_facts(
         )
         grouped.setdefault((row["date"], row["metric"]), []).append((rank, value, provider, row))
     result: dict[str, dict[str, dict]] = {}
-    for (date_s, metric), candidates in grouped.items():
+    for candidates in grouped.values():
         candidates.sort(key=lambda c: c[3]["source_id"] or "")
         candidates.sort(key=lambda c: c[3]["updated_at"] or "", reverse=True)
         candidates.sort(key=lambda c: c[0])
-        rank, value, provider, row = candidates[0]
-        conflict = row["conflict_state"]
+    # A date's sleep conflict picks one provider; the whole night is then that provider's.
+    # Only plausible durations compete, so a strap-off fragment is not a conflict.
+    conflicts: dict[str, str] = {}
+    for (date_s, metric), candidates in grouped.items():
         tolerance = CONFLICT_TOLERANCE.get(metric)
-        if tolerance is not None:
-            by_provider = {}
-            for _rank, other_value, other_provider, _row in candidates:
+        if tolerance is None:
+            continue
+        by_provider: dict[str, float] = {}
+        for _rank, other_value, other_provider, _row in candidates:
+            if other_value >= MIN_NIGHT_SLEEP_MIN:
                 by_provider.setdefault(other_provider, other_value)
-            if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
-                conflict = "conservative_value_used"
-                # The row, provider and label are the provider whose (lower) value is used.
-                provider = min(by_provider, key=by_provider.get)
-                value = by_provider[provider]
-                row = next(c[3] for c in candidates if c[2] == provider)
+        if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
+            conflicts[date_s] = min(by_provider, key=by_provider.get)
+    for (date_s, metric), candidates in grouped.items():
+        forced = conflicts.get(date_s) if _default_metric_domain(metric) == "sleep" else None
+        if forced:
+            candidates = [c for c in candidates if c[2] == forced]
+            if not candidates:
+                continue  # the used provider has no such metric: never borrow another provider's
+        rank, value, provider, row = candidates[0]
+        conflict = "conservative_value_used" if forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {
             "date": date_s,
             "metric": metric,

@@ -63,6 +63,7 @@ from open_wearables_adapter import (
 )
 from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof, consumed_facts
 from wearable_fact_store import (
+    MIN_NIGHT_SLEEP_MIN,
     SOURCE_PREFERENCE,
     WearableDailyFact,
     delete_provider_data,
@@ -2277,8 +2278,8 @@ def backfill_open_wearables_facts(days=365):
     )
 
 
-def _preferred_facts(metrics, days=7):
-    """{date: {metric: fact}} for the last ``days`` days under the owner's source rule."""
+def _preferred_facts(metrics, days=7, provider=None):
+    """{date: {metric: fact}} for the last ``days`` days under the owner's source rule (one provider if given)."""
     end = datetime.now().date()
     try:
         return preferred_daily_facts(
@@ -2287,6 +2288,7 @@ def _preferred_facts(metrics, days=7):
             (end - timedelta(days=days - 1)).isoformat(),
             end.isoformat(),
             _open_wearables_profile_key(),
+            only_provider=provider,
         )
     except Exception:
         app.logger.warning("Stored wearable facts unreadable", exc_info=True)
@@ -4353,17 +4355,19 @@ def _hrv_facts(days=7):
     """HRV facts oldest first, from one provider and one metric so RMSSD and SDNN are never mixed.
 
     The first provider in the recovery preference with at least 4 samples wins; fewer
-    everywhere falls back to the most preferred one. A stale newest fact excludes the series.
+    everywhere falls back to the most preferred one. A series whose newest fact is stale is
+    skipped, so a fresh fallback provider fills the gap; all stale returns [].
     """
-    facts = _preferred_facts(set(_HRV_METRICS), days=days)
-    series = {}
-    for day in sorted(facts):
-        for metric, fact in facts[day].items():
-            series.setdefault((fact["provider"], metric), []).append(fact)
     preference = SOURCE_PREFERENCE["recovery"]
+    seen = {f["provider"] for by_metric in _preferred_facts(set(_HRV_METRICS), days=days).values() for f in by_metric.values()}
+    series = {}
+    for provider in [*preference, *sorted(seen - set(preference))]:  # each provider's whole series, not the dates it won
+        for _day, by_metric in sorted(_preferred_facts(set(_HRV_METRICS), days=days, provider=provider).items()):
+            for metric, fact in by_metric.items():
+                series.setdefault((provider, metric), []).append(fact)
     ranked = sorted(series, key=lambda k: (preference.index(k[0]) if k[0] in preference else len(preference), _HRV_METRICS.index(k[1])))
-    chosen = next((series[k] for k in ranked if len(series[k]) >= 4), series[ranked[0]] if ranked else [])
-    return [] if chosen and chosen[-1]["freshness"] == "stale" else chosen
+    live = [k for k in ranked if series[k][-1]["freshness"] != "stale"]
+    return next((series[k] for k in live if len(series[k]) >= 4), series[live[0]] if live else [])
 
 
 def _hrv_series(days=7):
@@ -8530,7 +8534,7 @@ def _sleep_row_inconsistency_reason(row):
     sleep_score = (row or {}).get("sleep_score")
     sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
     is_nap = sleep_type in {"nap", "rest", "late_nap"}
-    if total_sleep_min is not None and total_sleep_min < 60:
+    if total_sleep_min is not None and total_sleep_min < MIN_NIGHT_SLEEP_MIN:
         if sleep_score is not None and sleep_score >= 70:
             return "duration_score_conflict"
         if not is_nap:
