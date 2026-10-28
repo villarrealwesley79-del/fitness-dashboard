@@ -207,7 +207,7 @@ def test_swap_losing_race_returns_409_and_keeps_peer_plan(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "save_current_workout_plan", racing_save)
     resp = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "swap-base", "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
     stored = data_store.get_current_workout_plan(1)
     assert resp.status_code == 409, (resp.status_code, resp.get_json())
@@ -313,7 +313,7 @@ def test_persisted_swap_survives_adaptation_evaluation(monkeypatch, tmp_path):
     assert client.get("/api/next-workout").status_code == 200
     swapped = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "swap-then-adapt", "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
     assert swapped.status_code == 200
     _add_coverage_breakfast()

@@ -3974,7 +3974,7 @@ def generate_next_workout(
         mesocycle["indicators"] = deload_status.get("indicators", [])
 
     recommendation = {
-        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "id": _new_workout_recommendation_id(),
         "created_at": datetime.now().isoformat(),
         "focus": focus,
         "goal": goal,
@@ -4683,6 +4683,10 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
         scoped.pop(key, None)
     scoped["auth_scope"] = _current_auth_scope()
     return scoped
+
+
+def _new_workout_recommendation_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}"
 
 
 def _persist_current_workout_plan(
@@ -10660,9 +10664,26 @@ def swap_workout_exercise():
     if err:
         return err
 
-    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
-    if err2:
-        return err2
+    raw_recommendation_id = data.get("recommendation_id")
+    if (
+        not isinstance(raw_recommendation_id, str)
+        or not raw_recommendation_id.strip()
+        or len(raw_recommendation_id.strip()) > 256
+    ):
+        return api_error("recommendation_id must be a non-empty string", 400, code="invalid_field")
+    recommendation_id = raw_recommendation_id.strip()
+
+    fingerprint = _workout_recommendation_fingerprint()
+    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    if not recommendation:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+    if recommendation.get("id") != recommendation_id:
+        return api_error(
+            "Workout plan changed. Refresh the workout and try again.",
+            409,
+            code="plan_changed",
+        )
+
     exercise_index, err2 = _coerce_int(data.get("exercise_index"), "exercise_index", min_v=0, max_v=10_000)
     if err2:
         return err2
@@ -10670,10 +10691,6 @@ def swap_workout_exercise():
     if err2:
         return err2
 
-    fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
-    if not recommendation:
-        return api_error("No recent workout recommendation available", 404, code="not_found")
     recommendation = _copy_workout_plan_cas_identity(
         recommendation,
         json.loads(json.dumps(recommendation, default=str)),
@@ -10736,6 +10753,7 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
+    recommendation["id"] = _new_workout_recommendation_id()
     persisted = _persist_current_workout_plan(
         recommendation,
         fingerprint,

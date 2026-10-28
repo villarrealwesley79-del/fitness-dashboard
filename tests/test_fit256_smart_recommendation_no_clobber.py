@@ -15,7 +15,7 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
 
     first_swap = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
     assert first_swap.status_code == 200
     assert first_swap.get_json()["recommendation"]["exercises"][0]["exercise"] == "Incline Press"
@@ -78,15 +78,16 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
     assert smart.get_json()["next_workout"]["exercises"][0]["exercise"] == "Incline Press"
     assert "_user_customized" not in smart.get_json()["next_workout"]
     assert smart.get_json()["workout_adaptation_events"] == []
+    current_recommendation_id = smart.get_json()["next_workout"]["id"]
 
     later_swap = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Chest Press"},
+        json={"recommendation_id": current_recommendation_id, "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Chest Press"},
     )
 
     assert later_swap.status_code == 200
     recommendation = later_swap.get_json()["recommendation"]
-    assert recommendation["id"] == "fit-256-plan"
+    assert recommendation["id"] != current_recommendation_id
     assert recommendation["exercises"][0]["exercise"] == "Chest Press"
     assert recommendation["exercises"][1]["exercise"] == "Adapted Pulldown"
 
@@ -125,9 +126,10 @@ def test_smart_recommendation_due_event_persists_a_new_current_plan(monkeypatch,
 
     evaluated = client.post("/api/workout-adaptation-events/evaluate")
     smart = client.get("/api/recommendation/smart")
+    current_recommendation_id = smart.get_json()["next_workout"]["id"]
     later_swap = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": current_recommendation_id, "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
 
     assert evaluated.status_code == 200
@@ -135,7 +137,7 @@ def test_smart_recommendation_due_event_persists_a_new_current_plan(monkeypatch,
     assert smart.status_code == 200
     assert smart.get_json()["workout_adaptation_events"] == []
     assert later_swap.status_code == 200
-    assert later_swap.get_json()["recommendation"]["id"] == "fit-256-plan"
+    assert later_swap.get_json()["recommendation"]["id"] != current_recommendation_id
 
 
 def test_smart_recommendation_does_not_reuse_same_day_noncustom_plan_after_drift(

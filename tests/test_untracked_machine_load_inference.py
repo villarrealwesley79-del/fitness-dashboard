@@ -39,6 +39,7 @@ def _module(monkeypatch):
     monkeypatch.setattr(module, "COMPLETED_WORKOUTS", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
@@ -129,7 +130,7 @@ def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -156,7 +157,7 @@ def test_direct_history_wins_over_similar_machine_inference(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -181,7 +182,7 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -199,7 +200,7 @@ def test_no_similar_history_falls_back_to_hardcoded_baseline(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -223,7 +224,7 @@ def test_loose_same_muscle_history_does_not_infer_starter_load(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -824,7 +825,7 @@ def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
     )
 
     assert response.status_code == 404
@@ -838,7 +839,7 @@ def test_swap_endpoint_allows_distinctive_single_token_incline(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
     )
 
     assert response.status_code == 200
@@ -853,7 +854,7 @@ def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
     )
 
     assert response.status_code == 200

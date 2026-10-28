@@ -9424,7 +9424,10 @@
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
-        state.swapContext = { exIdx, muscle, currentName, source };
+        const recommendationId = source === 'active'
+            ? (state.activeWorkout && state.activeWorkout.recommendation_id)
+            : (state.nextWorkout && state.nextWorkout.id);
+        state.swapContext = { exIdx, muscle, currentName, source, recommendationId };
         const modal = $('modal-swap');
         const host = $('swap-alternatives');
         const title = $('swap-modal-title');
@@ -9508,6 +9511,33 @@
         }
     }
 
+    // FIT-397: a swap answered 409 plan_changed (the plan was regenerated or swapped
+    // since this screen loaded) or workout_plan_conflict (it changed mid-request).
+    // Adopt the server's current plan, keeping logged sets in an active workout, so
+    // the next swap carries the current recommendation_id instead of dead-ending.
+    function isSwapPlanChangedError(err) {
+        return Boolean(err) && (err.apiErrorCode === 'plan_changed' || err.apiErrorCode === 'workout_plan_conflict');
+    }
+
+    async function adoptCurrentPlanAfterSwapConflict() {
+        let nw = null;
+        try { nw = await getNextWorkout(true); } catch (err) { console.warn('swap conflict refresh failed:', err); }
+        if (nw) {
+            if (state.dashboard) state.dashboard.next_workout = nw;
+            if (state.activeWorkout) {
+                applyAdjustedRecommendationToActiveWorkout(nw, state.activeWorkout.exercises || []);
+                renderActiveWorkout();
+            } else {
+                renderNextWorkout();
+            }
+        }
+        // Exercise slots may have shifted in the new plan, so make the user re-pick.
+        closeModal($('modal-swap'));
+        toast(nw
+            ? 'Workout plan changed — your logged sets were kept. Pick the swap again.'
+            : 'Workout plan changed — refresh the workout and try again.', 'err');
+    }
+
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
@@ -9518,12 +9548,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+                body: JSON.stringify({ recommendation_id: state.swapContext && state.swapContext.recommendationId, exercise_index: exIdx, new_exercise_name: newName }),
             });
             _finalizeSwap(resp, oldName, newName);
         } catch (e) {
             console.error(e);
-            host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+            } else {
+                host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            }
         }
     }
 
@@ -9570,12 +9604,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: ctx.exIdx, new_exercise_name: raw }),
+                body: JSON.stringify({ recommendation_id: ctx.recommendationId, exercise_index: ctx.exIdx, new_exercise_name: raw }),
             });
             _finalizeSwap(resp, ctx.currentName, raw);
             input.value = '';
         } catch (e) {
             console.error('applyCustomSwap', e);
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+                return;
+            }
             const msg = String((e && e.message) || e || '').toLowerCase();
             let friendly = `Couldn't swap to "${raw}".`;
             if (msg.includes('unknown exercise')) {

@@ -151,7 +151,7 @@ def test_swap_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, tm
 
     swapped = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
 
     assert swapped.status_code == 200
@@ -517,7 +517,7 @@ def test_swap_rejects_interleaved_existing_plan_write_without_payload_leak(
     monkeypatch.setattr(module, "save_current_workout_plan", save_with_interleaved_write)
     response = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
 
     assert response.status_code == 409
@@ -773,7 +773,7 @@ def test_swap_rejects_stale_global_plan_from_another_user(monkeypatch, tmp_path)
 
     response = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
 
     assert response.status_code == 404
@@ -787,7 +787,7 @@ def test_swap_uses_same_user_plan_after_fingerprint_drift(monkeypatch, tmp_path)
 
     swapped = client.post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+        json={"recommendation_id": "fit-256-plan", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
     )
 
     assert swapped.status_code == 200

@@ -227,11 +227,13 @@ def test_swap_returns_structured_not_found_for_unknown_custom_exercise_name(fitn
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Quantum Bicep Levitation",
         },
@@ -264,11 +266,13 @@ def test_swap_returns_structured_muscle_mismatch_for_cross_group_custom_exercise
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Lateral Raise",
         },
@@ -300,6 +304,7 @@ def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkey
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     # Lat Pulldown is back/machine, allowed by the fixture's machines_only
@@ -309,6 +314,7 @@ def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkey
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Lat Pulldown",
         },
@@ -336,11 +342,13 @@ def test_swap_resolves_semantic_triceps_extension_and_uses_backend_load(fitness_
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Tricep extension",
         },
@@ -370,6 +378,7 @@ def test_swap_resolves_plural_triceps_extension_deterministically(fitness_app, m
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def fail_if_called(*_args, **_kwargs):
@@ -380,6 +389,7 @@ def test_swap_resolves_plural_triceps_extension_deterministically(fitness_app, m
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Triceps extension",
         },
@@ -405,6 +415,7 @@ def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monk
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
     calls = {}
 
@@ -420,6 +431,7 @@ def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monk
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "arm straightener",
         },
@@ -451,6 +463,7 @@ def test_swap_adapter_failure_preserves_structured_not_found(fitness_app, monkey
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def fail_resolve(*_args, **_kwargs):
@@ -461,6 +474,7 @@ def test_swap_adapter_failure_preserves_structured_not_found(fitness_app, monkey
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "arm straightener",
         },
@@ -486,6 +500,7 @@ def test_swap_adapter_candidate_outside_prefilter_is_rejected(fitness_app, monke
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def bad_resolve(*_args, **_kwargs):
@@ -496,6 +511,7 @@ def test_swap_adapter_candidate_outside_prefilter_is_rejected(fitness_app, monke
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "arm straightener",
         },
@@ -548,6 +564,7 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
     seen = {}
 
@@ -560,6 +577,7 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "cable triceps extension",
         },
@@ -586,11 +604,13 @@ def test_swap_rejects_current_exercise_no_op(fitness_app, monkeypatch):
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Cable Pushdown",
         },
@@ -617,11 +637,13 @@ def test_swap_rejects_excluded_preacher_curl(fitness_app, monkeypatch):
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Preacher Curl",
         },
@@ -646,11 +668,13 @@ def test_swap_accepts_biceps_curl_alias_as_canonical_machine_curl(fitness_app, m
             }
         ],
     }
+    recommendation["id"] = "fit-117-plan"
     _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
         json={
+            "recommendation_id": "fit-117-plan",
             "exercise_index": 0,
             "new_exercise_name": "Hoist Biceps Curl",
         },
