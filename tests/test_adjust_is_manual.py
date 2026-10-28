@@ -146,6 +146,22 @@ def test_time_box_note_is_honest_when_one_exercise_exceeds_it(monkeypatch, tmp_p
     assert "shortest plan" in trimmed
 
 
+def test_time_box_counts_included_cardio(monkeypatch, tmp_path):
+    def with_cardio(plan):
+        plan["exercises"] = plan["exercises"] * 2  # 4 exercises
+        plan["cardio"] = {"type": "Rower", "duration_minutes": 20, "zone": 2, "intensity": "easy"}
+        return plan
+
+    client = _make_client(monkeypatch, tmp_path, with_cardio)
+    payload = _adjust(client, {"constraint": "40 minutes", "intent": {"duration_cap_min": 40}}).get_json()
+
+    kept = len(payload["recommendation"]["exercises"])
+    estimate = payload["recommendation"]["estimated_minutes"]
+    # 9 min per exercise (3 sets x 3 min) + 10 warmup/cooldown + 20 cardio = 39 with one exercise.
+    assert (kept, estimate) == (1, 39)
+    assert any(n.startswith("Trimmed:") and "fits 40 min window" in n for n in payload["applied_notes"])
+
+
 @pytest.mark.parametrize("intent", [
     "rpe_delta",                      # not an object
     {"rpe_delta": 5},                 # outside the allowed range

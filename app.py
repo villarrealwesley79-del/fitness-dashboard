@@ -5775,9 +5775,9 @@ def swap_workout_exercise():
 
 
 def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref):
-    """Apply the LLM's intent patch to the deterministic recommendation.
+    """Apply a deterministic preset/manual intent patch to the recommendation.
 
-    Every mutation is clamped/validated here. The LLM cannot override safety.
+    Every mutation is clamped/validated here, so an intent cannot override safety.
     Returns (patched_recommendation, applied_notes, skipped_notes). Applied
     notes describe actual mutations; skipped notes describe rejected no-ops.
     """
@@ -6084,7 +6084,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
     duration_cap = float(intent.get("duration_cap_min") or 0)
     if duration_cap and duration_cap > 0:
-        budget = duration_cap - 10  # warmup+cooldown
+        # Included cardio (no include_cardio key) stays in the session unless dropped below.
+        cardio = recommendation.get("cardio") or {}
+        keep_cardio = cardio.get("include_cardio", True) is not False and not intent.get("drop_cardio")
+        cardio_min = float(cardio.get("duration_minutes") or 0) if keep_cardio else 0
+        budget = duration_cap - 10 - cardio_min  # warmup+cooldown
         minutes_used = 0
         kept = []
         for ex in exercises:
@@ -6093,7 +6097,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 break
             minutes_used += ex_minutes
             kept.append(ex)
-        new_estimated_minutes = int(minutes_used + 10)
+        new_estimated_minutes = int(minutes_used + 10 + cardio_min)
         if len(kept) < len(exercises):
             dropped = ", ".join(ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):])
             fits = new_estimated_minutes <= duration_cap
