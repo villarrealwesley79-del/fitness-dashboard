@@ -4,6 +4,22 @@ import copy
 import importlib
 
 import pytest
+import data_store
+
+
+def _set_last_workout_recommendation(module, monkeypatch, recommendation):
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION_OWNER",
+        {"user_id": 1, "plan_id": id(recommendation)},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
 
 
 def _module(monkeypatch):
@@ -23,6 +39,8 @@ def _module(monkeypatch):
     monkeypatch.setattr(module, "COMPLETED_WORKOUTS", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
@@ -98,6 +116,405 @@ def _chest_recommendation(module):
     return recommendation
 
 
+def test_adjust_merge_preserves_unrelated_llm_swaps(monkeypatch):
+    module = _module(monkeypatch)
+    llm_swaps = [
+        {"replace_exercise": "Chest Press", "replace_index": 0, "target_muscle": "chest"},
+        {"replace_exercise": "Seated Row", "replace_index": 1, "target_muscle": "back"},
+    ]
+    deterministic_swap = {
+        "replace_exercise": "Leg Press",
+        "replace_index": 2,
+        "target_muscle": "quads",
+        "_deterministic": True,
+    }
+
+    merged = module._merge_deterministic_adjust_swap(
+        {"swap": llm_swaps, "rpe_delta": -0.5}, deterministic_swap
+    )
+
+    assert merged["swap"] == [*llm_swaps, deterministic_swap]
+    assert merged["rpe_delta"] == -0.5
+
+
+def test_adjust_merge_deterministic_swap_wins_same_slot_collision(monkeypatch):
+    module = _module(monkeypatch)
+    unrelated = {"replace_exercise": "Seated Row", "replace_index": 1, "target_muscle": "back"}
+    deterministic_swap = {
+        "replace_exercise": "Chest Press",
+        "replace_index": 0,
+        "target_muscle": "triceps",
+        "target_exercise": "Cable Pushdown",
+        "_deterministic": True,
+    }
+
+    merged = module._merge_deterministic_adjust_swap(
+        {
+            "swap": [
+                {"replace_exercise": "Chest Press", "replace_index": 0, "target_muscle": "chest"},
+                unrelated,
+            ]
+        },
+        deterministic_swap,
+    )
+
+    assert merged["swap"] == [deterministic_swap, unrelated]
+
+
+def test_adjust_merge_preserves_same_index_with_different_source(monkeypatch):
+    module = _module(monkeypatch)
+    llm_swap = {
+        "replace_exercise": "Seated Row",
+        "replace_index": 0,
+        "target_muscle": "back",
+    }
+    deterministic_swap = {
+        "replace_exercise": "Chest Press",
+        "replace_index": 0,
+        "target_muscle": "triceps",
+        "_deterministic": True,
+    }
+
+    merged = module._merge_deterministic_adjust_swap(
+        {"swap": [llm_swap]}, deterministic_swap
+    )
+
+    assert merged["swap"] == [llm_swap, deterministic_swap]
+
+
+def test_adjust_merge_preserves_same_source_name_at_different_index(monkeypatch):
+    module = _module(monkeypatch)
+    llm_swap = {
+        "replace_exercise": "Chest Press",
+        "replace_index": 1,
+        "target_muscle": "chest",
+    }
+    deterministic_swap = {
+        "replace_exercise": "Chest Press",
+        "replace_index": 0,
+        "target_muscle": "triceps",
+        "_deterministic": True,
+    }
+
+    merged = module._merge_deterministic_adjust_swap(
+        {"swap": [llm_swap]}, deterministic_swap
+    )
+
+    assert merged["swap"] == [llm_swap, deterministic_swap]
+
+
+def test_adjust_merge_deterministic_swap_wins_alias_collision(monkeypatch):
+    module = _module(monkeypatch)
+    deterministic_swap = {
+        "replace_exercise": "Pectoral Fly",
+        "replace_index": 0,
+        "target_muscle": "chest",
+        "target_exercise": "Chest Press",
+        "_deterministic": True,
+    }
+
+    merged = module._merge_deterministic_adjust_swap(
+        {
+            "swap": [
+                {
+                    "replace_exercise": "Pec Fly",
+                    "target_muscle": "chest",
+                    "target_exercise": "Cable Crossover",
+                }
+            ]
+        },
+        deterministic_swap,
+    )
+
+    assert merged["swap"] == [deterministic_swap]
+    assert merged["_deterministic_swap_replaced_model_swap"] is True
+
+
+def test_adjust_missing_source_is_skipped_and_result_is_unchanged(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [_rec_exercise("Chest Press", "chest", 100)],
+    )
+    missing_swap = {
+        "replace_exercise": "Seated Row",
+        "target_muscle": "back",
+        "target_exercise": "Lat Pulldown",
+        "_deterministic": True,
+    }
+
+    payload = module._deterministic_adjust_payload(
+        recommendation,
+        "replace seated row with lat pulldown",
+        missing_swap,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+        "test",
+    )
+
+    assert payload["recommendation"] == recommendation
+    assert payload["result_kind"] == "unchanged"
+    assert payload["applied_notes"] == []
+    assert payload["skipped_notes"] == ["could not locate 'Seated Row' in current plan"]
+    assert payload["summary"] == "The requested adjustment could not be applied to the current plan."
+
+
+@pytest.mark.parametrize(
+    ("result_kind", "applied_notes", "skipped_notes", "model_summary", "expected"),
+    [
+        (
+            "changed",
+            ["Swapped: Chest Press → Pec Fly"],
+            ["could not locate 'Seated Row' in current plan"],
+            "Applied both swaps.",
+            "Applied some requested changes; other requested changes were skipped.",
+        ),
+        (
+            "unchanged",
+            [],
+            [],
+            "Raised RPE across all exercises.",
+            "The requested adjustment could not be applied to the current plan.",
+        ),
+        (
+            "changed",
+            ["Swapped: Chest Press → Pec Fly"],
+            [],
+            "Swapped Chest Press for Pec Fly.",
+            "Swapped Chest Press for Pec Fly.",
+        ),
+    ],
+)
+def test_adjust_outcome_summary_is_derived_from_validated_result(
+    monkeypatch, result_kind, applied_notes, skipped_notes, model_summary, expected
+):
+    module = _module(monkeypatch)
+
+    assert module._adjust_outcome_summary(
+        result_kind, applied_notes, skipped_notes, model_summary
+    ) == expected
+
+
+def test_adjust_outcome_summary_uses_applied_notes_after_deterministic_collision(monkeypatch):
+    module = _module(monkeypatch)
+
+    summary = module._adjust_outcome_summary(
+        "changed",
+        ["Swapped: Chest Press → Pec Fly"],
+        [],
+        "Swapped Chest Press for Cable Crossover.",
+        trust_model_summary=False,
+    )
+
+    assert summary == "Applied validated changes: Swapped: Chest Press → Pec Fly"
+
+
+def test_adjust_empty_source_with_index_does_not_match_or_mutate(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [_rec_exercise("Chest Press", "chest", 100)],
+    )
+    intent = {
+        "swap": [
+            {
+                "replace_exercise": "   ",
+                "replace_index": 0,
+                "target_muscle": "back",
+                "target_exercise": "Lat Pulldown",
+            }
+        ]
+    }
+
+    patched, applied_notes, skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert patched == recommendation
+    assert applied_notes == []
+    assert skipped_notes == ["could not locate '   ' in current plan"]
+
+
+@pytest.mark.parametrize(
+    ("intent", "exercise", "expected_skipped"),
+    [
+        (
+            {"rpe_delta": 1},
+            _rec_exercise("Chest Press", "chest", 100) | {"rpe_target": 10},
+            "Ignored: RPE adjustment produced no exercise changes",
+        ),
+        (
+            {"sets_delta_pct": 20},
+            _rec_exercise("Chest Press", "chest", 100, sets=1),
+            "Ignored: sets adjustment produced no exercise changes",
+        ),
+    ],
+)
+def test_adjust_clamped_noop_does_not_report_applied(
+    monkeypatch, intent, exercise, expected_skipped
+):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(module, [exercise])
+
+    patched, applied_notes, skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert patched == recommendation
+    assert applied_notes == []
+    assert expected_skipped in skipped_notes
+
+
+@pytest.mark.parametrize(
+    ("intent", "exercises", "expected_applied", "expected_skipped"),
+    [
+        (
+            {"rpe_delta": 1},
+            [
+                _rec_exercise("Chest Press", "chest", 100) | {"rpe_target": 10},
+                _rec_exercise("Seated Row", "back", 90) | {"rpe_target": 7},
+            ],
+            "RPE adjusted +1.0 for 1 exercise",
+            "RPE adjustment skipped for 1 exercise at its limit",
+        ),
+        (
+            {"sets_delta_pct": 20},
+            [
+                _rec_exercise("Chest Press", "chest", 100, sets=1),
+                _rec_exercise("Seated Row", "back", 90, sets=5),
+            ],
+            "Sets adjusted +20% for 1 exercise",
+            "Sets adjustment skipped for 1 exercise because rounding kept it unchanged",
+        ),
+    ],
+)
+def test_adjust_partial_per_exercise_changes_are_reported_honestly(
+    monkeypatch, intent, exercises, expected_applied, expected_skipped
+):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(module, exercises)
+
+    _patched, applied_notes, skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert expected_applied in applied_notes
+    assert expected_skipped in skipped_notes
+
+
+def test_adjust_reports_safety_clamping_of_out_of_range_deltas(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module, [_rec_exercise("Chest Press", "chest", 100, sets=5)]
+    )
+
+    _patched, applied_notes, skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        {"rpe_delta": 2, "sets_delta_pct": 50},
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert "RPE adjusted +1.0 for 1 exercise" in applied_notes
+    assert "Sets adjusted +20% for 1 exercise" in applied_notes
+    assert "Clamped: RPE adjustment +2.0 to +1.0" in skipped_notes
+    assert "Clamped: sets adjustment +50% to +20%" in skipped_notes
+
+
+def test_adjust_absent_cardio_does_not_report_applied(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(module, [_rec_exercise("Chest Press", "chest", 100)])
+
+    patched, applied_notes, _skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        {"drop_cardio": True},
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert patched == recommendation
+    assert applied_notes == []
+
+
+def test_adjust_rounded_weight_cap_noop_does_not_report_applied(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(
+        module,
+        "calculate_progression_status",
+        lambda _workouts: {"Chest Press": {"current_e1rm": 90.9}},
+    )
+    recommendation = _recommendation_for(module, [_rec_exercise("Chest Press", "chest", 100)])
+
+    patched, applied_notes, _skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        {},
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert patched == recommendation
+    assert applied_notes == []
+
+
+def test_adjust_duration_recalculation_reports_applied(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [_rec_exercise("Chest Press", "chest", 100, sets=1)],
+    )
+
+    patched, applied_notes, _skipped_notes = module._apply_intent_patch(
+        copy.deepcopy(recommendation),
+        {"duration_cap_min": 60},
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert patched["estimated_minutes"] == 13
+    assert applied_notes == ["Duration adjusted: 45 → 13 min"]
+
+
 def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(
@@ -108,11 +525,11 @@ def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
             _workout("2026-05-08", "Lateral Raise", 25),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -135,11 +552,11 @@ def test_direct_history_wins_over_similar_machine_inference(monkeypatch):
             _workout("2026-05-10", "Machine Deltoid Raise", 20),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -160,11 +577,11 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
             _workout("2026-05-10", "Lateral Raise", 35),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -178,11 +595,11 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
 def test_no_similar_history_falls_back_to_hardcoded_baseline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -202,11 +619,11 @@ def test_loose_same_muscle_history_does_not_infer_starter_load(monkeypatch):
             _workout("2026-05-08", "Shoulder Press", 75),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -293,7 +710,7 @@ def test_ai_adjust_can_request_named_untracked_machine_and_get_inferred_load(mon
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, notes, _skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -322,9 +739,9 @@ def test_adjust_deterministic_fallback_accepts_bare_tricep_extensions(monkeypatc
             _workout("2026-05-08", "Cable Pushdown", 60, muscle="triceps"),
         ],
     )
-    monkeypatch.setattr(
+    _set_last_workout_recommendation(
         module,
-        "LAST_WORKOUT_RECOMMENDATION",
+        monkeypatch,
         _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
     )
 
@@ -509,7 +926,7 @@ def test_adjust_intent_patch_honors_source_alias(monkeypatch):
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, notes, _skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -586,7 +1003,7 @@ def test_adjust_swap_revalidates_replace_index_after_removals(monkeypatch):
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, notes, skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -599,7 +1016,7 @@ def test_adjust_swap_revalidates_replace_index_after_removals(monkeypatch):
     names = [ex["exercise"] for ex in patched["exercises"]]
     assert names == ["Leg Extension"]
     assert any("Removed: Chest Press" in note for note in notes)
-    assert any("could not locate 'Chest Press'" in note for note in notes)
+    assert any("could not locate 'Chest Press'" in note for note in skipped_notes)
 
 
 def test_adjust_explicit_target_already_in_plan_does_not_substitute(monkeypatch):
@@ -629,7 +1046,7 @@ def test_adjust_explicit_target_already_in_plan_does_not_substitute(monkeypatch)
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, notes, skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -644,6 +1061,9 @@ def test_adjust_explicit_target_already_in_plan_does_not_substitute(monkeypatch)
         "Overhead Tricep Extension",
     ]
     assert notes == []
+    assert skipped_notes == [
+        "Ignored: target exercise 'Overhead Tricep Extension' is already in the current plan"
+    ]
 
 
 def test_adjust_explicit_target_alias_already_in_plan_does_not_substitute(monkeypatch):
@@ -673,7 +1093,7 @@ def test_adjust_explicit_target_alias_already_in_plan_does_not_substitute(monkey
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, notes, skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -688,13 +1108,16 @@ def test_adjust_explicit_target_alias_already_in_plan_does_not_substitute(monkey
         "Pectoral Fly",
     ]
     assert notes == []
+    assert skipped_notes == [
+        "Ignored: target exercise 'Pec Fly' is already in the current plan"
+    ]
 
 
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "_lm_studio", None)
     recommendation = _recommendation_for(module, [_rec_exercise("Chest Press", "chest", 100)])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(module, monkeypatch, recommendation)
 
     response = module.app.test_client().post(
         "/api/workout/adjust",
@@ -717,7 +1140,7 @@ def test_adjust_deterministic_rejects_generic_press_false_positive(monkeypatch):
             _rec_exercise("Seated Row", "back", 90),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(module, monkeypatch, recommendation)
 
     response = module.app.test_client().post(
         "/api/workout/adjust",
@@ -746,9 +1169,9 @@ def test_adjust_direct_history_wins_over_similar_pattern_inference(monkeypatch):
             _workout("2026-05-15", "Overhead Tricep Extension", 45, muscle="triceps"),
         ],
     )
-    monkeypatch.setattr(
+    _set_last_workout_recommendation(
         module,
-        "LAST_WORKOUT_RECOMMENDATION",
+        monkeypatch,
         _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
     )
 
@@ -785,7 +1208,7 @@ def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
         "drop_cardio": False,
     }
 
-    patched, notes = module._apply_intent_patch(
+    patched, _applied_notes, skipped_notes = module._apply_intent_patch(
         recommendation,
         intent,
         module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
@@ -797,17 +1220,17 @@ def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
 
     assert patched["exercises"][0]["exercise"] == "Shoulder Press"
     assert patched["exercises"][0]["exercise"] != "Chest Press"
-    assert any("unknown target exercise 'Dragon Press'" in note for note in notes)
+    assert any("unknown target exercise 'Dragon Press'" in note for note in skipped_notes)
 
 
 def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
     )
 
     assert response.status_code == 404
@@ -817,11 +1240,11 @@ def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
 def test_swap_endpoint_allows_distinctive_single_token_incline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
     )
 
     assert response.status_code == 200
@@ -832,11 +1255,11 @@ def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
     module = _module(monkeypatch)
     module.USER_SETTINGS["equipment_preference"] = "all"
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
     )
 
     assert response.status_code == 200
@@ -894,10 +1317,10 @@ def test_adjust_intent_strict_schema_requires_nullable_target_exercise():
     })
 
 
-def test_adjust_cache_version_invalidates_pre_target_exercise_entries(monkeypatch):
+def test_adjust_cache_version_invalidates_pre_fit265_payloads(monkeypatch):
     module = _module(monkeypatch)
 
-    assert module._ADJUST_CACHE_VERSION == "fit179-movement-resolution-v1"
+    assert module._ADJUST_CACHE_VERSION == "fit265-honest-adjust-v2"
 
 
 def test_complete_workout_maps_machine_deltoid_raise_to_shoulders(monkeypatch):

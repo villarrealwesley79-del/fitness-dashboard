@@ -105,47 +105,15 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
         track_open_wearables_guard,
     )
 
-    accepted_food = [{
-        "id": 286,
-        "status": "accepted",
-        "date": module._today_str(),
-        "calories": 900,
-        "protein_g": 20,
-    }]
-    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *_args, **_kwargs: accepted_food)
-    adaptation_calls = []
-
-    def apply_food_adaptation(plan, *, food_log_entries, **_kwargs):
-        adaptation_calls.append([entry["id"] for entry in food_log_entries])
-        adapted = copy.deepcopy(plan)
-        adapted["exercises"][0]["target_sets"] = 3
-        adapted["exercises"][0]["rationale"] += " · Food adaptation applied"
-        return adapted, [{
-            "status": "applied",
-            "reason": "Accepted food signal reduced volume once",
-        }]
-
-    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_food_adaptation)
-
     response = module.app.test_client().get("/api/recommendation/smart")
 
     assert response.status_code == 200
     payload = response.get_json()
     exercise = payload["next_workout"]["exercises"][0]
-    assert adaptation_calls == [[286]]
-    assert len(persisted_plans) == 1
-    persisted_exercise = persisted_plans[0]["exercises"][0]
-    assert persisted_exercise["target_sets"] == 3
-    assert persisted_exercise["rationale"].count("Food adaptation applied") == 1
-    assert "WHOOP modifier applied" not in persisted_exercise["rationale"]
-    assert "_whoop_modifier_signature" not in persisted_plans[0]
-    assert exercise["target_sets"] == 2  # food sets 3 first; WHOOP's 0.8 clamp runs afterward
-    assert exercise["rationale"].count("Food adaptation applied") == 1
+    assert persisted_plans == []  # GET is read-only; plans are published by POST evaluate
+    assert exercise["target_sets"] == 4  # WHOOP's 0.8 clamp on the base 5 sets
     assert exercise["rationale"].count("WHOOP modifier applied") == 1
-    assert payload["workout_adaptation_events"] == [{
-        "status": "applied",
-        "reason": "Accepted food signal reduced volume once",
-    }]
+    assert payload["workout_adaptation_events"] == []
 
     open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
     assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [

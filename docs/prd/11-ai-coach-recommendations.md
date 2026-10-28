@@ -169,6 +169,7 @@ Freshness buckets use data-point age: fresh under 24 hours, aging from 24 to und
 | recommendation | object | Yes | Current deterministic plan | Auth scoped | Patched or unchanged workout. |
 | summary | string/null | No | null | LLM or deterministic text | Short explanation. |
 | applied_notes | string[] | Yes | [] | Safety-applied notes | Specific plan changes. |
+| skipped_notes | string[] | Yes | [] | Safety-rejected no-ops | Requested changes that were not applied. |
 | cache_hit | boolean | No | false | Cache lookup result | Whether cached response was reused. |
 | meta | object | No | {} | Model metadata without prompt text | Model/version/latency info. |
 
@@ -361,7 +362,7 @@ Recent hide-stale behavior: when the plan's load source is Apple Health, Open We
 | `LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC` | 2.5 | Swap resolution timeout. |
 | `LM_STUDIO_PREFLIGHT_TIMEOUT_SEC` | 1.5 | `/v1/models` preflight timeout. |
 | `MEAL_TEXT_LOCK_ACQUIRE_SEC` | 2.0 | Shared text inference lock timeout for meal text flows. |
-| Adjust cache version | `fit179-movement-resolution-v1` | Cache invalidation version. |
+| Adjust cache version | `fit265-honest-adjust-v2` | Cache invalidation version. |
 | Analyze prompt version | `notes-v2` | Analyze cache/prompt version. |
 
 ## 8. Integration Points

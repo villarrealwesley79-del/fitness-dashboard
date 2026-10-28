@@ -73,11 +73,12 @@ const saved = [];
 sandbox.localStorage.setItem = (key, value) => saved.push({ key, value: JSON.parse(value) });
 const fields = {
   'input[data-field="weight"]': { value: '88' }, 'input[data-field="reps"]': { value: '12' },
-  'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'background' },
+  'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'WHOOP switch proof' },
+  'input[data-field="rpe"]': { value: '7' },
 };
 const row = { dataset: { ex: '0', set: '0' }, querySelector: (selector) => fields[selector] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row], querySelector: () => null };
-sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit264');
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit236');
 e.state.activeWorkout = { id: 'workout-1', dirty: false, exercises: [{ exercise: 'Row', logged_sets: [{ weight: '66', reps: '20', done: false, notes: '' }] }] };
 e.saveActiveWorkoutDraftBeforePageHidden();
 process.stdout.write(JSON.stringify(saved[0]));
@@ -85,10 +86,11 @@ process.stdout.write(JSON.stringify(saved[0]));
         mocks=["currentActiveWorkoutDraftScope"],
     )
     assert output["key"] == "fit168:active-workout-draft:v1"
-    assert output["value"]["auth_scope"] == "user:fit264"
+    assert output["value"]["auth_scope"] == "user:fit236"
     assert output["value"]["workout"]["dirty"] is True
     assert output["value"]["workout"]["exercises"][0]["logged_sets"][0] == {
-        "weight": "88", "reps": "12", "done": True, "notes": "background",
+        "weight": "88", "reps": "12", "done": True, "notes": "WHOOP switch proof",
+        "rpe": 7, "rpe_observed": False,
     }
 
 
@@ -136,8 +138,37 @@ process.stdout.write(JSON.stringify({ restored, active: e.state.activeWorkout, c
 
 def test_frontend_asset_versions_stay_in_sync():
     # Stable deployment/cache constants are intentionally source contracts.
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in APP_HTML
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit270-oura-detail';" in APP_SW
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in APP_HTML
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260716-fit392-rpe';" in APP_SW
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS
+
+
+def test_active_workout_draft_storage_failure_keeps_session_and_shows_warning():
+    output = run_app_js(
+        ["saveActiveWorkoutDraft", "state"],
+        """
+const warning = { hidden: true, textContent: '' };
+sandbox.elements['active-workout-persistence-warning'] = warning;
+sandbox.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit298');
+const activeWorkout = { id: 'workout-fit298', focus: 'Full Body', dirty: true, exercises: [] };
+e.state.activeWorkout = activeWorkout;
+e.saveActiveWorkoutDraft({ syncDom: false });
+process.stdout.write(JSON.stringify({
+  sameWorkout: e.state.activeWorkout === activeWorkout,
+  warningHidden: warning.hidden,
+  warningText: warning.textContent,
+}));
+""",
+        mocks=["currentActiveWorkoutDraftScope"],
+    )
+
+    assert output == {
+        "sameWorkout": True,
+        "warningHidden": False,
+        "warningText": (
+            "This workout still works, but it cannot be recovered after closing or reloading this page."
+        ),
+    }

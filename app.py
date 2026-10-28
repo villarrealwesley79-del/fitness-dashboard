@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
+from contextvars import ContextVar
 import copy
 import csv
 import io
@@ -143,10 +144,15 @@ from data_store import (
     acknowledge_food_log_refresh_event,
     acknowledge_workout_adaptation_event,
     delete_current_workout_plan,
+    expire_unpublished_workout_adaptation_events,
     get_current_workout_plan,
+    get_current_workout_plan_snapshot,
+    get_workout_adaptation_revision,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     list_food_log_refresh_events,
+    list_pending_workout_adaptation_windows,
+    list_unpublished_applied_workout_adaptation_events,
     list_workout_adaptation_events,
     revoke_push_subscription,
     save_push_subscription,
@@ -534,7 +540,40 @@ LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap action
 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
 LAST_WORKOUT_RECOMMENDATION_OWNER = None
 CURRENT_WORKOUT_PLAN_LOCK = threading.RLock()
+_WORKOUT_PLAN_STATE_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "workout_plan_state_context",
+    default=None,
+)
 OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
+
+
+class _WorkoutPlanSnapshot(dict):
+    """Dict-compatible plan snapshot carrying its durable CAS identity."""
+
+    def __init__(
+        self,
+        plan=None,
+        *,
+        plan_generation=None,
+        plan_version=None,
+        current_plan_absent=False,
+        absent_plan_generation=None,
+    ):
+        super().__init__(plan or {})
+        self.plan_generation = plan_generation
+        self.plan_version = plan_version
+        self.current_plan_absent = current_plan_absent
+        self.absent_plan_generation = absent_plan_generation
+
+
+_WORKOUT_PLAN_PERSISTENCE_CONFLICT = object()
+_WORKOUT_PLAN_INTERNAL_KEYS = frozenset(
+    {
+        "_fit233_current_plan_absent",
+        "_fit233_expected_plan_generation",
+        "_fit233_expected_plan_version",
+    }
+)
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -2157,6 +2196,10 @@ def _apply_due_workout_adaptations_for_plan(
     nutrition_context: dict,
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
+    raise_on_error: bool = False,
+    recovery_fingerprint: str | None = None,
+    recovery_source_plan_generation: int | None = None,
+    recovery_source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed FIT-136 windows against a generated remaining plan."""
     current_visible_plan = _fit136_visible_workout_plan(next_workout or {})
@@ -2176,6 +2219,9 @@ def _apply_due_workout_adaptations_for_plan(
             plan_date=date_s,
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise or {},
+            plan_fingerprint=recovery_fingerprint,
+            source_plan_generation=recovery_source_plan_generation,
+            source_plan_version=recovery_source_plan_version,
         )
         if not events:
             return next_workout, []
@@ -2198,6 +2244,8 @@ def _apply_due_workout_adaptations_for_plan(
         return patched, events
     except Exception:
         app.logger.warning("workout adaptation evaluation failed", exc_info=True)
+        if raise_on_error:
+            raise
         return next_workout, []
 
 
@@ -2233,7 +2281,7 @@ def _completed_sets_query_param(raw_value: str | None) -> dict[str, int]:
     for key, value in payload.items():
         try:
             count = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if key and count > 0:
             completed[str(key)] = count
@@ -3402,9 +3450,80 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
 
 def _merge_deterministic_adjust_swap(intent, deterministic_swap):
     merged = dict(intent or {})
-    if deterministic_swap:
-        merged["swap"] = [deterministic_swap]
+    if not deterministic_swap:
+        return merged
+
+    existing_swaps = merged.get("swap") or []
+    if not isinstance(existing_swaps, list):
+        existing_swaps = []
+
+    deterministic_index = deterministic_swap.get("replace_index")
+    deterministic_name = str(deterministic_swap.get("replace_exercise") or "").strip().lower()
+    deterministic_definition = (
+        _resolve_exercise_definition(deterministic_name) if deterministic_name else None
+    )
+
+    def _same_source_slot(candidate):
+        if not isinstance(candidate, dict):
+            return False
+        candidate_index = candidate.get("replace_index")
+        candidate_name = str(candidate.get("replace_exercise") or "").strip().lower()
+        candidate_definition = (
+            _resolve_exercise_definition(candidate_name) if candidate_name else None
+        )
+
+        def _same_source_name():
+            if deterministic_definition and candidate_definition:
+                return _same_exercise_definition(
+                    deterministic_definition, candidate_definition
+                )
+            return bool(deterministic_name and candidate_name == deterministic_name)
+
+        if isinstance(deterministic_index, int) and isinstance(candidate_index, int):
+            if deterministic_index != candidate_index:
+                return False
+            if deterministic_name:
+                return _same_source_name()
+            return not candidate_name
+        if deterministic_name and candidate_name:
+            return _same_source_name()
+        return False
+
+    swaps = []
+    deterministic_inserted = False
+    replaced_model_swap = False
+    for swap in existing_swaps:
+        if _same_source_slot(swap):
+            if isinstance(swap, dict) and not swap.get("_deterministic"):
+                replaced_model_swap = True
+            if not deterministic_inserted:
+                swaps.append(deterministic_swap)
+                deterministic_inserted = True
+            continue
+        swaps.append(swap)
+    if not deterministic_inserted:
+        swaps.append(deterministic_swap)
+    merged["swap"] = swaps
+    if replaced_model_swap:
+        merged["_deterministic_swap_replaced_model_swap"] = True
     return merged
+
+
+def _adjust_outcome_summary(
+    result_kind,
+    applied_notes,
+    skipped_notes,
+    model_summary,
+    *,
+    trust_model_summary=True,
+):
+    if result_kind == "unchanged":
+        return "The requested adjustment could not be applied to the current plan."
+    if result_kind == "changed" and applied_notes and skipped_notes:
+        return "Applied some requested changes; other requested changes were skipped."
+    if result_kind == "changed" and applied_notes and not trust_model_summary:
+        return f"Applied validated changes: {'; '.join(applied_notes)}"
+    return model_summary
 
 
 def _deterministic_adjust_payload(
@@ -3418,18 +3537,28 @@ def _deterministic_adjust_payload(
     equipment_pref,
     reason,
 ):
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
-    patched, applied_notes = _apply_intent_patch(
+    patched, applied_notes, skipped_notes = _apply_intent_patch(
         patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
     )
     result_kind = "changed" if applied_notes else "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        "Applied the recognized exercise request without the local coach model.",
+    )
     return {
         "status": "ok",
         "result_kind": result_kind,
         "recommendation": patched,
-        "summary": "Applied the recognized exercise request without the local coach model.",
+        "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": {"mode": "deterministic_fallback", "reason": reason},
         "cache_hit": False,
@@ -3638,6 +3767,22 @@ def _calculate_rpe_target(is_compound, readiness_index, oura_readiness, soreness
     return round(target * 2) / 2
 
 
+def _observed_set_rpe(set_row):
+    """A set's RPE as a float, only when it is an observed effort (FIT-392).
+
+    The guided workout saves the prescribed target as ``rpe`` with
+    ``rpe_observed: False`` for sets the user never touched; that target is not
+    evidence of effort. Legacy rows without the flag keep counting, as before.
+    """
+    if not isinstance(set_row, dict) or set_row.get("rpe_observed") is False:
+        return None
+    try:
+        rpe = float(set_row.get("rpe"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return rpe if math.isfinite(rpe) else None
+
+
 def _get_last_exercise_performance(workouts, exercise_name):
     if not workouts:
         return None
@@ -3653,7 +3798,7 @@ def _get_last_exercise_performance(workouts, exercise_name):
             sets = ex.get("sets", []) or []
             if not sets:
                 continue
-            rpes = [s.get("rpe") for s in sets if s.get("rpe") is not None]
+            rpes = [r for r in (_observed_set_rpe(s) for s in sets) if r is not None]
             avg_rpe = round(sum(rpes) / len(rpes), 2) if rpes else None
             min_reps = min((s.get("reps") or 0) for s in sets)
             max_weight = max((s.get("weight_lbs") or 0) for s in sets)
@@ -3933,7 +4078,7 @@ def generate_next_workout(
         mesocycle["indicators"] = deload_status.get("indicators", [])
 
     recommendation = {
-        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "id": _new_workout_recommendation_id(),
         "created_at": datetime.now().isoformat(),
         "focus": focus,
         "goal": goal,
@@ -4252,7 +4397,8 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     for workout in workouts[-4:]:
         for exercise in workout.get("exercises", []):
             for s in exercise.get("sets", []):
-                if s.get("rpe", 7) >= 9:
+                set_rpe = _observed_set_rpe(s)
+                if set_rpe is not None and set_rpe >= 9:
                     high_rpe_count += 1
 
     if high_rpe_count >= 6:
@@ -4642,6 +4788,8 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     if recommendation is None:
         return None
     scoped = dict(recommendation)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        scoped.pop(key, None)
     rpe_targets = []
     for exercise in recommendation.get("exercises") or []:
         if not isinstance(exercise, dict):
@@ -4674,20 +4822,181 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     return scoped
 
 
-def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
+def _new_workout_recommendation_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}"
+
+
+def _persist_current_workout_plan(
+    recommendation: dict,
+    fingerprint: str,
+    *,
+    customized: bool = False,
+    publish_adaptation_event_ids: list[str] | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        user_id = _current_data_user_id()
-        persisted = save_current_workout_plan(user_id, fingerprint, recommendation)
-        authoritative_plan = persisted["plan"]
+        expected_current_plan_absent = (
+            recommendation.get("_fit233_current_plan_absent") is True
+            or getattr(recommendation, "current_plan_absent", False) is True
+        )
+        expected_plan_generation = recommendation.get("_fit233_expected_plan_generation")
+        expected_plan_version = recommendation.get("_fit233_expected_plan_version")
+        if expected_plan_generation is None:
+            expected_plan_generation = getattr(recommendation, "plan_generation", None)
+        if expected_plan_version is None:
+            expected_plan_version = getattr(recommendation, "plan_version", None)
+        expected_absent_plan_generation = getattr(
+            recommendation,
+            "absent_plan_generation",
+            None,
+        )
+        expected_plan_identity = (
+            expected_plan_generation is not None and expected_plan_version is not None
+        )
+        if expected_current_plan_absent or expected_plan_identity or any(
+            key in recommendation for key in _WORKOUT_PLAN_INTERNAL_KEYS
+        ):
+            recommendation = dict(recommendation)
+            for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+                recommendation.pop(key, None)
+        stored_customization_marker = recommendation.get("_user_customized") is True
+        if stored_customization_marker:
+            recommendation = dict(recommendation)
+            recommendation.pop("_user_customized", None)
+        current_user_id = _current_data_user_id()
+        same_current_plan = bool(
+            LAST_WORKOUT_RECOMMENDATION_OWNER
+            and LAST_WORKOUT_RECOMMENDATION_OWNER.get("user_id") == current_user_id
+            and LAST_WORKOUT_RECOMMENDATION
+            and recommendation == LAST_WORKOUT_RECOMMENDATION
+        )
+        customized = bool(
+            customized
+            or stored_customization_marker
+            or (same_current_plan and LAST_WORKOUT_RECOMMENDATION_OWNER.get("customized"))
+        )
+        persisted_recommendation = dict(recommendation)
+        if customized:
+            persisted_recommendation["_user_customized"] = True
+        only_if_current_plan_absent = bool(
+            publish_adaptation_event_ids is None
+            and expected_current_plan_absent
+        )
+        save_kwargs = {
+            "publish_adaptation_event_ids": publish_adaptation_event_ids,
+        }
+        if only_if_current_plan_absent:
+            save_kwargs["only_if_current_plan_absent"] = True
+            if expected_absent_plan_generation is not None:
+                save_kwargs["expected_absent_plan_generation"] = int(
+                    expected_absent_plan_generation
+                )
+        if expected_plan_identity:
+            save_kwargs["expected_plan_generation"] = int(expected_plan_generation)
+            save_kwargs["expected_plan_version"] = int(expected_plan_version)
+        persisted = save_current_workout_plan(
+            current_user_id,
+            fingerprint,
+            persisted_recommendation,
+            **save_kwargs,
+        )
+        if persisted is None:
+            if only_if_current_plan_absent or expected_plan_identity:
+                return _WORKOUT_PLAN_PERSISTENCE_CONFLICT
+            return None
+        authoritative_plan = _WorkoutPlanSnapshot(
+            persisted["plan"],
+            plan_generation=persisted.get("plan_generation"),
+            plan_version=persisted.get("plan_version"),
+        )
+        authoritative_plan.pop("_user_customized", None)
         LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
-            "user_id": user_id,
+            "user_id": current_user_id,
             "fingerprint": fingerprint,
             "plan_id": id(authoritative_plan),
+            "customized": customized,
         }
+        if persisted.get("plan_generation") is not None and persisted.get("plan_version") is not None:
+            LAST_WORKOUT_RECOMMENDATION_OWNER.update(
+                {
+                    "plan_generation": persisted["plan_generation"],
+                    "plan_version": persisted["plan_version"],
+                }
+            )
     return authoritative_plan
+
+
+def _publish_unpublished_workout_adaptations(
+    user_id: int,
+    fingerprint: str,
+    today_s: str,
+) -> list[str]:
+    while True:
+        unpublished = list_unpublished_applied_workout_adaptation_events(user_id)
+        if not unpublished:
+            return []
+        plan_state = get_current_workout_plan_snapshot(user_id)
+        current_plan = plan_state["current_plan"]
+        current_plan_generation = int(plan_state["plan_generation"])
+        current_plan_identity = (
+            (
+                current_plan.get("plan_generation"),
+                current_plan.get("plan_version"),
+            )
+            if current_plan
+            else (current_plan_generation, None)
+        )
+        obsolete_ids = [
+            str(event["id"])
+            for event in unpublished
+            if event.get("id")
+            and (
+                str(event.get("target_plan_date") or "") != today_s
+                or event.get("plan_fingerprint") != fingerprint
+                or (
+                    (
+                        0
+                        if not current_plan
+                        and current_plan_generation == 0
+                        and event.get("source_plan_generation") is None
+                        else event.get("source_plan_generation")
+                    ),
+                    event.get("source_plan_version"),
+                ) != current_plan_identity
+            )
+        ]
+        if obsolete_ids:
+            expire_unpublished_workout_adaptation_events(user_id, obsolete_ids)
+            continue
+        latest_plan = unpublished[-1].get("_adapted_plan")
+        if not isinstance(latest_plan, dict):
+            raise RuntimeError("unpublished workout adaptation is missing its adapted plan")
+        event_ids = [str(event["id"]) for event in unpublished if event.get("id")]
+        persisted = _persist_current_workout_plan(
+            latest_plan,
+            fingerprint,
+            publish_adaptation_event_ids=event_ids,
+        )
+        if persisted is not None:
+            return event_ids
+
+
+def _same_day_preserved_workout_plan(today_s: str) -> dict | None:
+    stored = get_current_workout_plan(_current_data_user_id())
+    if not stored or str(stored.get("updated_at") or "")[:10] != today_s:
+        return None
+    plan = stored.get("plan")
+    preserved = isinstance(plan, dict) and (
+        plan.get("_user_customized") is True
+        or isinstance(plan.get("_fit136_last_adapted_plan"), dict)
+    )
+    if not preserved or _is_lightweight_current_workout_plan(plan):
+        return None
+    plan = dict(plan)
+    plan.pop("_user_customized", None)
+    return plan
 
 
 def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
@@ -4766,81 +5075,107 @@ def _is_lightweight_current_workout_plan(recommendation: dict | None) -> bool:
     return bool((recommendation or {}).get("_fit136_lightweight_no_ow"))
 
 
-def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsaved: bool = False) -> dict | None:
+def _current_workout_plan_for_fingerprint(
+    fingerprint: str,
+    *,
+    allow_stale_unsaved: bool = False,
+    return_lookup_token: bool = False,
+    durable_only: bool = False,
+    plan_state: dict | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        if LAST_WORKOUT_RECOMMENDATION and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION):
-            owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
-            owner_matches_plan = owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            if owner_matches_plan:
-                if owner.get("user_id") == _current_data_user_id():
-                    if owner.get("fingerprint") == fingerprint:
-                        persisted = get_current_workout_plan(
-                            _current_data_user_id(),
-                            fingerprint=fingerprint,
-                        )
-                        if (
-                            persisted
-                            and persisted.get("plan")
-                            and persisted["plan"] != LAST_WORKOUT_RECOMMENDATION
-                        ):
-                            if (
-                                LAST_WORKOUT_RECOMMENDATION.get(
-                                    "_fit136_base_recommendation"
-                                )
-                                and not persisted["plan"].get(
-                                    "_fit136_base_recommendation"
-                                )
-                            ):
-                                if LAST_WORKOUT_RECOMMENDATION.get("_fit136_adaptation_event_id"):
-                                    authoritative = save_current_workout_plan(
-                                        _current_data_user_id(),
-                                        fingerprint,
-                                        LAST_WORKOUT_RECOMMENDATION,
-                                    )
-                                    LAST_WORKOUT_RECOMMENDATION = authoritative["plan"]
-                                else:
-                                    LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
-                                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
-                                LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                                    "user_id": _current_data_user_id(),
-                                    "fingerprint": fingerprint,
-                                    "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
-                                }
-                        return LAST_WORKOUT_RECOMMENDATION
-                    if allow_stale_unsaved:
-                        return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == fingerprint:
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif allow_stale_unsaved and (
-                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT is None
-                or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
-            ):
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        row = get_current_workout_plan(_current_data_user_id(), fingerprint=fingerprint)
-        if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-            LAST_WORKOUT_RECOMMENDATION = row["plan"]
-            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+        current_user_id = _current_data_user_id()
+        plan_state = (
+            plan_state
+            or _WORKOUT_PLAN_STATE_CONTEXT.get()
+            or get_current_workout_plan_snapshot(current_user_id)
+        )
+        row = plan_state["current_plan"]
+        if (
+            row
+            and row.get("plan")
+            and not _is_lightweight_current_workout_plan(row["plan"])
+            and (row["fingerprint"] == fingerprint or allow_stale_unsaved or durable_only)
+        ):
+            plan = _WorkoutPlanSnapshot(
+                row["plan"],
+                plan_generation=row.get("plan_generation"),
+                plan_version=row.get("plan_version"),
+            )
+            customized = plan.get("_user_customized") is True
+            if customized:
+                plan.pop("_user_customized", None)
+            LAST_WORKOUT_RECOMMENDATION = plan
+            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = row["fingerprint"]
             LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                "user_id": _current_data_user_id(),
-                "fingerprint": fingerprint,
-                "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                "user_id": current_user_id,
+                "fingerprint": row["fingerprint"],
+                "plan_id": id(plan),
+                "customized": customized,
+                "plan_generation": row.get("plan_generation"),
+                "plan_version": row.get("plan_version"),
             }
-            return LAST_WORKOUT_RECOMMENDATION
+            return plan
+        if durable_only:
+            return None
+        owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
         if (
             allow_stale_unsaved
             and LAST_WORKOUT_RECOMMENDATION
             and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION)
-            and not (
-                (LAST_WORKOUT_RECOMMENDATION_OWNER or {}).get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            )
+            and owner.get("user_id") == current_user_id
+            and owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
         ):
-            return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        if allow_stale_unsaved:
-            row = get_current_workout_plan(_current_data_user_id())
-            if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-                return _persist_current_workout_plan(row["plan"], fingerprint)
+            mutation_snapshot = _WorkoutPlanSnapshot(
+                LAST_WORKOUT_RECOMMENDATION,
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
+            mutation_snapshot["_fit233_current_plan_absent"] = True
+            return mutation_snapshot
+        if return_lookup_token:
+            if row:
+                return _WorkoutPlanSnapshot(
+                    {},
+                    plan_generation=row.get("plan_generation"),
+                    plan_version=row.get("plan_version"),
+                )
+            return _WorkoutPlanSnapshot(
+                {},
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
         return None
+
+
+def _copy_workout_plan_cas_identity(source: dict, target: dict) -> dict:
+    """Copy mutation-only CAS metadata without exposing it in API payloads."""
+    copied = dict(target)
+    current_plan_absent = (
+        source.get("_fit233_current_plan_absent") is True
+        or getattr(source, "current_plan_absent", False) is True
+    )
+    plan_generation = source.get("_fit233_expected_plan_generation")
+    plan_version = source.get("_fit233_expected_plan_version")
+    if plan_generation is None:
+        plan_generation = getattr(source, "plan_generation", None)
+    if plan_version is None:
+        plan_version = getattr(source, "plan_version", None)
+    if plan_generation is not None and plan_version is not None:
+        plan_generation = int(plan_generation)
+        plan_version = int(plan_version)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        copied.pop(key, None)
+    if current_plan_absent or (plan_generation is not None and plan_version is not None):
+        return _WorkoutPlanSnapshot(
+            copied,
+            plan_generation=plan_generation,
+            plan_version=plan_version,
+            current_plan_absent=current_plan_absent,
+            absent_plan_generation=getattr(source, "absent_plan_generation", None),
+        )
+    return copied
 
 
 def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
@@ -4988,7 +5323,16 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    today_s = _today_str()
+    current_plan = _same_day_preserved_workout_plan(today_s)
+    lookup_token = None
+    if not current_plan:
+        current_plan = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not current_plan:
+            lookup_token = current_plan
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -4996,36 +5340,29 @@ def api_next_workout():
         open_wearables_facts,
     )
     if not current_plan:
-        current_plan = generate_next_workout(
+        generated_plan = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
-    today_s = _today_str()
-    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
-    food_log_entries = adaptation_food_entries
-    nutrition_context = _nutrition_context_for_date(
-        today_s,
-        hard_training_planned=_workout_looks_hard(current_plan or {}),
-        food_log_entries=food_log_entries,
-    )
+        if lookup_token is not None:
+            generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            current_plan = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            )
+            if current_plan is None:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+        else:
+            current_plan = persisted or generated_plan
     workout_adaptation_events = []
-    if can_evaluate_active:
-        current_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            current_plan or {},
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
@@ -5061,7 +5398,9 @@ def gym_now():
     """Emergency no-app-shell workout view for stale mobile/PWA caches."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    workout = _current_workout_plan_for_fingerprint(fingerprint)
+    workout = _same_day_preserved_workout_plan(_today_str())
+    if not workout:
+        workout = _current_workout_plan_for_fingerprint(fingerprint)
     if not workout:
         workout = generate_next_workout(
             WORKOUTS,
@@ -5279,7 +5618,16 @@ def api_dashboard():
         reason_bits.append(open_wearables_modifier["detail"])
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    next_workout = _same_day_preserved_workout_plan(today_s)
+    using_stored_customization = next_workout is not None
+    lookup_token = None
+    if not next_workout:
+        next_workout = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not next_workout:
+            lookup_token = next_workout
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
@@ -5287,6 +5635,8 @@ def api_dashboard():
             training_recommendation=guarded_dashboard_recommendation,
             consume_cardio_rotation=False,
         )
+        if lookup_token is not None:
+            next_workout = _copy_workout_plan_cas_identity(lookup_token, next_workout)
     adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
     food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
@@ -5295,24 +5645,6 @@ def api_dashboard():
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today_s,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(readiness_val)
     # Persist the base/programmed plan (post-adaptation, pre-wearable-modifier)
@@ -5324,7 +5656,17 @@ def api_dashboard():
     # transform on the way out only. Persisting the base first is safe: the base
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
-    next_workout = _persist_current_workout_plan(next_workout, fingerprint)
+    if not using_stored_customization:
+        persisted = _persist_current_workout_plan(next_workout, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            # A concurrent log may have deleted the plan; serve the generated
+            # plan unpersisted rather than failing the read-only dashboard.
+            next_workout = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            ) or next_workout
+        else:
+            next_workout = persisted or next_workout
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -9714,6 +10056,11 @@ def ack_food_log_refresh_event(event_id: str):
 
 @app.route('/api/workout-adaptation-events')
 def workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _workout_adaptation_events_locked()
+
+
+def _workout_adaptation_events_locked():
     """Pollable FIT-137 event feed for nutrition-based workout adaptations."""
     unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
     unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
@@ -9726,6 +10073,30 @@ def workout_adaptation_events():
     except (TypeError, ValueError):
         return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
 
+    user_id = _current_data_user_id()
+    events = list_workout_adaptation_events(
+        user_id,
+        unacknowledged=unacknowledged,
+        since=since,
+        limit=limit,
+    )
+    projected = [workout_adaptation.project_event(event) for event in events]
+    return jsonify({
+        "events": projected,
+        "count": len(projected),
+        "applied_plan_revision": get_workout_adaptation_revision(user_id),
+    })
+
+
+@app.route('/api/workout-adaptation-events/evaluate', methods=["POST"])
+def evaluate_workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _evaluate_workout_adaptation_events_locked()
+
+
+def _evaluate_workout_adaptation_events_locked():
+    """Explicitly evaluate due FIT-136 windows before polling the event feed."""
+    user_id = _current_data_user_id()
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     active_open_requested = active_open_raw in {"1", "true", "yes"}
@@ -9735,39 +10106,148 @@ def workout_adaptation_events():
     food_log_entries = adaptation_food_entries
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
+    plan_state = get_current_workout_plan_snapshot(user_id)
+    source_plan_row = plan_state["current_plan"]
+    state_token = _WORKOUT_PLAN_STATE_CONTEXT.set(plan_state)
+    try:
+        current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    finally:
+        _WORKOUT_PLAN_STATE_CONTEXT.reset(state_token)
+    stored_plan = source_plan_row
+    stored_plan_written_today = bool(
+        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today_s
+    )
+    stored_workout = stored_plan.get("plan") if stored_plan_written_today else None
+    if stored_workout and _is_lightweight_current_workout_plan(stored_workout):
+        stored_workout = None
+    stored_workout_was_customized = bool(
+        stored_workout and stored_workout.get("_user_customized") is True
+    )
+    stored_workout_was_adapted = bool(
+        stored_workout
+        and isinstance(stored_workout.get("_fit136_last_adapted_plan"), dict)
+    )
+    if stored_workout and not (
+        stored_workout_was_customized
+        or stored_workout_was_adapted
+        or active_workout_open
+    ):
+        stored_workout = None
+    next_workout = stored_workout or current_plan
     if not next_workout:
+        training_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+            _current_workout_training_recommendation(),
+            _open_wearables_recommendation_facts(),
+        )
         next_workout = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
-            training_recommendation=_current_workout_training_recommendation(),
+            training_recommendation=training_recommendation,
             consume_cardio_rotation=False,
         )
-        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, _events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_workout_open,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
-
-    events = list_workout_adaptation_events(
-        _current_data_user_id(),
-        unacknowledged=unacknowledged,
-        since=since,
-        limit=limit,
+    events = []
+    source_plan_generation = (
+        source_plan_row.get("plan_generation")
+        if source_plan_row
+        else plan_state["plan_generation"]
     )
-    projected = [workout_adaptation.project_event(event) for event in events]
-    return jsonify({"events": projected, "count": len(projected)})
+    source_plan_version = None
+    if source_plan_row:
+        source_plan_version = int(source_plan_row.get("plan_version") or 0)
+    if not active_open_requested or completed_sets_by_exercise:
+        try:
+            next_workout, events = _apply_due_workout_adaptations_for_plan(
+                next_workout,
+                date_s=today_s,
+                food_log_entries=adaptation_food_entries,
+                nutrition_context=nutrition_context,
+                active_workout_open=active_workout_open,
+                completed_sets_by_exercise=completed_sets_by_exercise,
+                raise_on_error=True,
+                recovery_fingerprint=fingerprint,
+                recovery_source_plan_generation=source_plan_generation,
+                recovery_source_plan_version=source_plan_version,
+            )
+        except Exception:
+            return api_error(
+                "workout adaptation evaluation failed",
+                500,
+                code="evaluation_failed",
+            )
+        if any(
+            event.get("_claim_created", True) and event.get("status") == "applied"
+            for event in events
+        ):
+            winning_applied_event_ids = [
+                str(event["id"])
+                for event in events
+                if event.get("_claim_created", True)
+                and event.get("status") == "applied"
+                and event.get("id")
+            ]
+            _persist_current_workout_plan(
+                next_workout,
+                fingerprint,
+                publish_adaptation_event_ids=winning_applied_event_ids,
+            )
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
+    pending_windows = list_pending_workout_adaptation_windows(user_id)
+    next_evaluation_at = min(
+        (
+            str(window.get("window_closes_at") or "").strip()
+            for window in pending_windows
+            if str(window.get("window_closes_at") or "").strip()
+        ),
+        default=None,
+    )
+    retry_after_ms = None
+    next_evaluation_time = workout_adaptation._parse_iso(next_evaluation_at)
+    if next_evaluation_time is not None:
+        remaining_ms = math.ceil(
+            (next_evaluation_time - workout_adaptation._clock_now()).total_seconds() * 1000
+        )
+        retry_after_ms = remaining_ms if remaining_ms > 0 else 60_000
+    unacknowledged_events = list_workout_adaptation_events(
+        user_id,
+        unacknowledged=True,
+        limit=50,
+    )
+    applied_event_revision = ",".join(
+        sorted(
+            str(event["id"])
+            for event in unacknowledged_events
+            if event.get("status") == "applied" and event.get("id")
+        )
+    )
+    return jsonify(
+        {
+            "status": "success",
+            "evaluated_count": len(events),
+            "retry_after_ms": retry_after_ms,
+            "applied_event_revision": applied_event_revision or None,
+            "applied_plan_revision": get_workout_adaptation_revision(user_id),
+        }
+    )
 
 
 @app.route('/api/workout-adaptation-events/<event_id>/ack', methods=["POST"])
@@ -10321,9 +10801,26 @@ def swap_workout_exercise():
     if err:
         return err
 
-    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
-    if err2:
-        return err2
+    raw_recommendation_id = data.get("recommendation_id")
+    if (
+        not isinstance(raw_recommendation_id, str)
+        or not raw_recommendation_id.strip()
+        or len(raw_recommendation_id.strip()) > 256
+    ):
+        return api_error("recommendation_id must be a non-empty string", 400, code="invalid_field")
+    recommendation_id = raw_recommendation_id.strip()
+
+    fingerprint = _workout_recommendation_fingerprint()
+    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    if not recommendation:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+    if recommendation.get("id") != recommendation_id:
+        return api_error(
+            "Workout plan changed. Refresh the workout and try again.",
+            409,
+            code="plan_changed",
+        )
+
     exercise_index, err2 = _coerce_int(data.get("exercise_index"), "exercise_index", min_v=0, max_v=10_000)
     if err2:
         return err2
@@ -10331,10 +10828,10 @@ def swap_workout_exercise():
     if err2:
         return err2
 
-    fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
-    if not recommendation:
-        return api_error("No recent workout recommendation available", 404, code="not_found")
+    recommendation = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
 
     exercises = recommendation.get("exercises") or []
     if not (0 <= exercise_index < len(exercises)):
@@ -10393,7 +10890,19 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+    recommendation["id"] = _new_workout_recommendation_id()
+    persisted = _persist_current_workout_plan(
+        recommendation,
+        fingerprint,
+        customized=True,
+    )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    recommendation = persisted or recommendation
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -10410,7 +10919,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit179-movement-resolution-v1"
+_ADJUST_CACHE_VERSION = "fit265-honest-adjust-v2"
 
 
 def _ai_cache_init():
@@ -10556,10 +11065,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     """Apply the LLM's intent patch to the deterministic recommendation.
 
     Every mutation is clamped/validated here. The LLM cannot override safety.
-    Returns (patched_recommendation, applied_notes) where applied_notes is a
-    list of human-readable strings describing what actually changed.
+    Returns (patched_recommendation, applied_notes, skipped_notes). Applied
+    notes describe actual mutations; skipped notes describe rejected no-ops.
     """
-    notes = []
+    applied_notes = []
+    skipped_notes = []
     exercises = list(recommendation.get("exercises") or [])
 
     def _normalize_avoid_joints(raw_items):
@@ -10596,18 +11106,28 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     # ── 2) Clamp rpe_delta to ±1.0; disallow upward on poor readiness.
     rpe_delta_raw = float(intent.get("rpe_delta") or 0)
     rpe_delta = max(-1.0, min(1.0, rpe_delta_raw))
+    if rpe_delta != rpe_delta_raw:
+        skipped_notes.append(
+            f"Clamped: RPE adjustment {rpe_delta_raw:+.1f} to {rpe_delta:+.1f}"
+        )
     if deload_active and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)  # deload can only reduce
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
     if oura_readiness is not None and oura_readiness < 60 and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
 
     # ── 3) Clamp sets_delta_pct to ±20; no upward on deload/low readiness.
     sets_delta_raw = float(intent.get("sets_delta_pct") or 0)
     sets_delta = max(-20.0, min(20.0, sets_delta_raw))
+    if sets_delta != sets_delta_raw:
+        skipped_notes.append(
+            f"Clamped: sets adjustment {sets_delta_raw:+.0f}% to {sets_delta:+.0f}%"
+        )
     if deload_active or (oura_readiness is not None and oura_readiness < 60):
         sets_delta = min(0.0, sets_delta)
+        if sets_delta_raw > 0:
+            skipped_notes.append("Ignored: sets increase — deload or low readiness")
 
     # ── 4) Hard blacklist avoid_muscles / avoid_joints using current soreness data.
     avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
@@ -10637,7 +11157,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 reason_bits = [f"{muscle} avoided"]
                 if sore_map.get(muscle, 0) >= 7:
                     reason_bits.append(f"soreness {sore_map[muscle]}/10")
-                notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
+                applied_notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10658,7 +11178,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 if any(src in ex_name.lower() for src in joint_swap_sources):
                     kept.append(ex)
                     continue
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10680,15 +11200,16 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         replace_index = sw.get("replace_index")
         target_muscle = (sw.get("target_muscle") or "").strip().lower()
         if not target_muscle or (not src_name and not isinstance(replace_index, int)):
+            skipped_notes.append("Ignored: swap requires a target muscle and source exercise or index")
             continue
         if target_muscle in avoid_muscles:
-            notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
+            skipped_notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
             continue
 
         # Find the exercise to replace by name (case-insensitive, contains).
         def _source_matches_plan_exercise(plan_ex):
             if not src_name:
-                return True
+                return False
             if src_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), src_definition):
                 return True
             plan_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
@@ -10704,13 +11225,13 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                     idx = i
                     break
         if idx is None:
-            notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
+            skipped_notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
         target_exercise_name = (sw.get("target_exercise") or "").strip()
         requested_exercise = _resolve_exercise_definition(target_exercise_name)
         if target_exercise_name and not requested_exercise:
-            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            skipped_notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
             continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
@@ -10721,7 +11242,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             and not _exercise_loads_avoided_joint(ex.get("name"), avoid_joints)
         ]
         if not library:
-            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
+            skipped_notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan, including aliases.
@@ -10733,8 +11254,14 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
         if requested_exercise:
             if requested_exercise not in library:
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is unavailable under current equipment/joint constraints"
+                )
                 continue
             if _plan_already_contains(requested_exercise):
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is already in the current plan"
+                )
                 continue
             picked = requested_exercise
         else:
@@ -10759,7 +11286,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         new_entry["rationale"] = f"{new_entry.get('rationale', '')} · Swapped from {old_name} ({reason})".strip(" ·")
         exercises[idx] = new_entry
         reason_suffix = f" — {reason}" if reason else ""
-        notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+        applied_notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
 
     if avoid_joints:
         kept = []
@@ -10767,28 +11294,65 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
             avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
             if avoided:
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
 
     # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
+    rpe_changed_count = 0
+    rpe_unchanged_count = 0
+    sets_changed_count = 0
+    sets_unchanged_count = 0
     if rpe_delta != 0 or sets_delta != 0:
         for ex in exercises:
             if rpe_delta:
                 cur = float(ex.get("rpe_target") or goal_params.get("rpe_target") or 7)
-                ex["rpe_target"] = max(1.0, min(10.0, cur + rpe_delta))
+                new_rpe = max(1.0, min(10.0, cur + rpe_delta))
+                if new_rpe != cur:
+                    ex["rpe_target"] = new_rpe
+                    rpe_changed_count += 1
+                else:
+                    rpe_unchanged_count += 1
             if sets_delta:
                 cur = int(ex.get("target_sets") or goal_params.get("sets_per_exercise") or 3)
                 new_sets = max(1, round(cur * (1 + sets_delta / 100.0)))
                 # Never add sets on deload
                 if deload_active:
                     new_sets = min(cur, new_sets)
-                ex["target_sets"] = new_sets
-        if rpe_delta:
-            notes.append(f"RPE adjusted {rpe_delta:+.1f} across all exercises")
-        if sets_delta:
-            notes.append(f"Sets adjusted {sets_delta:+.0f}% across all exercises")
+                if new_sets != cur:
+                    ex["target_sets"] = new_sets
+                    sets_changed_count += 1
+                else:
+                    sets_unchanged_count += 1
+        if rpe_changed_count:
+            suffix = "exercise" if rpe_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"RPE adjusted {rpe_delta:+.1f} for {rpe_changed_count} {suffix}"
+            )
+        if rpe_delta and not rpe_changed_count:
+            skipped_notes.append("Ignored: RPE adjustment produced no exercise changes")
+        elif rpe_unchanged_count:
+            suffix = "exercise" if rpe_unchanged_count == 1 else "exercises"
+            limit_phrase = "at its limit" if rpe_unchanged_count == 1 else "at their limits"
+            skipped_notes.append(
+                f"RPE adjustment skipped for {rpe_unchanged_count} {suffix} {limit_phrase}"
+            )
+        if sets_changed_count:
+            suffix = "exercise" if sets_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"Sets adjusted {sets_delta:+.0f}% for {sets_changed_count} {suffix}"
+            )
+        if sets_delta and not sets_changed_count:
+            skipped_notes.append("Ignored: sets adjustment produced no exercise changes")
+        elif sets_unchanged_count:
+            suffix = "exercise" if sets_unchanged_count == 1 else "exercises"
+            rounding_phrase = (
+                "kept it unchanged" if sets_unchanged_count == 1 else "kept them unchanged"
+            )
+            skipped_notes.append(
+                f"Sets adjustment skipped for {sets_unchanged_count} {suffix} because rounding {rounding_phrase}"
+            )
 
     # ── 7) Weight guard: cap every exercise at +10% of its recent e1RM-derived load.
     for ex in exercises:
@@ -10799,8 +11363,10 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             target_w = float(ex.get("target_weight") or 0)
             cap = e1rm * 1.10
             if target_w > cap:
-                ex["target_weight"] = round(cap, 1)
-                notes.append(f"Capped: {ex_name} weight → {round(cap, 1)} lb (10% above e1RM ceiling)")
+                capped_weight = round(cap, 1)
+                if capped_weight != target_w:
+                    ex["target_weight"] = capped_weight
+                    applied_notes.append(f"Capped: {ex_name} weight → {capped_weight} lb (10% above e1RM ceiling)")
 
     # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
     duration_cap = float(intent.get("duration_cap_min") or 0)
@@ -10816,17 +11382,23 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             kept.append(ex)
         if len(kept) < len(exercises):
             dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
-            notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            applied_notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
             exercises = kept
-        recommendation["estimated_minutes"] = int(minutes_used + 10)
+        old_estimated_minutes = recommendation.get("estimated_minutes")
+        new_estimated_minutes = int(minutes_used + 10)
+        recommendation["estimated_minutes"] = new_estimated_minutes
+        if old_estimated_minutes != new_estimated_minutes:
+            applied_notes.append(
+                f"Duration adjusted: {old_estimated_minutes} → {new_estimated_minutes} min"
+            )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio"):
+    if intent.get("drop_cardio") and recommendation.get("cardio") is not None:
         recommendation["cardio"] = None
-        notes.append("Removed: Cardio finisher — per your request")
+        applied_notes.append("Removed: Cardio finisher — per your request")
 
     recommendation["exercises"] = exercises
-    return recommendation, notes
+    return recommendation, applied_notes, skipped_notes
 
 
 @app.route('/api/workout/adjust', methods=['POST'])
@@ -10849,10 +11421,23 @@ def adjust_workout():
         return err2
 
     fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    recommendation = _current_workout_plan_for_fingerprint(
+        fingerprint,
+        allow_stale_unsaved=True,
+        return_lookup_token=True,
+    )
     if not recommendation:
-        recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
-        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+        lookup_token = recommendation
+        generated_plan = generate_next_workout(WORKOUTS, SORENESS_DATA)
+        generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            return api_error(
+                "Workout plan changed while this request was in progress. Refresh and retry.",
+                409,
+                code="workout_plan_conflict",
+            )
+        recommendation = persisted or generated_plan
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -10876,7 +11461,18 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -10886,6 +11482,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     readiness_date = _today_str()
@@ -10915,7 +11512,22 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                cached["recommendation"] = _persist_current_workout_plan(cached["recommendation"], fingerprint)
+                cached_recommendation = _copy_workout_plan_cas_identity(
+                    recommendation,
+                    cached["recommendation"],
+                )
+                persisted = _persist_current_workout_plan(
+                    cached_recommendation,
+                    fingerprint,
+                    customized=cached.get("result_kind") == "changed",
+                )
+                if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                    return api_error(
+                        "Workout plan changed while this request was in progress. Refresh and retry.",
+                        409,
+                        code="workout_plan_conflict",
+                    )
+                cached["recommendation"] = persisted or cached_recommendation
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -10931,7 +11543,18 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -10946,6 +11569,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     # Send readiness context the LLM can reason about.
@@ -10976,7 +11600,18 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            persisted = _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -10996,18 +11631,25 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent = _merge_deterministic_adjust_swap(raw_patch.get("intent") or {}, deterministic_swap)
+    trust_model_summary = not bool(
+        intent.pop("_deterministic_swap_replaced_model_swap", False)
+    )
     summary = raw_patch.get("summary") or ""
     raw_meta = raw_patch.get("_meta") or {}
     actual_model_version = raw_meta.get("model_version") or route_model_version
 
     # Deep-copy the recommendation so the in-memory canonical isn't mutated
     # if the user re-opens without applying.
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     try:
-        patched, applied_notes = _apply_intent_patch(
+        patched, applied_notes, skipped_notes = _apply_intent_patch(
             patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
         )
     except Exception as exc:
@@ -11027,6 +11669,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent_is_empty = (
@@ -11044,6 +11687,13 @@ def adjust_workout():
         result_kind = "refused"
     else:
         result_kind = "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        summary,
+        trust_model_summary=trust_model_summary,
+    )
 
     payload = {
         "status": "ok",
@@ -11051,6 +11701,7 @@ def adjust_workout():
         "recommendation": patched,
         "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": raw_meta,
         "cache_hit": False,
@@ -11069,7 +11720,18 @@ def adjust_workout():
     # Cache and persist the BASE patched plan (display transform must not be
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
-    patched = _persist_current_workout_plan(patched, fingerprint)
+    persisted = _persist_current_workout_plan(
+        patched,
+        fingerprint,
+        customized=result_kind == "changed",
+    )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    patched = persisted or patched
     payload["recommendation"] = patched
     _ai_cache_put(cache_write_key, payload)
     _ai_metric_log(
@@ -16387,68 +17049,12 @@ def smart_recommendation_api():
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(_current_data_user_id())
-    # A stored plan whose fingerprint doesn't match today's fingerprint is
-    # only safe to treat as canonical if it was actually written *today*.
-    # A same-day mismatch is process-local cache churn (worker divergence,
-    # a weather-cache refresh, etc.) that a genuine same-day swap should
-    # survive -- but a stored plan left over from a *prior* day (e.g. a
-    # calendar-day rollover, since the fingerprint includes `day`) is
-    # stale and must not be resurrected and re-persisted under today's
-    # fingerprint (FIT-256 finding 1): doing so would serve yesterday's
-    # plan forever, since it would then satisfy every future fingerprint
-    # lookup for today. On a cross-day mismatch we fall back to
-    # `current_plan` (fingerprint-scoped) / regeneration instead.
-    stored_plan_written_today = bool(
-        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today
-    )
-    canonical_plan = (
-        (stored_plan.get("plan") if stored_plan_written_today else None) or current_plan
-    )
-    if not active_open_requested or completed_sets_by_exercise:
-        if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
-            canonical_nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(canonical_plan),
-                food_log_entries=food_log_entries,
-            )
-            adapted_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                canonical_plan,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=canonical_nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                next_workout = _persist_current_workout_plan(adapted_plan, fingerprint)
-                nutrition_context = _nutrition_context_for_date(
-                    today,
-                    hard_training_planned=_workout_looks_hard(next_workout),
-                    food_log_entries=food_log_entries,
-                )
-        else:
-            next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                next_workout,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                next_workout = _persist_current_workout_plan(next_workout, fingerprint)
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
+    canonical_plan = _same_day_preserved_workout_plan(today) or current_plan
+    if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
+        next_workout = dict(canonical_plan)
+        next_workout.pop("_user_customized", None)
     next_workout_before_whoop = copy.deepcopy(next_workout or {})
     whoop_adjusted = apply_wearable_modifiers(
         recommendation,
@@ -16768,6 +17374,35 @@ def progressive_overload():
     return jsonify({"exercises": _calculate_progressive_overload(WORKOUTS)})
 
 
+def _normalize_set_rpe(set_row):
+    """Normalize optional per-set RPE without blocking workout completion."""
+    raw_rpe = set_row.get("rpe")
+    rpe = None
+    if not isinstance(raw_rpe, bool):
+        try:
+            candidate = float(raw_rpe)
+        except (TypeError, ValueError, OverflowError):
+            candidate = None
+        if candidate is not None and math.isfinite(candidate) and 1 <= candidate <= 10:
+            rpe = int(candidate) if candidate.is_integer() else candidate
+    set_row["rpe"] = rpe
+    set_row["rpe_observed"] = bool(
+        rpe is not None and set_row.get("rpe_observed") is True
+    )
+
+
+def _history_exercises_with_rpe_provenance(exercises):
+    """Return history-safe copies, treating legacy RPE targets as defaulted."""
+    copied = copy.deepcopy(exercises if isinstance(exercises, list) else [])
+    for exercise in copied:
+        if not isinstance(exercise, dict):
+            continue
+        for set_row in exercise.get("sets") or []:
+            if isinstance(set_row, dict) and "rpe_observed" not in set_row:
+                set_row["rpe_observed"] = False
+    return copied
+
+
 @app.route('/api/history')
 def workout_history():
     """Get past workouts with full details."""
@@ -16786,7 +17421,7 @@ def workout_history():
             "date": w["date"],
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -16820,7 +17455,7 @@ def all_history():
             "date": w.get("date", ""),
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -17066,6 +17701,7 @@ def complete_workout():
                 set_row["notes"] = set_notes
             else:
                 set_row.pop("notes", None)
+            _normalize_set_rpe(set_row)
             if not set_row.get("set_number"):
                 set_row["set_number"] = set_idx + 1
 
@@ -17316,10 +17952,19 @@ def complete_workout():
         existing_fingerprint = (existing_by_client_id.get("offline_sync") or {}).get("fingerprint")
         existing_fingerprint = existing_fingerprint or _workout_sync_fingerprint(existing_by_client_id)
         accepted_fingerprints = {sync_fingerprint}
+        legacy_rpe_entry = copy.deepcopy(workout_entry)
+        for exercise in legacy_rpe_entry.get("exercises") or []:
+            for set_row in exercise.get("sets") or []:
+                set_row.pop("rpe_observed", None)
+                if set_row.get("rpe") is None:
+                    set_row.pop("rpe", None)
+        accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if not fatigue_provided and existing_by_client_id.get("overall_fatigue") == 5:
-            legacy_entry = dict(workout_entry)
-            legacy_entry["overall_fatigue"] = 5
-            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_entry))
+            legacy_fatigue_entry = copy.deepcopy(workout_entry)
+            legacy_fatigue_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_fatigue_entry))
+            legacy_rpe_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if existing_fingerprint in accepted_fingerprints:
             return _workout_already_synced_response(
                 existing_by_client_id,
@@ -17937,8 +18582,8 @@ def _last_n_sessions_rpe(n=3):
         r=[]
         for ex in (w.get('exercises') or []):
             for s in (ex.get('sets') or []):
-                try:r.append(float(s.get('rpe')))
-                except Exception:pass
+                observed = _observed_set_rpe(s)
+                if observed is not None: r.append(observed)
         if r: vals.append(sum(r)/len(r))
         if len(vals)>=n: break
     return vals

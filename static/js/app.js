@@ -393,8 +393,15 @@
         statuses: new Map(),
         dismissed: new Set(),
         fetching: false,
+        retryTimer: null,
+        retryDeadlineMs: null,
+        refreshPending: false,
+        appliedPlanRevision: null,
+        pendingAppliedPlanRevision: null,
         refillRequested: false,
     };
+    const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60_000;
+    const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1_000;
 
     function workoutAdaptationIsRenderable(event) {
         // Applied changes and source-invalidated stale markers remain visible
@@ -530,6 +537,78 @@
         if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);
     }
 
+    function scheduleWorkoutAdaptationEvaluationRetry(retryAfterMs) {
+        if (retryAfterMs == null) {
+            if (workoutAdaptationNoticeState.retryTimer) {
+                clearTimeout(workoutAdaptationNoticeState.retryTimer);
+                workoutAdaptationNoticeState.retryTimer = null;
+            }
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
+            return;
+        }
+        const delayMs = Number(retryAfterMs);
+        if (!Number.isFinite(delayMs) || delayMs < 0) return;
+        const deadlineMs = Date.now() + delayMs;
+        if (workoutAdaptationNoticeState.retryTimer) {
+            if (workoutAdaptationNoticeState.retryDeadlineMs <= deadlineMs) return;
+            clearTimeout(workoutAdaptationNoticeState.retryTimer);
+            workoutAdaptationNoticeState.retryTimer = null;
+        }
+        const retry = async () => {
+            if (workoutAdaptationNoticeState.fetching) {
+                workoutAdaptationNoticeState.retryDeadlineMs = (
+                    Date.now() + WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS
+                );
+                workoutAdaptationNoticeState.retryTimer = setTimeout(
+                    retry,
+                    WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS,
+                );
+                return;
+            }
+            workoutAdaptationNoticeState.retryTimer = null;
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
+            try {
+                await fetchWorkoutAdaptationNotices();
+            } catch (err) {
+                console.warn('workout adaptation retry failed:', err);
+            }
+        };
+        workoutAdaptationNoticeState.retryDeadlineMs = deadlineMs;
+        workoutAdaptationNoticeState.retryTimer = setTimeout(retry, delayMs);
+    }
+
+    async function refreshWorkoutAdaptationVisiblePlan() {
+        // The dashboard and the active workout refresh independently: a dashboard
+        // outage must not block the workout update or the event feed read.
+        let dashboardOk = true;
+        try {
+            await getDashboard(true);
+            paintDashboardFromState();
+        } catch (err) {
+            console.warn('adapted dashboard refresh failed:', err);
+            dashboardOk = false;
+        }
+        try {
+            await getNextWorkout(true);
+            await renderNextWorkout();
+            if (workoutAdaptationNoticeState.pendingAppliedPlanRevision != null) {
+                workoutAdaptationNoticeState.appliedPlanRevision = (
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision
+                );
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = null;
+            }
+            workoutAdaptationNoticeState.refreshPending = !dashboardOk;
+            if (!dashboardOk) {
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
+            return true;
+        } catch (err) {
+            console.warn('adapted workout refresh failed:', err);
+            scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            return false;
+        }
+    }
+
     async function fetchWorkoutAdaptationNotices() {
         if (workoutAdaptationNoticeState.fetching) {
             workoutAdaptationNoticeState.refillRequested = true;
@@ -538,8 +617,52 @@
         workoutAdaptationNoticeState.fetching = true;
         workoutAdaptationNoticeState.refillRequested = false;
         try {
-            const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
+            let evaluation = null;
+            try {
+                evaluation = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events/evaluate'), {
+                    method: 'POST',
+                    timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS,
+                });
+            } catch (err) {
+                console.warn('workout adaptation evaluation failed:', err);
+                workoutAdaptationNoticeState.refreshPending = true;
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
+            if (evaluation) {
+                scheduleWorkoutAdaptationEvaluationRetry(evaluation.retry_after_ms);
+                const appliedPlanRevision = evaluation.applied_plan_revision;
+                if (
+                    appliedPlanRevision != null
+                    && appliedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+                ) {
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision = appliedPlanRevision;
+                    workoutAdaptationNoticeState.refreshPending = true;
+                }
+            }
+            if (Number(evaluation && evaluation.evaluated_count) > 0) {
+                workoutAdaptationNoticeState.refreshPending = true;
+            }
+            if (workoutAdaptationNoticeState.refreshPending) {
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
+            let payload = null;
+            try {
+                payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            } catch (err) {
+                console.warn('workout adaptation feed failed:', err);
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+                return;
+            }
             const events = (payload && payload.events) || [];
+            const feedPlanRevision = payload && payload.applied_plan_revision;
+            if (
+                feedPlanRevision != null
+                && feedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+            ) {
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = feedPlanRevision;
+                workoutAdaptationNoticeState.refreshPending = true;
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
             for (const event of events) {
                 if (!event || !event.id) continue;
                 if (workoutAdaptationNoticeState.dismissed.has(event.id)) continue;
@@ -562,11 +685,9 @@
             }
         } finally {
             workoutAdaptationNoticeState.fetching = false;
-            if (workoutAdaptationNoticeState.refillRequested) {
-                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
-                    console.warn('workout adaptation refresh failed:', fetchErr);
-                });
-            }
+            const refillRequested = workoutAdaptationNoticeState.refillRequested;
+            workoutAdaptationNoticeState.refillRequested = false;
+            if (refillRequested) await fetchWorkoutAdaptationNotices();
         }
     }
 
@@ -7483,6 +7604,7 @@
     const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
     const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
     let _activeWorkoutDraftSavePending = false;
+    let _activeWorkoutDraftPersistenceFailed = false;
     let _mealQueueAuthScopeRetryTimer = null;
     let _mealQueueAuthScopeRetryDelayMs = 5_000;
 
@@ -7497,6 +7619,16 @@
     function activeWorkoutDraftScopeForWorkout(workout) {
         const workoutScope = String(workout && workout.auth_scope || '').trim();
         return workoutScope || currentActiveWorkoutDraftScope();
+    }
+
+    function setActiveWorkoutDraftPersistenceFailed(failed) {
+        _activeWorkoutDraftPersistenceFailed = Boolean(failed);
+        const warning = $('active-workout-persistence-warning');
+        if (!warning) return;
+        warning.hidden = !_activeWorkoutDraftPersistenceFailed;
+        warning.textContent = _activeWorkoutDraftPersistenceFailed
+            ? 'This workout still works, but it cannot be recovered after closing or reloading this page.'
+            : '';
     }
 
     function activeWorkoutDraftIsValid(parsed) {
@@ -7532,17 +7664,26 @@
             const ex = aw.exercises && aw.exercises[exIdx];
             const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
             if (!set) return;
+            const rpeInput = qs('input[data-field="rpe"]', row);
+            const rpe = normalizeActiveSetRpe(
+                rpeInput ? rpeInput.value : (set.rpe ?? prescribedRpeValue(ex)),
+                Boolean(set.rpe_observed),
+            );
             const next = {
                 weight: qs('input[data-field="weight"]', row).value,
                 reps: qs('input[data-field="reps"]', row).value,
                 done: qs('input[data-field="done"]', row).checked,
                 notes: qs('input[data-field="notes"]', row).value,
+                rpe: rpe.rpe,
+                rpe_observed: rpe.rpe_observed,
             };
             if (
                 String(set.weight ?? '') !== String(next.weight)
                 || String(set.reps ?? '') !== String(next.reps)
                 || Boolean(set.done) !== Boolean(next.done)
                 || String(set.notes ?? '') !== String(next.notes)
+                || set.rpe !== next.rpe
+                || Boolean(set.rpe_observed) !== next.rpe_observed
             ) {
                 ex.logged_sets[setIdx] = next;
                 aw.dirty = true;
@@ -7590,7 +7731,11 @@
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
             _activeWorkoutDraftSavePending = false;
-        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+            setActiveWorkoutDraftPersistenceFailed(false);
+        } catch (_) {
+            // localStorage may be unavailable; keep the workout in memory for this page.
+            setActiveWorkoutDraftPersistenceFailed(true);
+        }
     }
 
     function flushPendingActiveWorkoutDraftSave() {
@@ -7605,6 +7750,7 @@
 
     function clearActiveWorkoutDraft() {
         try { localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY); } catch (_) {}
+        setActiveWorkoutDraftPersistenceFailed(false);
     }
 
     function restoreActiveWorkoutDraft() {
@@ -7659,6 +7805,30 @@
         }, delayMs);
     }
 
+    function prescribedRpeValue(ex) {
+        const candidate = Number(ex && (ex.rpe_target ?? ex.rpe ?? 7));
+        return Number.isFinite(candidate) && candidate >= 1 && candidate <= 10 ? candidate : 7;
+    }
+
+    function normalizeActiveSetRpe(value, observed = false) {
+        if (value === '' || value == null || typeof value === 'boolean') {
+            return { rpe: null, rpe_observed: false };
+        }
+        const candidate = Number(value);
+        const rpe = Number.isFinite(candidate) && candidate >= 1 && candidate <= 10
+            ? candidate
+            : null;
+        return { rpe, rpe_observed: rpe !== null && observed === true };
+    }
+
+    function rpeInteractionObserves(event) {
+        return Boolean(
+            event
+            && event.isTrusted === true
+            && ['click', 'input', 'change'].includes(event.type)
+        );
+    }
+
     function buildLoggedSets(ex, previousSets) {
         const reps = recommendedRepsValue(ex);
         const weight = recommendedWeightValue(ex);
@@ -7666,11 +7836,21 @@
         const rowCount = Math.max(setCountForExercise(ex), priorCount);
         return Array.from({ length: rowCount }, (_, idx) => {
             const prev = previousSets && previousSets[idx];
+            const previousRpe = normalizeActiveSetRpe(prev && prev.rpe, Boolean(prev && prev.rpe_observed));
+            const previousRpeWasCleared = Boolean(
+                prev
+                && Object.prototype.hasOwnProperty.call(prev, 'rpe')
+                && previousRpe.rpe === null
+            );
             return {
                 reps: prev && prev.reps !== '' && prev.reps != null ? prev.reps : reps,
                 weight: prev && prev.weight !== '' && prev.weight != null ? prev.weight : weight,
                 done: prev ? Boolean(prev.done) : false,
                 notes: prev && prev.notes != null ? prev.notes : '',
+                rpe: previousRpe.rpe_observed
+                    ? previousRpe.rpe
+                    : (previousRpeWasCleared ? null : prescribedRpeValue(ex)),
+                rpe_observed: previousRpe.rpe_observed,
             };
         });
     }
@@ -7735,18 +7915,39 @@
         ) : '';
         const editedSet = (s) => {
             if (!s) return false;
-            if (s.done || (s.notes != null && String(s.notes).trim())) return true;
+            if (s.done || s.rpe_observed || (s.notes != null && String(s.notes).trim())) return true;
+            if (
+                Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && normalizeActiveSetRpe(s.rpe, Boolean(s.rpe_observed)).rpe === null
+            ) return true;
             if (previousReps && String(s.reps ?? '') !== previousReps) return true;
             if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
             return false;
         };
-        const copySet = (s) => ({
-            reps: s && s.reps != null ? s.reps : '',
-            weight: s && s.weight != null ? s.weight : '',
-            done: Boolean(s && s.done),
-            notes: s && s.notes != null ? s.notes : '',
+        const copySet = (s) => {
+            const rpe = normalizeActiveSetRpe(s && s.rpe, Boolean(s && s.rpe_observed));
+            const rpeWasCleared = Boolean(
+                s
+                && Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && rpe.rpe === null
+            );
+            return {
+                reps: s && s.reps != null ? s.reps : '',
+                weight: s && s.weight != null ? s.weight : '',
+                done: Boolean(s && s.done),
+                notes: s && s.notes != null ? s.notes : '',
+                rpe: rpe.rpe !== null ? rpe.rpe : (rpeWasCleared ? null : prescribedRpeValue(newEx)),
+                rpe_observed: rpe.rpe_observed,
+            };
+        };
+        const freshSet = () => ({
+            reps: targetReps,
+            weight: targetWeight,
+            done: false,
+            notes: '',
+            rpe: prescribedRpeValue(newEx),
+            rpe_observed: false,
         });
-        const freshSet = () => ({ reps: targetReps, weight: targetWeight, done: false, notes: '' });
         const rows = Array.from({ length: targetCount }, (_, idx) => {
             const prev = prevList[idx];
             return editedSet(prev) ? copySet(prev) : freshSet();
@@ -7798,7 +7999,7 @@
 
     function activeLoggedSetHasWork(ex, set) {
         if (!set) return false;
-        if (set.done || (set.notes != null && String(set.notes).trim())) return true;
+        if (set.done || set.rpe_observed || (set.notes != null && String(set.notes).trim())) return true;
 
         const targetValue = (value) => {
             if (value == null || value === '') return '';
@@ -7913,17 +8114,24 @@
         };
     }
 
-    function updateLoggedSetFromRow(row) {
+    function updateLoggedSetFromRow(row, { rpeObserved = null } = {}) {
         const exIdx = Number(row.dataset.ex);
         const setIdx = Number(row.dataset.set);
         const ex = state.activeWorkout && state.activeWorkout.exercises && state.activeWorkout.exercises[exIdx];
         if (!ex || !ex.logged_sets || !ex.logged_sets[setIdx]) return;
-        const wasDone = !!ex.logged_sets[setIdx].done;
+        const previousSet = ex.logged_sets[setIdx];
+        const wasDone = !!previousSet.done;
+        const rpe = normalizeActiveSetRpe(
+            qs('input[data-field="rpe"]', row).value,
+            rpeObserved === null ? Boolean(previousSet.rpe_observed) : rpeObserved,
+        );
         ex.logged_sets[setIdx] = {
             weight: qs('input[data-field="weight"]', row).value,
             reps: qs('input[data-field="reps"]', row).value,
             done: qs('input[data-field="done"]', row).checked,
             notes: qs('input[data-field="notes"]', row).value,
+            rpe: rpe.rpe,
+            rpe_observed: rpe.rpe_observed,
         };
         state.activeWorkout.dirty = true;
         saveActiveWorkoutDraft();
@@ -8038,11 +8246,19 @@
             card.className = 'active-ex';
             const sets = setCountForExercise(ex);
             const reps = ex.target_reps || ex.reps || 10;
-            const rpe = ex.rpe_target || ex.rpe || '7';
-            ex.rpe = rpe; // keep for completeWorkout payload
             const target = exerciseTargetText(ex);
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
+                const storedRpe = normalizeActiveSetRpe(set.rpe, Boolean(set.rpe_observed));
+                const rpeWasCleared = Object.prototype.hasOwnProperty.call(set, 'rpe') && storedRpe.rpe === null;
+                const renderedRpe = storedRpe.rpe_observed
+                    ? storedRpe
+                    : {
+                        rpe: rpeWasCleared ? null : prescribedRpeValue(ex),
+                        rpe_observed: false,
+                    };
+                set.rpe = renderedRpe.rpe;
+                set.rpe_observed = renderedRpe.rpe_observed;
                 // FIT-108: flag the first incomplete set across the whole
                 // workout so the user's next action is visually obvious.
                 const isNext = progress.nextIncomplete
@@ -8053,6 +8269,10 @@
                         <label>${sidx + 1}</label>
                         <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
                         <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
+                        <label class="set-rpe-cell${set.rpe_observed ? ' observed' : ''}">
+                            <span>RPE</span>
+                            <input type="number" data-field="rpe" inputmode="decimal" min="1" max="10" step="0.5" value="${escapeHtml(set.rpe)}" aria-label="RPE for set ${sidx + 1}; tap to confirm prescribed value">
+                        </label>
                         <label class="set-done-cell" aria-label="mark set done">
                             <input type="checkbox" data-field="done"${set.done ? ' checked' : ''}>
                         </label>
@@ -8118,6 +8338,19 @@
         }
         qsa('.set-row', body).forEach((row) => {
             qsa('input', row).forEach((input) => {
+                if (input.dataset.field === 'rpe') {
+                    ['click', 'input', 'change'].forEach((eventName) => {
+                        input.addEventListener(eventName, (event) => {
+                            updateLoggedSetFromRow(row, {
+                                rpeObserved: rpeInteractionObserves(event) ? true : null,
+                            });
+                            const set = state.activeWorkout.exercises[Number(row.dataset.ex)].logged_sets[Number(row.dataset.set)];
+                            const cell = input.closest('.set-rpe-cell');
+                            if (cell) cell.classList.toggle('observed', Boolean(set.rpe_observed));
+                        });
+                    });
+                    return;
+                }
                 input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => updateLoggedSetFromRow(row));
             });
         });
@@ -9079,13 +9312,22 @@
         const exercises = [];
         aw.exercises.forEach((ex, i) => {
             const rows = qsa(`.set-row[data-ex="${i}"]`, $('active-workout-body'));
-            const sets = rows.map((r) => ({
-                reps: Number(qs('input[data-field="reps"]', r).value || 0),
-                weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
-                rpe: ex.rpe ? Number(ex.rpe) : null,
-                done: qs('input[data-field="done"]', r).checked,
-                notes: (qs('input[data-field="notes"]', r).value || '').trim(),
-            }));
+            const sets = rows.map((r) => {
+                const setIdx = Number(r.dataset.set);
+                const set = ex.logged_sets[setIdx] || {};
+                const rpe = normalizeActiveSetRpe(
+                    qs('input[data-field="rpe"]', r).value,
+                    Boolean(set.rpe_observed),
+                );
+                return {
+                    reps: Number(qs('input[data-field="reps"]', r).value || 0),
+                    weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
+                    rpe: rpe.rpe,
+                    rpe_observed: rpe.rpe_observed,
+                    done: qs('input[data-field="done"]', r).checked,
+                    notes: (qs('input[data-field="notes"]', r).value || '').trim(),
+                };
+            });
             const hasCheckedSets = sets.some((s) => s.done);
             const completedSets = sets
                 .filter((s) => s.reps > 0 && s.weight_lbs >= 0 && (!hasCheckedSets || s.done))
@@ -9306,7 +9548,10 @@
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
-        state.swapContext = { exIdx, muscle, currentName, source };
+        const recommendationId = source === 'active'
+            ? (state.activeWorkout && state.activeWorkout.recommendation_id)
+            : (state.nextWorkout && state.nextWorkout.id);
+        state.swapContext = { exIdx, muscle, currentName, source, recommendationId };
         const modal = $('modal-swap');
         const host = $('swap-alternatives');
         const title = $('swap-modal-title');
@@ -9390,6 +9635,33 @@
         }
     }
 
+    // FIT-397: a swap answered 409 plan_changed (the plan was regenerated or swapped
+    // since this screen loaded) or workout_plan_conflict (it changed mid-request).
+    // Adopt the server's current plan, keeping logged sets in an active workout, so
+    // the next swap carries the current recommendation_id instead of dead-ending.
+    function isSwapPlanChangedError(err) {
+        return Boolean(err) && (err.apiErrorCode === 'plan_changed' || err.apiErrorCode === 'workout_plan_conflict');
+    }
+
+    async function adoptCurrentPlanAfterSwapConflict() {
+        let nw = null;
+        try { nw = await getNextWorkout(true); } catch (err) { console.warn('swap conflict refresh failed:', err); }
+        if (nw) {
+            if (state.dashboard) state.dashboard.next_workout = nw;
+            if (state.activeWorkout) {
+                applyAdjustedRecommendationToActiveWorkout(nw, state.activeWorkout.exercises || []);
+                renderActiveWorkout();
+            } else {
+                renderNextWorkout();
+            }
+        }
+        // Exercise slots may have shifted in the new plan, so make the user re-pick.
+        closeModal($('modal-swap'));
+        toast(nw
+            ? 'Workout plan changed — your logged sets were kept. Pick the swap again.'
+            : 'Workout plan changed — refresh the workout and try again.', 'err');
+    }
+
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
@@ -9400,12 +9672,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+                body: JSON.stringify({ recommendation_id: state.swapContext && state.swapContext.recommendationId, exercise_index: exIdx, new_exercise_name: newName }),
             });
             _finalizeSwap(resp, oldName, newName);
         } catch (e) {
             console.error(e);
-            host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+            } else {
+                host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            }
         }
     }
 
@@ -9452,12 +9728,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: ctx.exIdx, new_exercise_name: raw }),
+                body: JSON.stringify({ recommendation_id: ctx.recommendationId, exercise_index: ctx.exIdx, new_exercise_name: raw }),
             });
             _finalizeSwap(resp, ctx.currentName, raw);
             input.value = '';
         } catch (e) {
             console.error('applyCustomSwap', e);
+            if (isSwapPlanChangedError(e)) {
+                await adoptCurrentPlanAfterSwapConflict();
+                return;
+            }
             const msg = String((e && e.message) || e || '').toLowerCase();
             let friendly = `Couldn't swap to "${raw}".`;
             if (msg.includes('unknown exercise')) {
@@ -9678,6 +9958,7 @@
                 result_kind: payload && payload.result_kind ? payload.result_kind : null,
                 summary: payload && payload.summary ? payload.summary : '',
                 applied_notes: Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [],
+                skipped_notes: Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [],
                 recommendation: payload && payload.recommendation ? payload.recommendation : null,
                 meta: payload && payload.meta ? payload.meta : {},
                 cache_hit: !!(payload && payload.cache_hit),
@@ -9717,6 +9998,8 @@
         const restoredBanner = $('adjust-restored-banner');
         if (!stateEl || !result || !summaryEl || !notesEl || !metaEl) return;
         const notes = Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [];
+        const skippedNotes = (Array.isArray(payload && payload.skipped_notes) ? payload.skipped_notes : [])
+            .map((n) => String(n || '').trim()).filter(Boolean);
         const rawKind = (payload && payload.result_kind) || (notes.length ? 'changed' : 'unchanged');
         const kind = ADJUST_KIND_TABLE[rawKind] ? rawKind : 'changed';
         const kindMeta = ADJUST_KIND_TABLE[kind];
@@ -9731,7 +10014,10 @@
         if (kind === 'changed' && notes.length) {
             notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
         } else if (kind === 'unchanged') {
-            notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
+            // FIT-265: say why nothing changed (e.g. exercise not found), not just "clamped".
+            notesEl.innerHTML = skippedNotes.length
+                ? '<div class="dim">Nothing was changed:</div><ul>' + skippedNotes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul><div class="dim">The original plan stands.</div>'
+                : '<div class="dim">No change was applied. The original plan stands.</div>';
         } else if (kind === 'refused') {
             notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
         } else {

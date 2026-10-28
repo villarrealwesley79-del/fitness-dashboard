@@ -165,6 +165,7 @@ const setFields = {
   'input[data-field="reps"]': { value: '10' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: 'clean' },
+  'input[data-field="rpe"]': { value: '' },
 };
 e.updateLoggedSetFromRow({ dataset: { ex: '0', set: '0' }, querySelector: (s) => setFields[s] });
 const cardioFields = {
@@ -203,8 +204,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 sandbox.elements['modal-active'] = { hidden: false };
@@ -249,8 +251,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 sandbox.elements['modal-active'] = { hidden: false };
@@ -297,8 +300,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 e.state.activeWorkout = {
@@ -489,4 +493,36 @@ process.stdout.write(JSON.stringify(calls));
 
     assert output == [
         "upsert", "clear-inputs", "clear-draft", "clear-status", "render", "toast", "refresh"
+    ]
+
+
+def test_dashboard_outage_does_not_block_adapted_workout_refresh_or_event_feed():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices"],
+        """
+const calls = [];
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path.split('?')[0]);
+  return path.includes('/evaluate')
+    ? { evaluated_count: 1, applied_plan_revision: 3, retry_after_ms: null }
+    : { events: [], applied_plan_revision: 3 };
+});
+sandbox.__fitSet.getDashboard(async () => { calls.push('dashboard'); throw new Error('outage'); });
+sandbox.__fitSet.paintDashboardFromState(() => calls.push('paint'));
+sandbox.__fitSet.getNextWorkout(async () => calls.push('workout'));
+sandbox.__fitSet.renderNextWorkout(async () => calls.push('render-workout'));
+sandbox.__fitSet.scheduleWorkoutAdaptationEvaluationRetry(() => calls.push('retry'));
+sandbox.console = { warn() {}, error() {}, log() {} };
+await e.fetchWorkoutAdaptationNotices();
+process.stdout.write(JSON.stringify(calls));
+""",
+        mocks=[
+            "api", "getDashboard", "paintDashboardFromState", "getNextWorkout",
+            "renderNextWorkout", "scheduleWorkoutAdaptationEvaluationRetry",
+        ],
+    )
+
+    assert output == [
+        "/api/workout-adaptation-events/evaluate", "retry", "dashboard", "workout",
+        "render-workout", "retry", "/api/workout-adaptation-events",
     ]
