@@ -169,7 +169,7 @@ def test_dashboard_freshness_block_distinguishes_attempt_from_data_point(fitness
     res = fitness_app.app.test_client().get("/api/dashboard")
     payload = res.get_json()
     freshness = payload.get("freshness") or {}
-    for source in ("oura", "apple_health", "food"):
+    for source in ("oura", "apple_health"):
         assert source in freshness, f"freshness.{source} block must exist"
         block = freshness[source]
         assert "last_data_point" in block, (

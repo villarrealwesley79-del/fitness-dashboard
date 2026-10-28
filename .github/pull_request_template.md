@@ -6,7 +6,7 @@
 
 ## Linear issue
 
-Closes FIT-XXX
+Closes PER-XXX
 
 ## Acceptance criteria checked
 

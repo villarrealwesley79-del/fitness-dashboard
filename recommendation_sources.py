@@ -56,7 +56,7 @@ def build_recommendation_source_proof(
     whoop_signals: dict,
     source_inputs: dict | None = None,
 ) -> dict:
-    """Return the FIT-271 proof contract for its six named external sources.
+    """Return the FIT-271 proof contract for its five named external sources.
 
     Local soreness, workout-history, and recovery inputs remain exposed through
     the existing readiness_factors/reasoning contracts; FIT-271 does not replace
@@ -136,12 +136,6 @@ def build_recommendation_source_proof(
             source_inputs.get("apple_health_fields"),
             bool(source_inputs.get("apple_health_modifier_applied")),
             used_override=source_inputs.get("apple_health_used_override"),
-        ),
-        "food": proof(
-            "food",
-            source_inputs.get("food_fields"),
-            bool(source_inputs.get("food_modifier_applied")),
-            used_override=source_inputs.get("food_used_override"),
         ),
         "weather": proof(
             "weather",

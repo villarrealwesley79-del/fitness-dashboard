@@ -79,19 +79,6 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
             "last_data_point": "2026-05-18",
             "last_sync_attempt": "2026-05-18T07:00:00",
         },
-        "food": {
-            "status": "missing",
-            "last_data_point": None,
-            "last_sync_attempt": None,
-            "pending_review": False,
-            "target_state": "none",
-            "calories": 0,
-            "protein_g": 0.0,
-            "calories_target": 2200,
-            "protein_target_g": 148.0,
-            "calories_pct": 0,
-            "protein_pct": 0,
-        },
     }
 
     monkeypatch.setattr(
@@ -148,19 +135,6 @@ def _freshness_payload():
     return {
         "oura": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
         "apple_health": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
-        "food": {
-            "status": "missing",
-            "last_data_point": None,
-            "last_sync_attempt": None,
-            "pending_review": False,
-            "target_state": "none",
-            "calories": 0,
-            "protein_g": 0.0,
-            "calories_target": 2200,
-            "protein_target_g": 148.0,
-            "calories_pct": 0,
-            "protein_pct": 0,
-        },
     }
 
 
@@ -187,9 +161,6 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
         lambda *_args, **_kwargs: {"bonus_points": 0},
     )
     monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: _freshness_payload())
-    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
-    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         fitness_app,
         "generate_next_workout",
@@ -431,19 +402,12 @@ def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_a
         "history_context",
         "reasoning",
         "freshness",
-        "nutrition_context",
         "wearable_sources",
         "recommendation_sources",
         "next_workout",
-        "workout_adaptation_events",
         "confidence_level",
-        # FIT-136 surfaced the adapted next workout + adaptation event feed on
-        # the smart recommendation payload; keep this contract assertion current.
-        "next_workout",
-        "workout_adaptation_events",
     }
     assert isinstance(payload["next_workout"], dict)
-    assert payload["workout_adaptation_events"] == []
 
 
 def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch, caplog):
@@ -471,7 +435,6 @@ def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch,
         },
     )
     monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: 78)
-    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
 
     oura_sleep_sync = importlib.import_module("oura_sleep_sync")
     monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_args, **_kwargs: [])
@@ -523,19 +486,6 @@ def test_dashboard_route_shape_without_server_or_cookie(fitness_app, monkeypatch
             "status": "missing",
             "last_data_point": None,
             "last_sync_attempt": None,
-        },
-        "food": {
-            "status": "missing",
-            "last_data_point": None,
-            "last_sync_attempt": None,
-            "pending_review": False,
-            "target_state": "none",
-            "calories": 0,
-            "protein_g": 0.0,
-            "calories_target": 2200,
-            "protein_target_g": 148.0,
-            "calories_pct": 0,
-            "protein_pct": 0,
         },
     }
     monkeypatch.setattr(

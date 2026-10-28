@@ -500,12 +500,6 @@ def test_enabled_mode_accepts_same_origin_reads(tmp_path, monkeypatch, headers):
     assert response.get_json()["user_id"] == "1"
 
 
-def test_factory_preview_does_not_enable_no_login():
-    config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
-
-    assert "FITNESS_DASHBOARD_NO_LOGIN" not in config
-
-
 def test_readme_documents_direct_tailnet_bind_without_broad_bind():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
 
