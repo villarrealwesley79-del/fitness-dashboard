@@ -102,33 +102,49 @@ def validate_public_fact_payload(payload: dict) -> None:
 
 
 def init_wearable_fact_db(db_path: str) -> None:
-    with sqlite3.connect(db_path) as conn:
-        _create_wearable_fact_tables(conn)
-        _ensure_column(conn, "wearable_daily_facts", "profile_key", "TEXT NOT NULL DEFAULT '1'")
-        _ensure_column(conn, "wearable_daily_facts", "category", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT NOT NULL DEFAULT ''")
-        _ensure_column(conn, "wearable_daily_facts", "source_provider", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "original_label", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "observed_at", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "source_system", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "source_record_kind", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "metric_domain", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "capability_state", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "source_last_synced_at", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "imported_at", "TEXT")
-        _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
-        _migrate_profile_key_primary_keys(conn)
-        current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if current_version < WEARABLE_FACT_SCHEMA_VERSION:
-            _normalize_open_wearables_fact_ids(conn, derive_blank_ids=False)
-            _backfill_fact_contract(conn)
-            if current_version < 2:
-                _migrate_v2_recommendation_eligibility(conn)
-            if current_version < 3:
-                _migrate_open_wearables_provider_identity(conn)
-            if current_version < 4:
-                _normalize_open_wearables_fact_ids(conn, derive_blank_ids=True)
-            conn.execute(f"PRAGMA user_version = {WEARABLE_FACT_SCHEMA_VERSION}")
+    conn = sqlite3.connect(db_path)
+    # Manual transaction: DDL must commit with the data copy, or a crash mid-upgrade strands rows in *_legacy.
+    # Deferred BEGIN takes no writer lock when nothing needs upgrading.
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN")
+        try:
+            _init_wearable_fact_schema(conn)
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+
+def _init_wearable_fact_schema(conn: sqlite3.Connection) -> None:
+    _create_wearable_fact_tables(conn)
+    _ensure_column(conn, "wearable_daily_facts", "profile_key", "TEXT NOT NULL DEFAULT '1'")
+    _ensure_column(conn, "wearable_daily_facts", "category", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "wearable_daily_facts", "source_provider", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "original_label", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "observed_at", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "source_system", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "source_record_kind", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "metric_domain", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "capability_state", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "source_last_synced_at", "TEXT")
+    _ensure_column(conn, "wearable_daily_facts", "imported_at", "TEXT")
+    _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
+    _migrate_profile_key_primary_keys(conn)
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version < WEARABLE_FACT_SCHEMA_VERSION:
+        _normalize_open_wearables_fact_ids(conn, derive_blank_ids=False)
+        _backfill_fact_contract(conn)
+        if current_version < 2:
+            _migrate_v2_recommendation_eligibility(conn)
+        if current_version < 3:
+            _migrate_open_wearables_provider_identity(conn)
+        if current_version < 4:
+            _normalize_open_wearables_fact_ids(conn, derive_blank_ids=True)
+        conn.execute(f"PRAGMA user_version = {WEARABLE_FACT_SCHEMA_VERSION}")
 
 
 def _create_wearable_fact_tables(conn: sqlite3.Connection) -> None:
@@ -186,44 +202,18 @@ def _primary_key_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in sorted((row for row in rows if row[5]), key=lambda row: row[5])]
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
+
+
 def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
-    daily_pk = _primary_key_columns(conn, "wearable_daily_facts")
-    if daily_pk != ["profile_key", "date", "provider_id", "source_system", "metric", "source_id"]:
-        conn.execute("ALTER TABLE wearable_daily_facts RENAME TO wearable_daily_facts_legacy")
-        conn.execute(
+    # A leftover *_legacy table means an older build died mid-upgrade: finish the copy instead of losing rows.
+    for table, expected_pk, copy_sql in (
+        (
+            "wearable_daily_facts",
+            ["profile_key", "date", "provider_id", "source_system", "metric", "source_id"],
             """
-            CREATE TABLE wearable_daily_facts (
-                profile_key TEXT NOT NULL DEFAULT '1',
-                date TEXT NOT NULL,
-                provider_id TEXT NOT NULL,
-                source_label TEXT NOT NULL,
-                metric TEXT NOT NULL,
-                value_json TEXT,
-                unit TEXT,
-                band TEXT,
-                confidence TEXT NOT NULL,
-                freshness TEXT NOT NULL,
-                conflict_state TEXT,
-                category TEXT,
-                source_id TEXT NOT NULL DEFAULT '',
-                source_provider TEXT,
-                original_label TEXT,
-                observed_at TEXT,
-                source_system TEXT NOT NULL,
-                source_record_kind TEXT,
-                metric_domain TEXT,
-                capability_state TEXT,
-                source_last_synced_at TEXT,
-                imported_at TEXT,
-                used_for_recommendation INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (profile_key, date, provider_id, source_system, metric, source_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO wearable_daily_facts (
+            INTO wearable_daily_facts (
                 profile_key, date, provider_id, source_label, metric, value_json, unit, band,
                 confidence, freshness, conflict_state, category, source_id, source_provider,
                 original_label, observed_at, source_system, source_record_kind, metric_domain,
@@ -237,41 +227,34 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
                 capability_state, source_last_synced_at, imported_at,
                 used_for_recommendation, updated_at
             FROM wearable_daily_facts_legacy
+            """,
+        ),
+        (
+            "wearable_sources",
+            ["profile_key", "provider_id"],
             """
-        )
-        conn.execute("DROP TABLE wearable_daily_facts_legacy")
-
-    sources_pk = _primary_key_columns(conn, "wearable_sources")
-    if sources_pk != ["profile_key", "provider_id"]:
-        conn.execute("ALTER TABLE wearable_sources RENAME TO wearable_sources_legacy")
-        conn.execute(
-            """
-            CREATE TABLE wearable_sources (
-                profile_key TEXT NOT NULL DEFAULT '1',
-                provider_id TEXT NOT NULL,
-                label TEXT NOT NULL,
-                status TEXT NOT NULL,
-                last_data_point TEXT,
-                last_sync_attempt TEXT,
-                capabilities_json TEXT,
-                used_for_recommendation INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (profile_key, provider_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO wearable_sources (
+            INTO wearable_sources (
                 profile_key, provider_id, label, status, last_data_point, last_sync_attempt,
                 capabilities_json, used_for_recommendation, updated_at
             )
             SELECT COALESCE(profile_key, '1'), provider_id, label, status, last_data_point, last_sync_attempt,
                 capabilities_json, used_for_recommendation, updated_at
             FROM wearable_sources_legacy
-            """
-        )
-        conn.execute("DROP TABLE wearable_sources_legacy")
+            """,
+        ),
+    ):
+        legacy = f"{table}_legacy"
+        if _table_exists(conn, legacy):
+            # Rows the new table already took after the crash are newer than the legacy copy.
+            verb = "INSERT OR IGNORE"
+        elif _primary_key_columns(conn, table) != expected_pk:
+            conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+            _create_wearable_fact_tables(conn)
+            verb = "INSERT OR REPLACE"
+        else:
+            continue
+        conn.execute(f"{verb} {copy_sql}")
+        conn.execute(f"DROP TABLE {legacy}")
 
 
 def _backfill_fact_contract(conn: sqlite3.Connection) -> None:
@@ -893,7 +876,8 @@ def list_recommendation_facts(
             if row["observed_at"]:
                 observed = datetime.fromisoformat(str(row["observed_at"]).replace("Z", "+00:00"))
                 if observed.tzinfo is None:
-                    observed = observed.astimezone()
+                    # Same reading as the SQL cutoff's datetime(): offset-less means UTC.
+                    observed = observed.replace(tzinfo=timezone.utc)
                 age_hours = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds() / 3600.0
                 effective_freshness = "fresh" if age_hours < 24 else "aging"
             else:

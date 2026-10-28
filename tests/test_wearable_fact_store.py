@@ -913,3 +913,101 @@ def test_open_wearables_source_read_ages_with_its_facts(tmp_path):
 
     assert source["status"] == "stale"
     assert source["used_for_recommendation"] is False
+
+
+def _create_pre_profile_key_schema(db):
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            CREATE TABLE wearable_daily_facts (
+                profile_key TEXT NOT NULL DEFAULT '1', date TEXT NOT NULL,
+                provider_id TEXT NOT NULL, source_label TEXT NOT NULL, metric TEXT NOT NULL,
+                value_json TEXT, unit TEXT, band TEXT, confidence TEXT NOT NULL,
+                freshness TEXT NOT NULL, conflict_state TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                PRIMARY KEY (profile_key, date, provider_id, metric)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE wearable_sources (
+                provider_id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL,
+                last_data_point TEXT, last_sync_attempt TEXT, capabilities_json TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO wearable_daily_facts VALUES ('1', ?, 'oura', 'Oura', 'weight', '81', 'kg', "
+            "NULL, 'high', 'fresh', NULL, 0, '2026-07-01T00:00:00')",
+            [("2026-07-01",), ("2026-07-02",)],
+        )
+        conn.execute(
+            "INSERT INTO wearable_sources VALUES ('oura', 'Oura', 'connected', NULL, NULL, NULL, 0, "
+            "'2026-07-01T00:00:00')"
+        )
+
+
+def _fact_dates(db):
+    return sorted(fact["date"] for fact in list_recommendation_facts(str(db)))
+
+
+def test_interrupted_schema_upgrade_rolls_back_and_loses_no_rows(tmp_path, monkeypatch):
+    import wearable_fact_store as store
+
+    db = tmp_path / "facts.sqlite3"
+    _create_pre_profile_key_schema(db)
+    monkeypatch.setattr(store, "_backfill_fact_contract", lambda conn: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        store.init_wearable_fact_db(str(db))
+    monkeypatch.undo()
+
+    with sqlite3.connect(db) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not any(name.endswith("_legacy") for name in names)
+    assert _fact_dates(db) == ["2026-07-01", "2026-07-02"]
+    assert [row["provider_id"] for row in list_wearable_sources(str(db))] == ["oura"]
+
+
+def test_leftover_legacy_tables_from_a_crashed_upgrade_are_copied_back(tmp_path):
+    import wearable_fact_store as store
+
+    db = tmp_path / "facts.sqlite3"
+    _create_pre_profile_key_schema(db)
+    # State left by the old non-atomic upgrade: tables renamed, new empty tables created, then a crash.
+    with sqlite3.connect(db) as conn:
+        for column in (
+            "category", "source_id", "source_provider", "original_label", "observed_at", "source_system",
+            "source_record_kind", "metric_domain", "capability_state", "source_last_synced_at", "imported_at",
+        ):
+            conn.execute(f"ALTER TABLE wearable_daily_facts ADD COLUMN {column} TEXT")
+        conn.execute("ALTER TABLE wearable_sources ADD COLUMN profile_key TEXT NOT NULL DEFAULT '1'")
+        conn.execute("ALTER TABLE wearable_daily_facts RENAME TO wearable_daily_facts_legacy")
+        conn.execute("ALTER TABLE wearable_sources RENAME TO wearable_sources_legacy")
+        store._create_wearable_fact_tables(conn)
+        conn.execute("PRAGMA user_version = 4")
+
+    assert _fact_dates(db) == ["2026-07-01", "2026-07-02"]
+    assert [row["provider_id"] for row in list_wearable_sources(str(db))] == ["oura"]
+    with sqlite3.connect(db) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not any(name.endswith("_legacy") for name in names)
+
+
+def test_offsetless_observation_is_aged_as_utc_on_a_east_of_utc_host(tmp_path, monkeypatch):
+    import time
+    from datetime import timezone
+
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        db = tmp_path / "facts.sqlite3"
+        observed = (datetime.now(timezone.utc) - timedelta(hours=20)).replace(tzinfo=None, microsecond=0)
+        upsert_daily_facts(str(db), [WearableDailyFact(
+            observed.date().isoformat(), "oura", "Oura", "sleep_duration", 420, "min",
+            source_provider="oura", source_system="open_wearables",
+            observed_at=observed.isoformat(), freshness="aging", used_for_recommendation=True,
+        )])
+
+        [fact] = list_recommendation_facts(str(db), usable_only=True)
+        assert fact["freshness"] == "fresh"  # 20h old in UTC; read as Tokyo-local (UTC+9) it would be 29h ("aging")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
