@@ -1,40 +1,28 @@
 # Fitness Dashboard
 
-Fitness Dashboard is a local-first fitness and recovery app for planning workouts, tracking training execution, and turning wearable/health signals into practical daily guidance.
+Fitness Dashboard is a private, single-owner fitness and recovery app: it plans workouts, tracks training execution, and turns recovery signals into practical daily guidance.
 
-The product direction is to become a trusted daily fitness operating system: the user should know what to train, how hard to train, what recovery signals matter, and how food choices affect the rest of the day.
+## Scope
 
-## What It Does
+Kept:
 
-- Plans and adjusts strength workouts based on readiness, soreness, recent volume, and user constraints.
-- Tracks active workouts, set completion, swaps, notes, and workout history.
-- Surfaces recovery context from Oura, Apple Health / Health Auto Export, WHOOP, Open Wearables, and local cached data.
-- Supports nutrition and body-composition tracking.
-- Plans toward photo-based food logging, where a user can snap a picture of food and the app updates calorie/macronutrient context and daily coaching guidance.
-- Keeps sensitive runtime data local by default.
+- Workout plan and logging: deterministic planning from readiness, soreness, recent volume and constraints; active workouts, sets, swaps, notes and history.
+- Sleep and recovery.
+- Body and cardio.
+- Open Wearables as the single wearable hub.
 
-## Current Repo Contents
+Being removed (not part of the product):
 
-This GitHub repo is a sanitized project copy. It intentionally does not include the old local git history because that history contained private runtime artifacts.
+- Food and nutrition logging, including photo logging.
+- In-app AI (the local-model coach and vision features).
 
-Included:
+## Access and privacy
 
-- Flask application source
-- Templates and static assets
-- Oura, Apple Health, WHOOP, Open Wearables, nutrition, workout, and AI-coach integration code
-- Deployment entry files
-- Product planning docs in `docs/`
+- The dashboard is private: it is reachable only on the owner's Tailnet (or localhost). It is never exposed publicly.
+- The MCP endpoint is the only planned public surface, and it will require owner authentication (OAuth login or the owner's bearer token).
+- Sensitive runtime data stays local. This repo holds source only; `.env` files, auth and SQLite databases, health exports and caches, OAuth material, logs and backups never go into Git.
 
-Excluded:
-
-- `.env` files
-- auth databases
-- SQLite databases
-- local health exports
-- Oura/Apple Health caches
-- WHOOP SQLite data and protected OAuth material
-- local JSON workout/health data
-- logs, backups, virtualenvs, and generated artifacts
+Contributor and agent rules are in `AGENTS.md`.
 
 ## Key Docs
 
@@ -124,7 +112,7 @@ FITNESS_SMOKE_PASSWORD=<owner-password> \
 bash support/self_test.sh
 ```
 
-Run the same smoke against a Tailscale/public URL by changing `BASE_URL`. If you
+Run the same smoke against a Tailnet URL by changing `BASE_URL`. If you
 already have a session cookie and do not want the script to log in, pass
 `COOKIE=<session-cookie-value>` instead of the username/password pair. The smoke
 checks authenticated dashboard, settings, history, Oura, Apple Health sync
@@ -181,10 +169,10 @@ VISION_OLLAMA_MODEL=
 Do not commit real values for these variables.
 Production must set `SECRET_KEY` via environment or a secret manager; `.flask-secret` is local-dev only and is excluded from images and bundles.
 
-For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one public URL source for setup URL generation:
+For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one Tailnet URL source for setup URL generation:
 
 ```bash
-FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
+FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<tailnet-host>.ts.net
 ```
 
 The owner-only setup route returns the webhook URL and the request header to configure:
@@ -194,7 +182,7 @@ URL: ${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync
 Header: X-Sync-Token: <HEALTH_SYNC_TOKEN>
 ```
 
-Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. Keep the token out of the URL.
+Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different Tailnet path. Keep the token out of the URL.
 
 WHOOP setup is split between public client configuration and protected token
 material:
@@ -239,10 +227,8 @@ Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest
 Use branch names like:
 
 ```text
-codex/docs-photo-food-logging
-codex/feature-apple-health-sync
-codex/fix-workout-execution
-codex/qa-mobile-active-workout
+per-123-docs-readme
+per-124-fix-workout-execution
 ```
 
 Before pushing code, check that no private runtime data is included.
