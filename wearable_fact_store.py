@@ -120,21 +120,13 @@ def init_wearable_fact_db(db_path: str) -> None:
 
 def _init_wearable_fact_schema(conn: sqlite3.Connection) -> None:
     _create_wearable_fact_tables(conn)
-    _ensure_column(conn, "wearable_daily_facts", "profile_key", "TEXT NOT NULL DEFAULT '1'")
-    _ensure_column(conn, "wearable_daily_facts", "category", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "wearable_daily_facts", "source_provider", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "original_label", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "observed_at", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "source_system", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "source_record_kind", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "metric_domain", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "capability_state", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "source_last_synced_at", "TEXT")
-    _ensure_column(conn, "wearable_daily_facts", "imported_at", "TEXT")
-    _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
-    _migrate_profile_key_primary_keys(conn)
+    _ensure_fact_columns(conn, "wearable_daily_facts")
+    _ensure_fact_columns(conn, "wearable_sources")
+    restored_legacy = _migrate_profile_key_primary_keys(conn)
     current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if restored_legacy:
+        # Rows copied back from an old *_legacy table predate every migration, whatever the DB version says.
+        current_version = 0
     if current_version < WEARABLE_FACT_SCHEMA_VERSION:
         _normalize_open_wearables_fact_ids(conn, derive_blank_ids=False)
         _backfill_fact_contract(conn)
@@ -145,6 +137,19 @@ def _init_wearable_fact_schema(conn: sqlite3.Connection) -> None:
         if current_version < 4:
             _normalize_open_wearables_fact_ids(conn, derive_blank_ids=True)
         conn.execute(f"PRAGMA user_version = {WEARABLE_FACT_SCHEMA_VERSION}")
+
+
+def _ensure_fact_columns(conn: sqlite3.Connection, table: str) -> None:
+    _ensure_column(conn, table, "profile_key", "TEXT NOT NULL DEFAULT '1'")
+    if table.startswith("wearable_sources"):
+        return
+    _ensure_column(conn, table, "category", "TEXT")
+    _ensure_column(conn, table, "source_id", "TEXT NOT NULL DEFAULT ''")
+    for column in (
+        "source_provider", "original_label", "observed_at", "source_system", "source_record_kind",
+        "metric_domain", "capability_state", "source_last_synced_at", "imported_at",
+    ):
+        _ensure_column(conn, table, column, "TEXT")
 
 
 def _create_wearable_fact_tables(conn: sqlite3.Connection) -> None:
@@ -206,7 +211,9 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
+def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> bool:
+    """Returns True when rows were copied back from a leftover *_legacy table."""
+    restored = False
     # A leftover *_legacy table means an older build died mid-upgrade: finish the copy instead of losing rows.
     for table, expected_pk, copy_sql in (
         (
@@ -247,6 +254,9 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
         if _table_exists(conn, legacy):
             # Rows the new table already took after the crash are newer than the legacy copy.
             verb = "INSERT OR IGNORE"
+            restored = True
+            # An older build may have died before adding the newer columns to the table it renamed.
+            _ensure_fact_columns(conn, legacy)
         elif _primary_key_columns(conn, table) != expected_pk:
             conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
             _create_wearable_fact_tables(conn)
@@ -255,6 +265,7 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
             continue
         conn.execute(f"{verb} {copy_sql}")
         conn.execute(f"DROP TABLE {legacy}")
+    return restored
 
 
 def _backfill_fact_contract(conn: sqlite3.Connection) -> None:

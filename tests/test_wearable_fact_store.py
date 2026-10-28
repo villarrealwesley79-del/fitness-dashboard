@@ -1011,3 +1011,36 @@ def test_offsetless_observation_is_aged_as_utc_on_a_east_of_utc_host(tmp_path, m
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+def _leave_legacy_from_first_profile_key_build(db):
+    """Old build died right after RENAME with only profile_key added: no category, source_id, source_system..."""
+    _create_pre_profile_key_schema(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE wearable_sources ADD COLUMN profile_key TEXT NOT NULL DEFAULT '1'")
+        conn.execute("ALTER TABLE wearable_daily_facts RENAME TO wearable_daily_facts_legacy")
+        conn.execute("ALTER TABLE wearable_sources RENAME TO wearable_sources_legacy")
+        conn.execute("PRAGMA user_version = 4")  # restored rows must still get every migration
+
+
+def test_leftover_legacy_table_missing_newer_columns_is_restored_and_backfilled(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    _leave_legacy_from_first_profile_key_build(db)
+
+    facts = list_recommendation_facts(str(db))
+
+    assert sorted(fact["date"] for fact in facts) == ["2026-07-01", "2026-07-02"]
+    assert {fact["source_system"] for fact in facts} == {"oura"}
+    assert all(fact["metric_domain"] for fact in facts)
+    assert all(fact["capability_state"] == "available" and fact["imported_at"] for fact in facts)
+    with sqlite3.connect(db) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not any(name.endswith("_legacy") for name in names)
+
+
+def test_leftover_legacy_table_missing_newer_columns_does_not_break_repeated_reads(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    _leave_legacy_from_first_profile_key_build(db)
+
+    assert len(list_recommendation_facts(str(db))) == 2
+    assert len(list_recommendation_facts(str(db))) == 2
