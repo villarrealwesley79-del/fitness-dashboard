@@ -36,3 +36,8 @@ jobs:
 
       - name: Run pytest
         run: python -m pytest -q
+
+      - name: Run MCP server tests
+        run: |
+          python -m pip install -r mcp/requirements.txt
+          python -m pytest mcp/tests -q

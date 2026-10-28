@@ -14,6 +14,7 @@ server.log
 .health-sync-token
 .apple-health-first-sync
 .open-wearables-password
+.mcp-read-token
 .whoop-client-id
 .whoop-oauth-state*
 .whoop-token*
@@ -23,6 +24,7 @@ server.log
 **/.health-sync-token
 **/.apple-health-first-sync
 **/.open-wearables-password
+**/.mcp-read-token
 **/.whoop-client-id
 **/.whoop-oauth-state*
 **/.whoop-token*
@@ -54,3 +56,5 @@ auth.db*
 audit-bundles/
 backup-bundles/
 docs/audits/
+mcp/.venv*/
+**/.venv*/
