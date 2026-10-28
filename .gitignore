@@ -53,3 +53,7 @@ fitness.log
 
 # Playwright CLI snapshots from browser QA runs
 .playwright-cli/
+
+# PER-1585 MCP server
+mcp/.venv*/
+.mcp-*

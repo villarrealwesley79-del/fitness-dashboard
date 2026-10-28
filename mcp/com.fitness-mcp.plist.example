@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/com.fitness-mcp.plist, replace every REPLACE_* value, then chmod 600
+     (it holds the GitHub client secret). Secrets other than that one live in the 0600 files named below.
+     Setup steps: docs/MCP.md -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.fitness-mcp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE_USER/fitness-dashboard/mcp/.venv/bin/python</string>
+    <string>/Users/REPLACE_USER/fitness-dashboard/mcp/server.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/REPLACE_USER/fitness-dashboard/mcp</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_PUBLIC_BASE_URL</key><string>https://frankbox.tail6c6490.ts.net:8443/mcp</string>
+    <key>MCP_LISTEN_HOST</key><string>127.0.0.1</string>
+    <key>MCP_LISTEN_PORT</key><string>8765</string>
+    <key>MCP_GITHUB_CLIENT_ID</key><string>REPLACE_WITH_GITHUB_CLIENT_ID</string>
+    <key>MCP_GITHUB_CLIENT_SECRET</key><string>REPLACE_WITH_GITHUB_CLIENT_SECRET</string>
+    <key>MCP_OWNER_GITHUB_ID</key><string>REPLACE_WITH_NUMERIC_GITHUB_ID</string>
+    <key>MCP_JWT_SIGNING_KEY_FILE</key><string>/Users/REPLACE_USER/.fitness-mcp/jwt-signing-key</string>
+    <key>MCP_STORAGE_DIR</key><string>/Users/REPLACE_USER/.fitness-mcp/oauth-store</string>
+    <key>MCP_STORAGE_ENCRYPTION_KEY_FILE</key><string>/Users/REPLACE_USER/.fitness-mcp/storage-key</string>
+    <key>MCP_BOT_TOKEN_SHA256</key><string>REPLACE_WITH_SHA256_OF_BOT_TOKEN</string>
+    <key>MCP_EXTRA_REDIRECT_URIS</key><string></string>
+    <key>FITNESS_API_BASE</key><string>http://127.0.0.1:5050</string>
+    <key>FITNESS_READ_TOKEN_FILE</key><string>/Users/REPLACE_USER/REPLACE_DATA_DIR/.mcp-read-token</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/REPLACE_USER/Library/Logs/fitness-mcp.log</string>
+  <key>StandardErrorPath</key><string>/Users/REPLACE_USER/Library/Logs/fitness-mcp.log</string>
+</dict>
+</plist>

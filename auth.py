@@ -934,6 +934,51 @@ def _is_public(path: str) -> bool:
     return False
 
 
+# PER-1585: the read-only MCP server (a separate loopback process) calls these
+# GET routes with a service token. Tailscale serve/Funnel traffic also reaches
+# Flask from 127.0.0.1, so loopback alone proves nothing: any forwarding header
+# or a non-loopback Host disables the token.
+_MCP_READ_PATHS = frozenset({
+    "/api/recommendation/smart",
+    "/api/history-all",
+    "/api/progressive-overload",
+    "/api/body-history",
+    "/api/body-recomp",
+    "/api/sleep/analytics",
+    "/api/freshness",
+    "/api/calendar/windows",
+})
+_MCP_READ_TOKEN_FILE = ".mcp-read-token"
+
+
+def _mcp_read_token_valid() -> bool:
+    if request.method != "GET" or request.path not in _MCP_READ_PATHS:
+        return False
+    scheme, _, presented = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        return False
+    if any(
+        name.lower() == "forwarded" or name.lower().startswith(("x-forwarded-", "tailscale-"))
+        for name in request.headers.keys()
+    ):
+        return False
+    try:
+        if not ipaddress.ip_address(request.remote_addr or "").is_loopback:
+            return False
+        host = _trusted_no_login_request_hostname()
+        if host != "localhost" and not ipaddress.ip_address(host or "").is_loopback:
+            return False
+        path = data_path(_MCP_READ_TOKEN_FILE)
+        with open(path, encoding="utf-8") as handle:
+            if os.fstat(handle.fileno()).st_mode & 0o077:
+                logging.getLogger(__name__).warning("%s must be mode 0600; MCP read token disabled", path)
+                return False
+            expected = handle.read().strip()
+    except (ValueError, OSError):  # bad address/host, or no token file: feature off
+        return False
+    return bool(expected) and hmac.compare_digest(presented.encode(), expected.encode())
+
+
 def _is_csrf_exempt(path: str) -> bool:
     return path in _CSRF_EXEMPT_PATHS
 
@@ -1088,6 +1133,17 @@ def init_auth(app):
             login_manager._update_request_context_with_user()
             return None
         if owner is None:
+            return None
+        login_manager._update_request_context_with_user(owner)
+        g._trusted_no_login_owner = True
+        return None
+
+    @app.before_request
+    def load_mcp_read_token_owner():
+        if not _mcp_read_token_valid():
+            return None
+        owner = _trusted_no_login_owner()
+        if owner is None or owner is _NO_LOGIN_OWNER_DB_ERROR:
             return None
         login_manager._update_request_context_with_user(owner)
         g._trusted_no_login_owner = True

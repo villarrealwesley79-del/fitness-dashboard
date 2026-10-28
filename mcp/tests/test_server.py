@@ -1,0 +1,261 @@
+"""PER-1585: auth, tool surface and output hygiene of the read-only MCP server.
+
+The dashboard and GitHub are mocked at the HTTP transport; everything else is real.
+"""
+import asyncio
+import hashlib
+import logging
+import re
+import time
+
+import httpx2
+import pytest
+from cryptography.fernet import Fernet
+from fastmcp.server.auth.oauth_proxy.models import JTIMapping, UpstreamTokenSet
+from starlette.testclient import TestClient
+
+from server import Config, build_app
+
+OWNER_ID, OTHER_ID = "424242", "999"
+GH_OWNER, GH_OTHER = "gho_owner_token_value", "gho_other_token_value"
+BOT_TOKEN = "bot-token-plain-value"
+READ_TOKEN = "dashboard-read-token-value"
+CLIENT_SECRET = "github-client-secret-value"
+SIGNING_KEY = "jwt-signing-key-value-0123456789abcdef"
+LEAK = "UNDOCUMENTED-LEAK"
+SECRETS = (GH_OWNER, GH_OTHER, BOT_TOKEN, READ_TOKEN, CLIENT_SECRET, SIGNING_KEY)
+TOOLS = {
+    "get_today_plan", "get_workout_history", "get_progressive_overload",
+    "get_body_trend", "get_sleep_recovery", "get_open_windows",
+}
+ALLOWED_PATHS = {
+    "/api/recommendation/smart", "/api/history-all", "/api/progressive-overload", "/api/body-history",
+    "/api/body-recomp", "/api/sleep/analytics", "/api/freshness", "/api/calendar/windows",
+}
+TODAY = time.strftime("%Y-%m-%d")
+FRESH = {s: {"status": "ok", "last_data_point": TODAY, "last_sync_attempt": TODAY, "token": LEAK}
+         for s in ("open_wearables", "oura", "whoop", "apple_health", "food")}
+ROUTES = {
+    "/api/recommendation/smart": {
+        "recommendation": "moderate", "readiness": 80, "notes": LEAK,
+        "readiness_factors": {"acwr": {"acwr": 1.1, "risk": "ok", "x": LEAK}, "sleep_debt": {"debt_minutes": 0, "status": "good", "x": LEAK}},
+        "next_workout": {
+            "id": LEAK, "auth_scope": LEAK, "focus": "push", "estimated_minutes": 45,
+            "mesocycle": {"week": 2, "phase": "build", "rpe_base": 7, "x": LEAK},
+            "exercises": [{"exercise": "Chest Press", "target_sets": 3, "target_reps": 8, "id": LEAK}],
+        },
+        "freshness": FRESH, "nutrition_context": {"x": LEAK},
+    },
+    "/api/history-all": {
+        "workouts": [{"date": TODAY, "session_type": "push", "notes": LEAK, "id": LEAK,
+                      "exercises": [{"machine": "Chest Press", "id": LEAK, "sets": [{"weight_lbs": 100, "reps": 8, "rpe": 7, "x": LEAK}]}]},
+                     {"date": "2001-01-01", "exercises": []}],
+        "cardio": [{"date": TODAY, "activity_type": "walk", "notes": LEAK}],
+        "recovery": [], "personal_records": {"Chest Press": {"all_time": 130, "x": LEAK}},
+    },
+    "/api/progressive-overload": {"exercises": [{"exercise": "Chest Press", "last_weight": 100, "x": LEAK, "history": [{"date": TODAY, "weight": 100, "x": LEAK}]}]},
+    "/api/body-history": {"trend": "stable", "history": [{"date": TODAY, "weight_lbs": 180, "notes": LEAK}]},
+    "/api/body-recomp": {"summary": {"latest": {"date": TODAY, "weight_lbs": 180, "notes": LEAK}, "target_weight_lbs": 175, "x": LEAK}},
+    "/api/sleep/analytics": {"history": [{"date": TODAY, "sleep_duration_min": 450, "notes": LEAK}], "consistency_score": 90},
+    "/api/freshness": {"freshness": FRESH},
+}
+
+
+@pytest.fixture
+def seen():
+    return []
+
+
+@pytest.fixture
+def make(tmp_path, seen):
+    def build(*, bot=True):
+        def dashboard(request: httpx2.Request) -> httpx2.Response:
+            seen.append((request.method, request.url.path, request.headers.get("authorization")))
+            body = ROUTES.get(request.url.path)
+            return httpx2.Response(200, json=body) if body is not None else httpx2.Response(404)
+
+        def github(request: httpx2.Request) -> httpx2.Response:
+            user = {f"Bearer {GH_OWNER}": OWNER_ID, f"Bearer {GH_OTHER}": OTHER_ID}.get(request.headers.get("authorization"))
+            return httpx2.Response(200, json={"id": int(user)}) if user else httpx2.Response(401)
+
+        cfg = Config(
+            public_url="https://frankbox.example.ts.net:8443/mcp", github_client_id="gh-client-id",
+            github_client_secret=CLIENT_SECRET, owner_github_id=OWNER_ID, jwt_signing_key=SIGNING_KEY,
+            storage_dir=str(tmp_path / "store"), storage_key=Fernet.generate_key().decode(), read_token=READ_TOKEN,
+            bot_token_sha256=hashlib.sha256(BOT_TOKEN.encode()).hexdigest() if bot else "",
+        )
+        app, _ = build_app(
+            cfg, github=httpx2.AsyncClient(transport=httpx2.MockTransport(github)),
+            dashboard_transport=httpx2.MockTransport(dashboard),
+        )
+        return app
+
+    return build
+
+
+def oauth_token(app, github_token):
+    """A proxy-issued access token whose stored GitHub token is `github_token` (the post-login state)."""
+    proxy, now, ident = app.state.fastmcp_auth.server, time.time(), github_token
+
+    async def seed():
+        await proxy._upstream_token_store.put(key=ident, ttl=3600, value=UpstreamTokenSet(
+            upstream_token_id=ident, access_token=github_token, refresh_token=None, refresh_token_expires_at=None,
+            expires_at=now + 3600, token_type="Bearer", scope="read:user", client_id="c", created_at=now))
+        await proxy._jti_mapping_store.put(key=ident, ttl=3600, value=JTIMapping(jti=ident, upstream_token_id=ident, created_at=now))
+
+    asyncio.run(seed())
+    return proxy.jwt_issuer.issue_access_token(client_id="c", scopes=["read:user"], jti=ident, expires_in=3600)
+
+
+def rpc(client, method, params=None, token=None):
+    """POST one JSON-RPC message. With a token, first opens (and reuses) a session for it."""
+    headers = {"Accept": "application/json, text/event-stream"}
+    sessions = client.__dict__.setdefault("_mcp_sessions", {})  # per client: a reused id() must not leak sessions
+
+    def post(payload, extra=None):
+        return client.post("/mcp", headers={**headers, **(extra or {})}, json={"jsonrpc": "2.0", **payload})
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        if token not in sessions:
+            init = post({"id": 0, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}})
+            if init.status_code != 200:
+                return init
+            sessions[token] = init.headers["mcp-session-id"]
+            post({"method": "notifications/initialized"}, {"mcp-session-id": init.headers["mcp-session-id"]})
+        headers["mcp-session-id"] = sessions[token]
+    return post({"id": 1, "method": method, "params": params or {}})
+
+
+def call(client, tool, token, **arguments):
+    response = rpc(client, "tools/call", {"name": tool, "arguments": arguments}, token)
+    assert response.status_code == 200, response.text
+    return response.json()["result"]["structuredContent"]
+
+
+def keys(value):
+    """Every dict key in a nested value, for the 'documented fields only' check."""
+    if isinstance(value, dict):
+        return set(value) | {k for v in value.values() for k in keys(v)}
+    if isinstance(value, list):
+        return {k for v in value for k in keys(v)}
+    return set()
+
+
+@pytest.fixture
+def client(make):
+    app = make()
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        c.oauth_owner = oauth_token(app, GH_OWNER)
+        yield c
+
+
+@pytest.mark.parametrize("send", [lambda c: rpc(c, "tools/list"), lambda c: c.get("/mcp")])
+def test_unauthenticated_is_401_with_challenge(client, send):
+    response = send(client)
+    assert response.status_code == 401
+    assert 'resource_metadata="https://frankbox.example.ts.net:8443/.well-known/oauth-protected-resource/mcp"' in response.headers["www-authenticate"]
+
+
+def test_oauth_discovery_metadata_is_served(client):
+    resource = client.get("/.well-known/oauth-protected-resource/mcp")
+    assert resource.status_code == 200
+    assert resource.json()["resource"] == "https://frankbox.example.ts.net:8443/mcp"
+    server = client.get("/.well-known/oauth-authorization-server")
+    assert server.status_code == 200
+    assert server.json()["registration_endpoint"] == "https://frankbox.example.ts.net:8443/register"
+
+
+def test_only_read_only_tools_are_listed_on_both_auth_paths(client):
+    for token in (BOT_TOKEN, client.oauth_owner):
+        tools = rpc(client, "tools/list", token=token).json()["result"]["tools"]
+        assert {t["name"] for t in tools} == TOOLS
+        assert all(t["annotations"]["readOnlyHint"] is True and t["annotations"]["openWorldHint"] is False for t in tools)
+
+
+def test_static_bearer_right_wrong_missing(client):
+    assert rpc(client, "tools/list", token=BOT_TOKEN).status_code == 200
+    assert rpc(client, "tools/list", token="not-the-bot-token").status_code == 401
+    assert rpc(client, "tools/list").status_code == 401
+
+
+def test_no_bot_hash_configured_turns_the_static_path_off(make):
+    with TestClient(make(bot=False), base_url="http://127.0.0.1:8765") as c:
+        assert rpc(c, "tools/list", token=BOT_TOKEN).status_code == 401
+
+
+@pytest.mark.parametrize("method", ["tools/list", "resources/list", "prompts/list"])
+def test_non_owner_github_user_is_refused_on_every_method(make, method):
+    app = make()
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        assert rpc(c, method, token=oauth_token(app, GH_OTHER)).status_code == 401
+        assert rpc(c, method, token=oauth_token(app, GH_OWNER)).status_code == 200
+
+
+def test_non_owner_cannot_call_a_tool(make, seen):
+    app = make()
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        response = rpc(c, "tools/call", {"name": "get_today_plan", "arguments": {}}, oauth_token(app, GH_OTHER))
+    assert response.status_code == 401
+    assert seen == []
+
+
+def test_tools_return_only_documented_fields(client):
+    outputs = {
+        "get_today_plan": call(client, "get_today_plan", BOT_TOKEN),
+        "get_workout_history": call(client, "get_workout_history", BOT_TOKEN),
+        "get_progressive_overload": call(client, "get_progressive_overload", client.oauth_owner),
+        "get_body_trend": call(client, "get_body_trend", BOT_TOKEN),
+        "get_sleep_recovery": call(client, "get_sleep_recovery", BOT_TOKEN),
+    }
+    flat = str(outputs)
+    assert LEAK not in flat
+    assert not keys(outputs) & {"id", "auth_scope", "notes", "food", "nutrition_context", "token", "x"}
+    plan = outputs["get_today_plan"]
+    assert plan["next_workout"]["exercises"] == [{"exercise": "Chest Press", "target_sets": 3, "target_reps": 8}]
+    assert set(plan["data_freshness"]) == {"open_wearables", "oura", "whoop", "apple_health"}
+    history = outputs["get_workout_history"]
+    assert [w["date"] for w in history["workouts"]] == [TODAY]  # the 2001 session is outside `days`
+    assert history["workouts"][0]["exercises"] == [{"name": "Chest Press", "sets": [{"weight_lbs": 100, "reps": 8, "rpe": 7}]}]
+
+
+def test_tools_only_issue_allowlisted_gets_with_the_read_token(client, seen):
+    for tool in sorted(TOOLS - {"get_open_windows"}):
+        call(client, tool, BOT_TOKEN)
+    assert {path for _, path, _ in seen} <= ALLOWED_PATHS
+    assert {method for method, _, _ in seen} == {"GET"}
+    assert {auth for _, _, auth in seen} == {f"Bearer {READ_TOKEN}"}
+
+
+def test_open_windows_unconfigured_when_route_is_missing(client):
+    assert call(client, "get_open_windows", BOT_TOKEN, day="today") == {"status": "unconfigured", "day": "today"}
+    bad = rpc(client, "tools/call", {"name": "get_open_windows", "arguments": {"day": "yesterday"}}, BOT_TOKEN).json()
+    assert bad["result"]["isError"] is True
+
+
+def test_unlisted_redirect_uri_is_refused_and_logged(client, caplog):
+    body = {"redirect_uris": ["https://grok.example/cb"], "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"], "response_types": ["code"]}
+    with caplog.at_level(logging.WARNING, logger="fitness_mcp"):
+        refused = client.post("/register", json=body)
+        body["redirect_uris"] = ["https://claude.ai/api/mcp/auth_callback"]
+        allowed = client.post("/register", json=body)
+    assert (refused.status_code, allowed.status_code) == (400, 201)
+    assert "https://grok.example/cb" in caplog.text
+
+
+def test_unknown_host_header_is_refused(client):
+    assert rpc(client, "tools/list", token=BOT_TOKEN).status_code == 200
+    response = client.post("/mcp", headers={"Host": "evil.example", "Authorization": f"Bearer {BOT_TOKEN}"}, json={})
+    assert response.status_code == 421
+
+
+def test_no_secret_in_outputs_or_logs(make, caplog):
+    app = make()
+    with caplog.at_level(logging.DEBUG), TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        texts = [rpc(c, "tools/list", token=t).text for t in (BOT_TOKEN, "wrong-token", oauth_token(app, GH_OTHER))]
+        texts += [str(call(c, "get_today_plan", BOT_TOKEN)), c.get("/.well-known/oauth-authorization-server").text]
+    everything = "\n".join(texts) + caplog.text
+    assert not [s for s in SECRETS if s in everything]
+    assert not re.search(r"Bearer\s+\S{8,}", caplog.text)

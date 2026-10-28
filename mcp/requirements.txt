@@ -1,0 +1,4 @@
+# MCP server only. Not installed by the dashboard's root requirements.txt.
+# Tested on Python 3.11 (CI) and 3.14 (frankbox).
+fastmcp==4.1.4
+pytest==8.4.2
