@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import httpx2
 from cryptography.fernet import Fernet
@@ -108,10 +108,15 @@ def make_storage(directory: str, key: str) -> FernetEncryptionWrapper:
 class LogRejectedRedirects:
     """Logs why /authorize or /register refused a client, so the owner can allowlist its redirect_uri.
 
-    Also caps both anonymous endpoints: each call writes a file that is never cleaned up.
+    Also caps the three anonymous endpoints: /authorize and /register each leave a file that is never
+    cleaned up, and FastMCP logs every failed /auth/callback at ERROR. A real callback is ~250 bytes,
+    so a longer one or one with control characters gets a 400 before FastMCP can log it.
     shortcut: one global fixed window, not per client (behind Funnel every peer is 127.0.0.1);
     a flood can lock the owner out of connecting for up to an hour. It writes one log line per window.
     """
+
+    COUNTED = ("/authorize", "/register", "/auth/callback")
+    MAX_CALLBACK_QUERY = 1024
 
     def __init__(self, app, limit: int = 60, window: int = 3600):
         self.app, self.limit, self.window = app, limit, window
@@ -119,7 +124,7 @@ class LogRejectedRedirects:
 
     async def __call__(self, scope, receive, send):
         path = scope.get("path")
-        if scope["type"] != "http" or path not in ("/authorize", "/register"):
+        if scope["type"] != "http" or path not in self.COUNTED:
             return await self.app(scope, receive, send)
         if time.monotonic() - self.started >= self.window:
             self.started, self.count = time.monotonic(), 0
@@ -128,6 +133,11 @@ class LogRejectedRedirects:
             if self.count == self.limit + 1:  # one line per window, or a flood grows the log without bound
                 log.warning("%s rate limited: more than %d calls in %d s", path, self.limit, self.window)
             return await PlainTextResponse("Too many requests", status_code=429)(scope, receive, send)
+        if path == "/auth/callback":
+            query = scope["query_string"]
+            if len(query) > self.MAX_CALLBACK_QUERY or re.search(r"[\x00-\x1f\x7f]", unquote_plus(query.decode("latin-1"))):
+                return await PlainTextResponse("Bad request", status_code=400)(scope, receive, send)
+            return await self.app(scope, receive, send)
         refused = False
 
         async def spy(message):

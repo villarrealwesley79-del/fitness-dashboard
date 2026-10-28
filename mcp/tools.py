@@ -85,7 +85,7 @@ def register(mcp: FastMCP, dash: Dashboard) -> None:
                     "time_adjusted", "rpe_range", "muscles_to_avoid",
                 )),
                 "mesocycle": _pick(plan.get("mesocycle"), ("week", "phase", "rpe_base")),
-                "cardio": _pick(plan.get("cardio"), ("include_cardio", "reason")),
+                "cardio": _pick(plan.get("cardio"), ("include_cardio", "type", "duration_minutes", "zone", "heart_rate_range", "intensity", "reason")),
                 "exercises": _rows(plan.get("exercises"), (
                     "exercise", "muscle", "target_sets", "target_reps", "target_weight",
                     "rpe_target", "rationale",

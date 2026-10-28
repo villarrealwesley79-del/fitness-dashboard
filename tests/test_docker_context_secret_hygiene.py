@@ -13,6 +13,7 @@ SENSITIVE_FILE_PATTERNS = {
     ".health-sync-token",
     ".apple-health-first-sync",
     ".open-wearables-password",
+    ".mcp-read-token",
     ".whoop-protected-material*",
     ".env",
     ".env.*",
@@ -122,6 +123,7 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         ".health-sync-token",
         ".apple-health-first-sync",
         ".open-wearables-password",
+        ".mcp-read-token",
         ".whoop-protected-material-example.json",
         ".env",
     ):
@@ -131,6 +133,7 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         "support/.flask-secret",
         "support/.health-sync-token",
         "support/.open-wearables-password",
+        "support/.mcp-read-token",
         "support/.whoop-protected-material-example.json",
         "support/.env.prod",
     ):
@@ -146,6 +149,7 @@ def test_gitignore_excludes_protected_fallback_files() -> None:
 
     assert ".open-wearables-password" in rules
     assert ".whoop-protected-material*" in rules
+    assert ".mcp-*" in rules  # covers .mcp-read-token at any depth
 
 
 def test_docker_build_context_has_no_sensitive_files() -> None:

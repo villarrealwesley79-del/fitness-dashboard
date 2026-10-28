@@ -27,11 +27,15 @@ class OwnerGitHubVerifier(TokenVerifier):
         self._http = http_client or httpx2.AsyncClient(timeout=10)
         # A short cache keeps a GitHub 5xx from ending every session at once.
         self._cache = TokenCache(ttl_seconds=cache_seconds, max_size=64)
+        # Refused non-owner tokens, by SHA-256: one GitHub call and one warning per token, not per request.
+        self._refused = TokenCache(ttl_seconds=cache_seconds, max_size=64)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         hit, cached = self._cache.get(token)
         if hit:
             return cached
+        if self._refused.get(token)[0]:
+            return None
         try:
             response = await self._http.get(
                 "https://api.github.com/user",
@@ -44,6 +48,7 @@ class OwnerGitHubVerifier(TokenVerifier):
         user_id = str(response.json().get("id", ""))
         if not hmac.compare_digest(user_id, self._owner_id):
             log.warning("Rejected GitHub user id %s: not the owner", user_id[:20])
+            self._refused.set(token, AccessToken(token="refused", client_id="", scopes=[]))
             return None
         result = AccessToken(
             token=token, client_id=user_id, scopes=["read:user"], subject=user_id,

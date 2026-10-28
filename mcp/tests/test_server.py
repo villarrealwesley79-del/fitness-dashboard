@@ -272,11 +272,99 @@ def test_unknown_host_header_is_refused(client):
     assert response.status_code == 421
 
 
-def test_no_secret_in_outputs_or_logs(make, caplog):
+class Capture(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append((record.levelno, record.getMessage()))
+
+
+@pytest.fixture
+def fastmcp_log():
+    """Logger 'fastmcp' has propagate=False, so caplog (a root handler) never sees its records."""
+    logger = logging.getLogger("fastmcp")
+    handler, old = Capture(), logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    yield handler
+    logger.removeHandler(handler)
+    logger.setLevel(old)
+
+
+def test_no_secret_in_outputs_or_logs(make, caplog, fastmcp_log):
     app = make()
     with caplog.at_level(logging.DEBUG), TestClient(app, base_url="http://127.0.0.1:8765") as c:
         texts = [rpc(c, "tools/list", token=t).text for t in (BOT_TOKEN, "wrong-token", oauth_token(app, GH_OTHER))]
         texts += [str(call(c, "get_today_plan", BOT_TOKEN)), c.get("/.well-known/oauth-authorization-server").text]
-    everything = "\n".join(texts) + caplog.text
+    assert fastmcp_log.records  # the capture works: FastMCP did log
+    everything = "\n".join(texts) + caplog.text + "\n".join(m for _, m in fastmcp_log.records)
     assert not [s for s in SECRETS if s in everything]
     assert not re.search(r"Bearer\s+\S{8,}", caplog.text)
+
+
+def test_anonymous_callback_flood_is_bounded_at_the_plist_log_level(make, fastmcp_log):
+    """FASTMCP_LOG_LEVEL=ERROR (the plist) keeps FastMCP's failed-callback lines: they must be capped."""
+    with TestClient(make(), base_url="http://127.0.0.1:8765") as c:
+        codes = {
+            c.get("/auth/callback", params={"error": f"x\nforged {i}", "error_description": "A" * 2000}).status_code
+            for i in range(200)
+        }
+        bad_state = c.get("/auth/callback", params={"code": "abc", "state": "bad"})
+    kept = [m for level, m in fastmcp_log.records if level >= logging.ERROR]
+    assert 429 in codes
+    assert len(kept) <= 61, f"{len(kept)} ERROR records, {sum(map(len, kept))} bytes"
+    assert not [m for m in kept if "\n" in m]
+    assert bad_state.status_code == 429  # the window is already spent
+
+
+def test_callback_validation_and_normal_callbacks(make, fastmcp_log):
+    with TestClient(make(), base_url="http://127.0.0.1:8765") as c:
+        long = c.get("/auth/callback", params={"error": "access_denied", "error_description": "A" * 2000})
+        newline = c.get("/auth/callback", params={"error": "a\nb"})
+        bad_state = c.get("/auth/callback", params={"code": "abc", "state": "bad"})
+        denied = c.get("/auth/callback", params={"error": "access_denied", "state": "bad"})
+    assert (long.status_code, newline.status_code) == (400, 400)
+    assert "A" * 50 not in "".join(m for _, m in fastmcp_log.records)
+    # a real-size callback still reaches FastMCP, which answers its usual 400
+    assert bad_state.status_code == denied.status_code == 400 and "<html" in bad_state.text.lower()
+    assert any(level >= logging.ERROR for level, _ in fastmcp_log.records)
+
+
+def test_non_owner_github_token_costs_one_upstream_call_and_one_warning(caplog):
+    from owner_auth import OwnerGitHubVerifier
+
+    calls = []
+
+    def github(request):
+        calls.append(request.url.path)
+        return httpx2.Response(200, json={"id": int(OTHER_ID)})
+
+    verifier = OwnerGitHubVerifier(OWNER_ID, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(github)))
+    with caplog.at_level(logging.WARNING, logger="fitness_mcp.auth"):
+        results = [asyncio.run(verifier.verify_token(GH_OTHER)) for _ in range(5)]
+    assert results == [None] * 5
+    assert len(calls) == 1 and caplog.text.count("not the owner") == 1
+
+
+def test_github_failures_are_never_cached():
+    from owner_auth import OwnerGitHubVerifier
+
+    answers = iter([httpx2.Response(503), httpx2.Response(200, json={"id": int(OWNER_ID)})])
+    verifier = OwnerGitHubVerifier(OWNER_ID, http_client=httpx2.AsyncClient(
+        transport=httpx2.MockTransport(lambda request: next(answers))))
+    assert asyncio.run(verifier.verify_token(GH_OWNER)) is None
+    assert asyncio.run(verifier.verify_token(GH_OWNER)) is not None
+
+
+def test_cardio_prescription_keeps_documented_fields(make, monkeypatch):
+    plan = ROUTES["/api/recommendation/smart"]["next_workout"]
+    cardio = {"type": "walk", "duration_minutes": 20, "zone": 2, "zone_description": "easy", "heart_rate_range": "120-140",
+              "intensity": "low", "technique": LEAK, "reason": "recovery", "secret": LEAK}
+    monkeypatch.setitem(ROUTES, "/api/recommendation/smart", {
+        **ROUTES["/api/recommendation/smart"], "next_workout": {**plan, "cardio": cardio}})
+    with TestClient(make(), base_url="http://127.0.0.1:8765") as c:
+        out = call(c, "get_today_plan", BOT_TOKEN)["next_workout"]["cardio"]
+    assert out == {"type": "walk", "duration_minutes": 20, "zone": 2, "heart_rate_range": "120-140",
+                   "intensity": "low", "reason": "recovery"}
