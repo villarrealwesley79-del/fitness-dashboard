@@ -391,7 +391,8 @@ def _timed(rrule: str, dtstart: str = "20200101T090000Z") -> str:
     "rrule",
     ["RRULE:FREQ=SECONDLY", "RRULE:FREQ=MINUTELY", "RRULE:FREQ=HOURLY;BYMONTH=2;BYMONTHDAY=30",
      "RRULE:FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30", "RRULE:FREQ=YEARLY;BYMONTH=4,6;BYMONTHDAY=31",
-     "RRULE:FREQ=DAILY;BYMONTH=13"],
+     "RRULE:FREQ=DAILY;BYMONTH=13", "RRULE:FREQ=DAILY;INTERVAL=0", "RRULE:FREQ=MONTHLY;INTERVAL=0",
+     "RRULE:FREQ=YEARLY;INTERVAL=0", "RRULE:FREQ=WEEKLY;INTERVAL=-1;BYDAY=MO"],
 )
 def test_sub_daily_and_impossible_rrules_are_dropped_fast(rrule):
     import time
@@ -404,3 +405,8 @@ def test_sub_daily_and_impossible_rrules_are_dropped_fast(rrule):
 def test_possible_month_day_rule_still_expands():
     events = cf.parse_events(_timed("RRULE:FREQ=MONTHLY;BYMONTHDAY=-1"), ny(2026, 10, 30), ny(2026, 11, 1))
     assert len(events) == 1
+
+
+def test_negative_duration_event_is_dropped():
+    ics = _timed("RRULE:FREQ=DAILY").replace("DTEND:20200101T100000Z", "DURATION:-PT1H")
+    assert cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7)) == []

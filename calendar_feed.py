@@ -149,7 +149,7 @@ def _rule_possible(rule_text: str) -> bool:
     impossible rules can still cost up to ~2 s each. Upgrade if a real feed does that.
     """
     parts = dict(p.partition("=")[::2] for p in rule_text.upper().split(";"))
-    if parts.get("FREQ") not in _FREQS:
+    if parts.get("FREQ") not in _FREQS or int(parts.get("INTERVAL", "1")) < 1:  # INTERVAL=0 makes dateutil loop forever
         return False
     months = [int(m) for m in parts.get("BYMONTH", "").split(",") if m]
     if any(not 1 <= m <= 12 for m in months):
@@ -178,6 +178,8 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
     if all_day:  # all-day events never block; no recurrence expansion needed
         return [Event(uid, start, end, True)]
     dur = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)  # real elapsed time across DST
+    if dur < timedelta(0):  # negative DURATION/DTEND before DTSTART: nothing to block
+        return []
     if rid is not None or "RRULE" not in props:
         starts = [start]
     else:
