@@ -4088,26 +4088,31 @@
                 source_label: w.source_label || 'Strength - Logged',
                 merged_sources: Array.isArray(w.merged_sources) ? [...w.merged_sources] : ['logged'],
             };
-            if (row.date && row.canonical_category === 'strength_training' && !loggedByDate.has(row.date)) {
-                loggedByDate.set(row.date, row);
+            if (row.date && row.canonical_category === 'strength_training') {
+                loggedByDate.set(row.date, [...(loggedByDate.get(row.date) || []), row]);
             }
             return row;
         });
+        const absorbed = new Set();
         const visibleWatch = [];
         (watchRows || []).forEach((row) => {
-            // One strength session counts once, whichever wearable source (Watch,
-            // Open Wearables, or both) reports it alongside the logged lift.
-            if (row.canonical_category === 'strength_training' && row.date && loggedByDate.has(row.date)) {
-                const logged = loggedByDate.get(row.date);
+            // A wearable strength session counts once: it folds into a logged lift
+            // that day, but each lift absorbs at most one session. Extra distinct
+            // sessions stay visible as their own rows.
+            const candidates = row.canonical_category === 'strength_training' && row.date ? (loggedByDate.get(row.date) || []) : [];
+            const logged = candidates.find((lift) => !absorbed.has(lift));
+            if (logged) {
+                absorbed.add(logged);
                 const sourceKey = row.source === 'open_wearables' ? 'open_wearables' : 'watch';
                 logged.merged_sources = Array.from(new Set([...(logged.merged_sources || []), sourceKey]));
                 logged.source_label = sourceKey === 'watch' ? 'Strength - Logged + Watch' : 'Strength - Logged + Open Wearables';
                 logged.watch_duration_minutes = row.duration_minutes || row.duration || logged.watch_duration_minutes || null;
                 logged.watch_activity_label = row.original_label || row.activity_type || row.activity || logged.watch_activity_label || null;
-                // Metrics come from the first Open Wearables-backed row folded in; later
-                // rows never overwrite or add to them (no sums across sessions).
+                // Logged lifts carry no start time, so the match is by date alone. Only
+                // copy the metrics when that date has exactly one logged lift; with
+                // several, the figures may belong to a different session.
                 const hasWearableMetrics = ['calories_burned', 'avg_heart_rate', 'max_heart_rate'].some((field) => row[field] != null);
-                if (!logged.wearable_metrics_source && hasWearableMetrics && (row.source === 'open_wearables' || row.open_wearables_metrics)) {
+                if (candidates.length === 1 && hasWearableMetrics && (row.source === 'open_wearables' || row.open_wearables_metrics)) {
                     logged.wearable_calories_burned = row.calories_burned ?? null;
                     logged.wearable_avg_heart_rate = row.avg_heart_rate ?? null;
                     logged.wearable_max_heart_rate = row.max_heart_rate ?? null;

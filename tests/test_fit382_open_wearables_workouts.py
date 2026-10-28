@@ -833,8 +833,57 @@ process.stdout.write(JSON.stringify({
     # No Open Wearables data: nothing is invented on the logged row.
     assert "wearable_metrics_source" not in result["noOwRow"]
     assert "Average heart rate" not in result["noOwHtml"]
-    # Several wearable rows: metrics come from the first fold target, not a sum.
-    assert result["severalCount"] == 1
+    # Several wearable rows: the lift takes the first session's metrics (never a sum); the
+    # second distinct session stays visible as its own row.
+    assert result["severalCount"] == 2
     assert result["severalRow"]["wearable_calories_burned"] == 320
     assert result["severalRow"]["wearable_avg_heart_rate"] == 120
     assert result["severalRow"]["wearable_max_heart_rate"] == 160
+
+
+_OW_STRENGTH = (
+    "e.normalizeOpenWearablesHistoryRow({ id: 'open_wearables:w1', date: '2026-07-12', "
+    "activity_type: 'strength_training', session_type: 'strength_training', "
+    "start_time: '2026-07-12T12:00:00Z', calories_burned: 320, avg_heart_rate: 120, max_heart_rate: 160 })"
+)
+_MERGE_EXPORTS = ["normalizeOpenWearablesHistoryRow", "mergeStrengthHistorySources"]
+
+
+def test_two_logged_lifts_same_day_fold_the_session_but_get_no_wearable_metrics():
+    rows = run_app_js(
+        _MERGE_EXPORTS,
+        f"""
+const ow = {_OW_STRENGTH};
+const lift = (id) => ({{ id, date: '2026-07-12', source: 'lifted' }});
+const one = e.mergeStrengthHistorySources([lift('lift-am'), lift('lift-pm')], [ow]);
+const two = e.mergeStrengthHistorySources([lift('lift-am'), lift('lift-pm')], [ow, {{ ...ow, id: 'open_wearables:w2' }}]);
+const pick = (list) => list.map((r) => ({{ id: r.id, source: r.source, wearableSource: r.wearable_metrics_source || null, kcal: r.wearable_calories_burned ?? null }}));
+process.stdout.write(JSON.stringify({{ one: pick(one), two: pick(two) }}));
+""",
+    )
+
+    # The one session still counts once (folded into the first lift), without metrics.
+    assert [row["id"] for row in rows["one"]] == ["lift-am", "lift-pm"]
+    assert all(row["wearableSource"] is None and row["kcal"] is None for row in rows["one"])
+    # Two sessions, two lifts: each lift absorbs one, so still two rows and no metrics by date alone.
+    assert [row["id"] for row in rows["two"]] == ["lift-am", "lift-pm"]
+    assert all(row["wearableSource"] is None for row in rows["two"])
+
+
+def test_second_distinct_wearable_strength_session_same_day_stays_visible():
+    rows = run_app_js(
+        _MERGE_EXPORTS,
+        f"""
+const am = {_OW_STRENGTH};
+const pm = {{ ...am, id: 'open_wearables:w2', start_time: '2026-07-12T23:00:00Z', calories_burned: 500, avg_heart_rate: 130, max_heart_rate: 170 }};
+const out = e.mergeStrengthHistorySources([{{ id: 'lift-1', date: '2026-07-12', source: 'lifted' }}], [am, pm]);
+process.stdout.write(JSON.stringify(out));
+""",
+    )
+
+    assert [row["id"] for row in rows] == ["lift-1", "open_wearables:w2"]
+    # The lift keeps the first session's metrics only; the 18:00 session keeps its own and is not summed in.
+    assert rows[0]["wearable_calories_burned"] == 320
+    assert rows[0]["wearable_avg_heart_rate"] == 120
+    assert rows[1]["source"] == "open_wearables"
+    assert rows[1]["calories_burned"] == 500
