@@ -12,8 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "docs" / "qa" / "fit-306-active-workout" / "states.json"
 RUNBOOK = ROOT / "docs" / "qa" / "fit-306-active-workout" / "README.md"
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text()
-TEMPLATE = (ROOT / "templates" / "index.html").read_text()
 PLAYWRIGHT_CLI_VERSION = "0.1.17"
 
 
@@ -41,14 +39,6 @@ def test_browser_qa_matrix_covers_every_required_modal_state():
     assert {case["id"] for case in matrix["states"]} == REQUIRED_STATES
     assert matrix["viewport"] == {"width": 390, "height": 844}
     assert all(case["selector"] and case["expected_text"] for case in matrix["states"])
-
-
-def test_qa_hook_is_query_gated_and_uses_shipped_renderers():
-    assert "get('fit306_qa') === '1'" in APP_JS
-    assert "window.__aicoach.fit306Qa" in APP_JS
-    assert "renderActiveWorkout();" in APP_JS
-    for element_id in ("modal-active", "active-workout-body", "active-workout-status", "modal-workout-saved"):
-        assert f'id="{element_id}"' in TEMPLATE
 
 
 def test_browser_executes_production_active_workout_states(tmp_path):
@@ -88,6 +78,9 @@ def test_browser_executes_production_active_workout_states(tmp_path):
         server.terminate()
         raise AssertionError("FIT-306 test server did not start")
 
+    auth_scope = json.loads(
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/auth/scope", timeout=5).read()
+    )["auth_scope"]
     session = f"fit306-{os.getpid()}"
 
     def run(*args: str) -> str:
@@ -136,12 +129,16 @@ def test_browser_executes_production_active_workout_states(tmp_path):
         run("route", "**/api/oura/sleep-summary", "--body", "{}", "--content-type", "application/json")
         run("route", "**/api/oura/status", "--body", '{"connected":false}', "--content-type", "application/json")
         run("resize", "390", "844")
+        init_script = (
+            "() => { if (window.name.startsWith('fit306-draft:')) { "
+            "localStorage.setItem('fit168:active-workout-draft:v1', window.name.slice(13)); "
+            "window.name = ''; } }"
+        )
+        run("run-code", f"async (page) => {{ await page.addInitScript({init_script}); }}")
+        run("goto", f"http://127.0.0.1:{port}/")  # same-origin so window.name survives
         for case in json.loads(MATRIX.read_text())["states"]:
-            run("goto", f"http://127.0.0.1:{port}/?fit306_qa=1")
-            assert run("eval", "() => Boolean(window.__aicoach?.fit306Qa)", "--raw") == "true"
             state_fixture = json.loads(json.dumps(fixture))
-            if case["id"] == "recovered-draft":
-                state_fixture["saveState"] = {"message": case["expected_text"], "variant": "warn"}
+            state_fixture["auth_scope"] = auth_scope
             if case["id"] == "dirty-close":
                 state_fixture["dirty"] = True
             if case["id"] == "empty":
@@ -151,7 +148,14 @@ def test_browser_executes_production_active_workout_states(tmp_path):
                 for logged_set in state_fixture["exercises"][0]["logged_sets"]:
                     logged_set["weight"] = ""
                     logged_set["reps"] = ""
-            run("eval", f"() => window.__aicoach.fit306Qa.showWorkout({json.dumps(state_fixture)})", "--raw")
+            draft = {"version": 1, "saved_at": "2026-01-01T00:00:00Z", "auth_scope": auth_scope, "workout": state_fixture}
+            # Hand the draft to the init script across the navigation; the app's
+            # own boot -> settleActiveWorkoutDraftAfterAuthScope restores it.
+            run("eval", f"() => {{ window.name = 'fit306-draft:' + {json.dumps(json.dumps(draft))}; }}", "--raw")
+            run("goto", f"http://127.0.0.1:{port}/")
+            run("run-code", "async (page) => { await page.locator('#modal-active').waitFor({state:'visible'}); }")
+            if case["id"] == "recovered-draft":
+                assert "Recovered unsaved workout details" in run("eval", "(el) => el.textContent.trim()", "#active-workout-status", "--raw")
 
             if case["id"] == "dirty-close":
                 run("eval", "() => { window.confirm = () => false; document.querySelector('#modal-active .modal-close').click(); }", "--raw")

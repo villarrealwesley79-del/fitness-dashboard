@@ -27,6 +27,7 @@ The test uses the Codex Playwright CLI wrapper when installed. In ordinary CI
 it runs the exact transient `@playwright/cli@0.1.17` package through `npx`; a
 missing runner is a failure, not a skipped browser gate. The test also runs the
 pinned CLI's idempotent Chromium installer before launch so a clean CI worker
-does not depend on a pre-populated browser cache. The query-gated
-`fit306_qa=1` hook is absent during ordinary app navigation and only supplies
-local fixture state to the shipped renderer.
+does not depend on a pre-populated browser cache. Each state is seeded as a real saved active-workout draft in localStorage
+(with the live `auth_scope`) by a Playwright init script, then restored by the
+app's own boot path (`settleActiveWorkoutDraftAfterAuthScope`). No QA hook ships
+in `static/js/app.js`.

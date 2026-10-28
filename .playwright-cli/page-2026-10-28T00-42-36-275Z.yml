@@ -1,0 +1,172 @@
+- generic [ref=f10e1]:
+  - generic [ref=f10e2]:
+    - banner [ref=f10e3]:
+      - generic [ref=f10e4]: AI Coach
+      - button "AI coach status" [ref=f10e6] [cursor=pointer]
+    - main [ref=f10e8]:
+      - tabpanel "◉ Dash" [ref=f10e9]:
+        - generic [ref=f10e10]:
+          - generic [ref=f10e11]: Good evening.
+          - generic [ref=f10e12]: Here's your analysis for Tuesday.
+        - generic [ref=f10e13]:
+          - generic [ref=f10e14]:
+            - generic [ref=f10e15]: READINESS SCORE
+            - generic [ref=f10e16]: ›
+          - generic [ref=f10e19]:
+            - generic [ref=f10e20]:
+              - generic [ref=f10e21]: HRV
+              - generic [ref=f10e22]: "--"
+            - generic [ref=f10e23]:
+              - generic [ref=f10e24]: RHR
+              - generic [ref=f10e25]: "--"
+            - generic [ref=f10e26]:
+              - generic [ref=f10e27]: Sleep
+              - generic [ref=f10e28]: "--"
+        - generic [ref=f10e29]:
+          - generic [ref=f10e30]:
+            - generic [ref=f10e31]: AI RECOMMENDATION
+            - generic [ref=f10e32]: 62%
+          - generic [ref=f10e35]: Normal Training - Choose Session Based On Your Plan
+          - generic [ref=f10e36]:
+            - generic [ref=f10e126]: Full Body · Moderate
+            - generic [ref=f10e37]: Target intensity · RPE 7.5
+            - generic [ref=f10e127]: 74 min
+          - generic [ref=f10e38]: "HRV trend stable; Time of day: evening. No food logged yet. Log meals for personalized macro guidance."
+          - generic [ref=f10e39]:
+            - button "Start Workout" [ref=f10e40] [cursor=pointer]
+            - button "Adjust Plan" [ref=f10e41] [cursor=pointer]
+          - generic [ref=f10e42]:
+            - generic "WHOOP is not connected" [ref=f10e128]: WHOOP · disconnected
+            - generic "Oura freshness" [ref=f10e44]: Oura · no data
+            - generic "Apple Health freshness · no data received" [ref=f10e129]: Apple · no data
+            - generic "Food log freshness" [ref=f10e46]: No food logged today
+          - generic [ref=f10e47]:
+            - generic [ref=f10e48]:
+              - generic [ref=f10e49]: Recommendation sources
+              - generic [ref=f10e50]: Using Open Wearables for display only, Apple Health for load source.
+              - generic [ref=f10e51]: WHOOP · missing · Oura · missing · Apple Health · missing · Open Wearables · missing config
+            - generic [ref=f10e52]:
+              - button "Ask AI" [ref=f10e53] [cursor=pointer]
+              - button "View details" [ref=f10e54] [cursor=pointer]
+        - generic [ref=f10e55]:
+          - generic [ref=f10e56]:
+            - generic [ref=f10e57]: TODAY'S MACROS
+            - generic [ref=f10e58]: no entries
+            - button "View food log ›" [ref=f10e59] [cursor=pointer]
+          - generic [ref=f10e60]:
+            - generic [ref=f10e61]: No food logged today.
+            - generic [ref=f10e62]: Macros will appear after you log a meal.
+          - generic [ref=f10e63]:
+            - generic [ref=f10e64]: Log a meal
+            - generic [ref=f10e66]:
+              - generic "Attach a photo or take one" [ref=f10e67] [cursor=pointer]:
+                - generic [ref=f10e68]: 📷
+                - generic [ref=f10e69]: Attach a photo of the meal or take a new one
+              - button "Scan a packaged-food barcode" [ref=f10e70] [cursor=pointer]:
+                - generic [ref=f10e71]: Scan
+              - textbox "Describe the meal" [ref=f10e73]:
+                - /placeholder: What did you eat?
+              - button "Log" [disabled] [ref=f10e74]
+        - generic [ref=f10e75]: TODAY AT A GLANCE
+        - generic [ref=f10e76]:
+          - generic [ref=f10e77]:
+            - generic [ref=f10e78]: Steps
+            - generic [ref=f10e79]: "--"
+            - generic [ref=f10e80]: Pending sync
+          - generic [ref=f10e81]:
+            - generic [ref=f10e82]: Active Cal
+            - generic [ref=f10e83]: "--"
+          - generic [ref=f10e85]:
+            - generic [ref=f10e86]: Sleep
+            - generic [ref=f10e87]: "--"
+            - generic [ref=f10e88]: —
+          - generic [ref=f10e89]:
+            - generic [ref=f10e90]: Weight
+            - generic [ref=f10e91]: "--"
+            - generic [ref=f10e92]: —
+        - generic [ref=f10e93]:
+          - generic [ref=f10e94]: AI INSIGHT
+          - generic [ref=f10e95]: Training load is low
+          - generic [ref=f10e130]: No workouts logged yet; ACWR unavailable.
+          - generic [ref=f10e96]: —
+        - group [ref=f10e97]:
+          - generic "QUICK TRENDS" [ref=f10e98] [cursor=pointer]: ›
+    - tablist "Primary sections" [ref=f10e101]:
+      - tab "◉ Dash" [selected] [ref=f10e102] [cursor=pointer]:
+        - generic [ref=f10e103]: ◉
+        - generic [ref=f10e104]: Dash
+      - tab "♥ Vitals" [ref=f10e105] [cursor=pointer]:
+        - generic [ref=f10e106]: ♥
+        - generic [ref=f10e107]: Vitals
+      - tab "▲ Next" [ref=f10e108] [cursor=pointer]:
+        - generic [ref=f10e109]: ▲
+        - generic [ref=f10e110]: Next
+      - tab "+ Log" [ref=f10e111] [cursor=pointer]:
+        - generic [ref=f10e112]: +
+        - generic [ref=f10e113]: Log
+      - tab "⟳ History" [ref=f10e114] [cursor=pointer]:
+        - generic [ref=f10e115]: ⟳
+        - generic [ref=f10e116]: History
+      - tab "◈ Body" [ref=f10e117] [cursor=pointer]:
+        - generic [ref=f10e118]: ◈
+        - generic [ref=f10e119]: Body
+      - tab "⎔ Stats" [ref=f10e120] [cursor=pointer]:
+        - generic [ref=f10e121]: ⎔
+        - generic [ref=f10e122]: Stats
+      - tab "⚙ Settings" [ref=f10e123] [cursor=pointer]:
+        - generic [ref=f10e124]: ⚙
+        - generic [ref=f10e125]: Settings
+  - dialog [ref=f10e135]:
+    - generic [ref=f10e136]:
+      - generic [ref=f10e137]:
+        - heading "Upper Workout" [level=3] [ref=f10e138]
+        - button "close" [active] [ref=f10e139] [cursor=pointer]: ✕
+      - generic [ref=f10e140]:
+        - generic [ref=f10e141]: Set 1 of 3 · 1 exercise left
+        - generic [ref=f10e142]:
+          - generic [ref=f10e143]:
+            - generic [ref=f10e144]:
+              - heading "Chest Press" [level=4] [ref=f10e145]
+              - generic [ref=f10e146]: 3 × 10 · 90 lb · RPE 7
+            - generic [ref=f10e147]:
+              - button "Swap Chest Press" [ref=f10e148] [cursor=pointer]: ⇄
+              - button "Remove Chest Press" [ref=f10e149] [cursor=pointer]: ×
+          - generic [ref=f10e150]:
+            - generic [ref=f10e151]: "1"
+            - spinbutton "Weight" [ref=f10e152]: "90"
+            - spinbutton "Reps" [ref=f10e153]: "10"
+            - generic "mark set done" [ref=f10e154] [cursor=pointer]:
+              - checkbox "mark set done" [ref=f10e155]
+            - textbox "Set notes" [ref=f10e156]
+          - generic [ref=f10e157]:
+            - generic [ref=f10e158]: "2"
+            - spinbutton "Weight" [ref=f10e159]: "90"
+            - spinbutton "Reps" [ref=f10e160]: "10"
+            - generic "mark set done" [ref=f10e161] [cursor=pointer]:
+              - checkbox "mark set done" [ref=f10e162]
+            - textbox "Set notes" [ref=f10e163]
+          - generic [ref=f10e164]:
+            - generic [ref=f10e165]: "3"
+            - spinbutton "Weight" [ref=f10e166]: "90"
+            - spinbutton "Reps" [ref=f10e167]: "10"
+            - generic "mark set done" [ref=f10e168] [cursor=pointer]:
+              - checkbox "mark set done" [ref=f10e169]
+            - textbox "Set notes" [ref=f10e170]
+        - generic [ref=f10e171]:
+          - generic [ref=f10e173]:
+            - heading "Cardio Follow-Up" [level=4] [ref=f10e174]
+            - generic [ref=f10e175]: Bike · 15 min
+          - generic [ref=f10e176]:
+            - checkbox "Completed recommended cardio" [ref=f10e177]
+            - generic [ref=f10e178]: Completed recommended cardio
+          - generic [ref=f10e179]:
+            - textbox "Cardio type" [ref=f10e180]: Bike
+            - spinbutton "Minutes" [ref=f10e181]: "15"
+          - textbox "Cardio notes" [ref=f10e182]
+      - generic [ref=f10e183]:
+        - generic [ref=f10e187]: Server reported a conflict — see the sync queue.
+        - generic [ref=f10e184]:
+          - button "Adjust Plan" [ref=f10e185] [cursor=pointer]
+          - button "Complete Workout" [ref=f10e186] [cursor=pointer]
+  - button "1 failed" [ref=f10e188] [cursor=pointer]
+  - generic: Sync conflict
