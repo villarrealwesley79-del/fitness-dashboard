@@ -78,7 +78,7 @@ def test_legacy_low_calorie_food_rows_never_cut_volume(empty_app, monkeypatch):
     monkeypatch.setattr(empty_app, "generate_next_workout", lambda *_a, **_kw: json.loads(json.dumps(base)))
     conn = sqlite3.connect(data_store.DATA_DB)
     conn.execute("CREATE TABLE IF NOT EXISTS food_logs (user_id INTEGER, date TEXT, calories REAL)")
-    conn.execute("INSERT INTO food_logs VALUES (1, ?, 150)", (empty_app._today_str(),))
+    conn.execute("INSERT INTO food_logs (user_id, date, calories) VALUES (1, ?, 150)", (empty_app._today_str(),))
     conn.commit()
     conn.close()
     client = empty_app.app.test_client()
