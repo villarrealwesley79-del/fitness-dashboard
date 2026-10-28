@@ -13,8 +13,6 @@ DEFAULT_SETTINGS = {
     "available_time_minutes": 75,
     "target_weight_lbs": 175,
     "target_body_fat_pct": 18,
-    "daily_calorie_target": 2200,
-    "daily_protein_target_g": 148,
     "fatigue_threshold": 72,
     "equipment_preference": "machines_only",
     "preferred_equipment_brands": ["Hoist", "Nautilus"],

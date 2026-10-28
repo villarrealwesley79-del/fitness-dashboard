@@ -21,7 +21,6 @@ def fitness_app(monkeypatch):
     monkeypatch.setattr(module, "CARDIO_DATA", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     return module
 
 

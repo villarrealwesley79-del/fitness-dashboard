@@ -500,14 +500,52 @@ def test_enabled_mode_accepts_same_origin_reads(tmp_path, monkeypatch, headers):
     assert response.get_json()["user_id"] == "1"
 
 
-def test_factory_preview_does_not_enable_no_login():
-    config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
-
-    assert "FITNESS_DASHBOARD_NO_LOGIN" not in config
-
-
 def test_readme_documents_direct_tailnet_bind_without_broad_bind():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
 
     assert 'HOST="$("/Applications/Tailscale.app/Contents/MacOS/Tailscale" ip -4' in readme
     assert "HOST=0.0.0.0" not in readme
+
+
+@pytest.fixture
+def trusted_no_login_app(isolated_app, monkeypatch, tmp_path):
+    import auth
+
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.sqlite3"))
+    auth.init_auth_db()
+    auth.User.create("owner", "review-test-password")
+    monkeypatch.setenv("FITNESS_DASHBOARD_NO_LOGIN", "true")
+    monkeypatch.setitem(isolated_app.app.config, "LOGIN_DISABLED", False)
+    return isolated_app
+
+
+def test_cross_site_whoop_callback_with_remembered_ow_state_succeeds_once(trusted_no_login_app, monkeypatch):
+    """Port of deleted test_no_login_mode_allows_state_validated_cross_site_callback (OW path)."""
+    import auth
+
+    module = trusted_no_login_app
+    calls = []
+    monkeypatch.setattr(module, "_open_wearables_complete_oauth_callback", lambda p, c, s: calls.append((p, c, s)) or True)
+    auth.remember_trusted_no_login_oauth_state("ow-state-1")  # what the OW authorize step does
+    client = module.app.test_client()
+
+    first = client.get("/api/whoop/callback?state=ow-state-1&code=c", headers={"Sec-Fetch-Site": "cross-site", "Accept": "application/json"})
+    replay = client.get("/api/whoop/callback?state=ow-state-1&code=c", headers={"Sec-Fetch-Site": "cross-site", "Accept": "application/json"})
+
+    assert first.status_code == 200, first.get_data(as_text=True)
+    assert first.get_json() == {"status": "success", "provider": "whoop", "source": "open_wearables"}
+    assert replay.status_code == 401
+    assert calls == [("whoop", "c", "ow-state-1")]
+
+
+def test_cross_site_whoop_callback_with_unknown_state_is_rejected_before_route_work(trusted_no_login_app, monkeypatch):
+    """Port of deleted test_no_login_mode_rejects_unrecognized_cross_site_callback_before_route_work."""
+    module = trusted_no_login_app
+    monkeypatch.setattr(
+        module, "_open_wearables_complete_oauth_callback",
+        lambda *_a: pytest.fail("unknown cross-site state reached Open Wearables"),
+    )
+    response = module.app.test_client().get(
+        "/api/whoop/callback?state=attacker-state&code=c", headers={"Sec-Fetch-Site": "cross-site"}
+    )
+    assert response.status_code == 401

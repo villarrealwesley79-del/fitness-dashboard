@@ -16,71 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # literal) tuple; there are no wildcards or semantic patterns.
 APP_JS_SOURCE_ASSERTION_ALLOWLIST = {
     (
-        "tests/test_fit145_offline_queue.py",
-        "test_meal_queue_uses_versioned_indexeddb_schema",
-        "const MEAL_QUEUE_DB_NAME = 'fitMealIntakeQueueDB';",
-    ): "Stable IndexedDB database name contract.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_meal_queue_uses_versioned_indexeddb_schema",
-        "const MEAL_QUEUE_DB_VERSION = 1;",
-    ): "Stable IndexedDB schema version contract.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_meal_queue_uses_versioned_indexeddb_schema",
-        "const MEAL_QUEUE_STORE = 'queued_meals';",
-    ): "Stable IndexedDB metadata store name.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_meal_queue_uses_versioned_indexeddb_schema",
-        "const MEAL_PHOTO_STORE = 'meal_photos';",
-    ): "Stable IndexedDB photo store name.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_sync_ui_includes_meal_retry_discard_and_privacy_copy",
-        "data-meal-sync-retry",
-    ): "Stable generated retry control attribute.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_sync_ui_includes_meal_retry_discard_and_privacy_copy",
-        "data-meal-sync-discard",
-    ): "Stable generated discard control attribute.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "test_sync_ui_includes_meal_retry_discard_and_privacy_copy",
-        "Meal · ${escapeHtml(titleText)}",
-    ): "Stable generated meal row label markup.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "_fit145_block",
-        "// FIT-145: meal-intake offline queue.",
-    ): "Stable FIT-145 source block boundary marker.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "_fit145_block",
-        "function completeWorkout()",
-    ): "Stable FIT-145 source block boundary marker.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "_fit145_storage_block",
-        "function mealQueueRequest(",
-    ): "Stable FIT-145 storage source block boundary marker.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "_fit145_storage_block",
-        "function renderSyncBanner()",
-    ): "Stable FIT-145 storage source block boundary marker.",
-    (
-        "tests/test_fit145_offline_queue.py",
-        "_app_js_block",
-        "<indirect:start>",
-    ): "Legacy generic source block helper validates caller markers.",
-    (
-        "tests/test_personal_vocab.py",
-        "test_settings_ui_does_not_expose_learned_vocabulary_card",
-        "/api/personal-vocab",
-    ): "Stable negative UI endpoint exposure contract.",
-    (
         "tests/test_workout_sync_queue_js.py",
         "test_frontend_asset_versions_stay_in_sync",
         "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';",
@@ -576,24 +511,10 @@ def _app_js_assertion_offenders(relative_path, source):
 
 def test_shared_app_bootstrap_uses_pytest_tmp_path():
     conftest = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
-    meal_tests = (ROOT / "tests" / "test_meal_intake_api.py").read_text(encoding="utf-8")
 
     assert "def isolated_app(" in conftest
     assert "tmp_path" in conftest.split("def isolated_app(", 1)[1].split("\n\n", 1)[0]
     assert 'SECRET_KEY="fitness-dashboard-pytest-secret"' in conftest
-    assert "tempfile.mkdtemp" not in meal_tests
-    assert "def _client(" not in meal_tests
-
-
-def test_named_date_contracts_do_not_read_wall_clock_directly():
-    for relative_path in (
-        "tests/test_food_logs_by_date.py",
-        "tests/test_nutrition_history_breakdown.py",
-        "tests/test_meal_intake_api.py",
-    ):
-        source = (ROOT / relative_path).read_text(encoding="utf-8")
-        assert "datetime.now()" not in source, relative_path
-        assert "module.datetime.now()" not in source, relative_path
 
 
 def _pytest_test_module_paths(root):
@@ -797,17 +718,15 @@ def test_shared_runtime_scenario_cannot_extract_source_through_prototype_constru
 
 def test_shared_runtime_wrapper_does_not_pass_raw_function_to_mutated_reflect_apply():
     result = run_app_js(
-        ["workoutAdaptationIsRenderable"],
+        ["capitalize"],
         """
 let leaked = null;
-Reflect.apply = (target) => { leaked = target; return false; };
-const renderable = e.workoutAdaptationIsRenderable({
-  id: 'event-1', status: 'applied', change_type: 'changed',
-});
-process.stdout.write(JSON.stringify({ renderable, leaked: leaked !== null }));
+Reflect.apply = (target) => { leaked = target; return ''; };
+const value = e.capitalize('abc');
+process.stdout.write(JSON.stringify({ value, leaked: leaked !== null }));
 """,
     )
-    assert result == {"renderable": True, "leaked": False}
+    assert result == {"value": "Abc", "leaked": False}
 
 
 def test_shared_runtime_scenario_cannot_reach_unwrapped_exports_through_sandbox():
@@ -1104,17 +1023,17 @@ def test_app_js_guard_does_not_trust_direct_node_subprocesses():
 
 
 def test_app_js_guard_accepts_only_exact_allowlist_tuples():
-    literal = "const MEAL_QUEUE_DB_VERSION = 1;"
+    literal = "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;"
     source = dedent(
         f"""
         APP_JS = Path('static/js/app.js').read_text()
-        def test_meal_queue_uses_versioned_indexeddb_schema():
+        def test_frontend_asset_versions_stay_in_sync():
             assert {literal!r} in APP_JS
         """
     )
 
     assert _app_js_assertion_offenders(
-        "tests/test_fit145_offline_queue.py", source
+        "tests/test_workout_sync_queue_js.py", source
     ) == []
     assert _app_js_assertion_offenders(
         "tests/other.py", source

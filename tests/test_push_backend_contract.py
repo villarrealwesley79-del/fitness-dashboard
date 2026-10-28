@@ -63,12 +63,11 @@ def test_push_subscription_rejects_missing_secret_keys(monkeypatch, tmp_path):
     assert res.get_json()["error"]["code"] == "invalid_push_subscription"
 
 
-def test_push_reminder_preview_surfaces_stale_and_pending_review(monkeypatch, tmp_path):
+def test_push_reminder_preview_surfaces_stale_wearable(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "stale", "last_data_point": "2026-05-17", "last_sync_attempt": "2026-05-17T07:00:00"},
         "apple_health": {"status": "fresh", "last_data_point": "2026-05-18", "last_sync_attempt": "2026-05-18T07:00:00"},
-        "food": {"status": "fresh", "pending_review": True},
     })
     client = module.app.test_client()
     client.post("/api/push/subscriptions", json={"subscription": _subscription()})
@@ -80,39 +79,8 @@ def test_push_reminder_preview_surfaces_stale_and_pending_review(monkeypatch, tm
     assert body["support_state"] == "ready"
     assert body["delivery"] == "preview_only"
     assert body["safety_critical"] is False
-    assert [alert["type"] for alert in body["alerts"]] == [
-        "stale_wearable_data",
-        "pending_food_estimate_review",
-    ]
+    assert [alert["type"] for alert in body["alerts"]] == ["stale_wearable_data"]
     assert all(alert["safety_critical"] is False for alert in body["alerts"])
-
-
-def test_push_reminder_preview_ignores_never_connected_whoop_missing(monkeypatch, tmp_path):
-    module = _app(monkeypatch, tmp_path)
-    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
-        "oura": {"status": "fresh"},
-        "whoop": {"status": "missing", "connected": False, "last_data_point": None},
-        "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh", "pending_review": False},
-    })
-
-    body = module.app.test_client().get("/api/push/reminders/preview").get_json()
-
-    assert body["alerts"] == []
-
-
-def test_push_reminder_preview_ignores_disconnected_historical_whoop_data(monkeypatch, tmp_path):
-    module = _app(monkeypatch, tmp_path)
-    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
-        "oura": {"status": "fresh"},
-        "whoop": {"status": "stale", "connected": False, "last_data_point": "2026-06-01"},
-        "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh", "pending_review": False},
-    })
-
-    body = module.app.test_client().get("/api/push/reminders/preview").get_json()
-
-    assert body["alerts"] == []
 
 
 def test_push_reminder_preview_gracefully_degrades_without_subscription(monkeypatch, tmp_path):
@@ -120,7 +88,6 @@ def test_push_reminder_preview_gracefully_degrades_without_subscription(monkeypa
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
         "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh", "pending_review": False},
     })
 
     body = module.app.test_client().get("/api/push/reminders/preview?permission=denied").get_json()
@@ -135,7 +102,6 @@ def test_push_reminder_preview_uses_stored_subscription_degradation_state(monkey
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
         "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh", "pending_review": False},
     })
     client = module.app.test_client()
     client.post(
@@ -153,7 +119,6 @@ def test_push_subscription_normalizes_invalid_permission_state_before_preview(mo
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
         "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh", "pending_review": False},
     })
     client = module.app.test_client()
 

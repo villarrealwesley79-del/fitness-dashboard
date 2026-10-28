@@ -4,35 +4,26 @@ from recommendation_sources import build_recommendation_source_proof
 def _freshness(**overrides):
     base = {
         "open_wearables": {"status": "fresh"},
-        "whoop": {"status": "fresh"},
         "oura": {"status": "fresh"},
         "apple_health": {"status": "fresh"},
-        "food": {"status": "fresh"},
     }
     base.update(overrides)
     return base
 
 
-def _proof(*, freshness=None, whoop_signals=None, source_inputs=None):
+def _proof(*, freshness=None, source_inputs=None):
     return build_recommendation_source_proof(
         freshness=freshness or _freshness(),
         open_wearables_source={
             "freshness": "fresh",
             "used_for_recommendation": True,
         },
-        whoop_signals=whoop_signals or {
-            "display_only": False,
-            "recovery_score": 42,
-            "applied_modifiers": ["deload"],
-        },
         source_inputs={
             "open_wearables_facts": [{"metric": "sleep_duration"}],
             "open_wearables_modifier_applied": True,
             "oura_fields": ["readiness_score"],
             "oura_modifier_applied": True,
-            "whoop_fields": ["recovery_score"],
             "apple_health_fields": ["recent_workout_load"],
-            "food_fields": ["calories", "protein_g"],
             "weather_fields": ["feelslike_f"],
             "weather_status": "fresh",
             "weather_modifier_applied": True,
@@ -41,12 +32,10 @@ def _proof(*, freshness=None, whoop_signals=None, source_inputs=None):
     )
 
 
-def test_source_proof_has_complete_six_source_contract():
+def test_source_proof_has_complete_four_source_contract():
     proof = _proof()
 
-    assert set(proof) == {
-        "open_wearables", "whoop", "oura", "apple_health", "food", "weather"
-    }
+    assert set(proof) == {"open_wearables", "oura", "apple_health", "weather"}
     for source in proof.values():
         assert set(source) == {
             "used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"
@@ -111,62 +100,14 @@ def test_stale_apple_health_is_reported_used_when_legacy_load_logic_consumed_it(
     assert proof["apple_health"]["ignored_reason"] is None
 
 
-def test_missing_source_is_explicitly_ignored():
-    proof = _proof(
-        freshness=_freshness(food={"status": "missing"}),
-        source_inputs={"food_fields": []},
-    )
-
-    assert proof["food"]["used_for_recommendation"] is False
-    assert proof["food"]["ignored_reason"] == "missing_data"
-
-
-def test_fresh_food_without_adaptation_is_not_claimed_as_used():
+def test_whoop_recovery_is_named_only_as_an_open_wearables_field():
     proof = _proof(source_inputs={
-        "food_fields": [],
-        "food_modifier_applied": False,
-        "food_ignored_reason": "no_workout_adaptation",
+        "open_wearables_facts": [{"metric": "recovery_score", "provider_id": "whoop"}],
     })
 
-    assert proof["food"] == {
-        "used_for_recommendation": False,
-        "fields_used": [],
-        "modifier_applied": False,
-        "ignored_reason": "no_workout_adaptation",
-    }
-
-
-def test_stale_food_is_reported_used_when_an_adaptation_was_applied():
-    proof = _proof(
-        freshness=_freshness(food={"status": "stale"}),
-        source_inputs={
-            "food_fields": ["calories"],
-            "food_modifier_applied": True,
-            "food_used_override": True,
-        },
-    )
-
-    assert proof["food"] == {
-        "used_for_recommendation": True,
-        "fields_used": ["calories"],
-        "modifier_applied": True,
-        "ignored_reason": None,
-    }
-
-
-def test_display_only_whoop_never_claims_recommendation_use():
-    proof = _proof(whoop_signals={
-        "display_only": True,
-        "recovery_score": 42,
-        "applied_modifiers": ["deload"],
-    })
-
-    assert proof["whoop"] == {
-        "used_for_recommendation": False,
-        "fields_used": [],
-        "modifier_applied": False,
-        "ignored_reason": "display_only",
-    }
+    assert "whoop" not in proof
+    assert proof["open_wearables"]["fields_used"] == ["recovery_score"]
+    assert proof["open_wearables"]["modifier_applied"] is True
 
 
 def test_payload_builder_exposes_source_proof_without_removing_existing_contract(monkeypatch):
@@ -180,24 +121,16 @@ def test_payload_builder_exposes_source_proof_without_removing_existing_contract
             "used_for_recommendation": True,
         },
     )
-    whoop_context = {
-        "signals": {"display_only": True, "applied_modifiers": []},
-        "source_conflict": {"has_conflict": False},
-    }
     payload = module._recommendation_sources_payload(
         _freshness(),
-        whoop_context,
         [{"metric": "sleep_duration"}],
         {"applied": True},
-        "apple_health",
         {"oura_fields": ["readiness_score"]},
     )
 
     assert "open_wearables" in payload
-    assert "whoop" in payload
-    assert set(payload["source_proof"]) == {
-        "open_wearables", "whoop", "oura", "apple_health", "food", "weather"
-    }
+    assert "whoop" not in payload
+    assert set(payload["source_proof"]) == {"open_wearables", "oura", "apple_health", "weather"}
 
 
 def test_oura_modifier_tracks_rules_even_when_their_net_category_cancels():

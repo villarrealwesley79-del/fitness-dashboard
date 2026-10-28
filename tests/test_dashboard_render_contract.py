@@ -100,68 +100,32 @@ process.stdout.write(JSON.stringify([
     ]
 
 
-def test_dashboard_whoop_source_markup_is_present():
-    for token in ('id="reco-fresh-whoop"', 'id="btn-reco-sources"', 'id="modal-reco-sources"'):
+def test_dashboard_source_markup_is_present_and_has_no_whoop_chip():
+    for token in ('id="reco-fresh-oura"', 'id="btn-reco-sources"', 'id="modal-reco-sources"'):
         assert token in INDEX_HTML
+    assert 'id="reco-fresh-whoop"' not in INDEX_HTML
 
 
-def test_dashboard_whoop_state_resolver_covers_every_supported_state():
-    output = run_app_js(
-        ["resolveWhoopUiState"],
-        """
-process.stdout.write(JSON.stringify([
-  e.resolveWhoopUiState({ error: 'sync failed' }),
-  e.resolveWhoopUiState({ syncing: true }),
-  e.resolveWhoopUiState({ reauth_required: true }),
-  e.resolveWhoopUiState({ source_kind: 'csv_only' }),
-  e.resolveWhoopUiState({ status: 'missing_config' }),
-  e.resolveWhoopUiState({ connected: false }),
-  e.resolveWhoopUiState({ source_conflict: true }),
-  e.resolveWhoopUiState({ calibrating: true }),
-  e.resolveWhoopUiState({ pending_score: true }),
-  e.resolveWhoopUiState({ unscorable: true }),
-  e.resolveWhoopUiState({ status: 'fresh', connected: true }),
-  e.resolveWhoopUiState({ status: 'aging', connected: true }),
-  e.resolveWhoopUiState({ status: 'stale', connected: true }),
-  e.resolveWhoopUiState({ has_data: false, connected: true }),
-  e.resolveWhoopUiState({ connected_at: '2026-07-16T00:00:00Z' }),
-  e.resolveWhoopUiState(null),
-]));
-""",
-    )
-    assert output == [
-        "error", "syncing", "reauth_required", "csv_only", "missing_config",
-        "disconnected", "source_conflict", "calibrating", "pending_score", "unscorable",
-        "fresh", "aging", "stale", "missing", "connected", "disconnected",
-    ]
-
-
-def test_dashboard_painter_merges_whoop_status_into_recommendation_sources():
+def test_dashboard_painter_passes_open_wearables_freshness_to_recommendation_sources():
     output = run_app_js(
         ["paintDashboardFromState", "state"],
         """
 const captured = [];
 e.state.dashboard = {
   freshness: {
-    whoop: { status: 'stale', score_state: 'pending_score', last_data_point: '2026-07-10' },
+    open_wearables: { status: 'fresh' },
     oura: { status: 'fresh' },
   },
 };
 e.state.reco = { suggested_workout: 'strength' };
-e.state.whoopStatus = {
-  connected: true,
-  status: 'connected',
-  last_successful_sync_at: '2026-07-16T12:00:00Z',
-};
 sandbox.__fitSet.renderFreshnessChips(() => {});
 sandbox.__fitSet.renderRecommendationSourceSummary((dash, reco, freshness) => {
   captured.push({
     sameDash: dash === e.state.dashboard,
     sameReco: reco === e.state.reco,
-    whoop: freshness.whoop,
+    freshness,
   });
 });
-sandbox.__fitSet.renderMacroCard(() => {});
 sandbox.__fitSet.sparkline(() => {});
 sandbox.__fitSet.paintRetryChip(() => {});
 e.paintDashboardFromState();
@@ -169,20 +133,13 @@ process.stdout.write(JSON.stringify(captured));
 """,
         mocks=[
             "renderFreshnessChips", "renderRecommendationSourceSummary",
-            "renderMacroCard", "sparkline", "paintRetryChip",
+            "sparkline", "paintRetryChip",
         ],
     )
     assert output == [{
         "sameDash": True,
         "sameReco": True,
-        "whoop": {
-            "status": "stale",
-            "score_state": "pending_score",
-            "last_data_point": "2026-07-10",
-            "connected": True,
-            "last_successful_sync_at": "2026-07-16T12:00:00Z",
-            "ui_state": "pending_score",
-        },
+        "freshness": {"open_wearables": {"status": "fresh"}, "oura": {"status": "fresh"}},
     }]
 
 
@@ -213,3 +170,33 @@ process.stdout.write(JSON.stringify({ empty, malformed }));
         "empty": '<div class="empty">Log a few workouts to start tracking progress.</div>',
         "malformed": '<div class="empty">Log a few workouts to start tracking progress.</div>',
     }
+
+
+def test_dashboard_counts_whoop_via_open_wearables_as_wearable_data():
+    output = run_app_js(
+        ["paintDashboardFromState", "state"],
+        """
+const element = () => ({
+  textContent: '', innerHTML: '', hidden: false, firstChild: null,
+  classList: { toggle() {}, remove() {}, add() {}, contains() { return false; } }, removeChild() {},
+});
+['readiness-gauge-svg', 'dash-hrv', 'dash-rhr', 'dash-sleep', 'reco-title', 'reco-intensity', 'reco-why',
+ 'reco-confidence-pct', 'insight-title', 'insight-body'].forEach((id) => { sandbox.elements[id] = element(); });
+sandbox.__fitSet.gaugeChart(() => {});
+const missing = { status: 'missing' };
+const paint = (openWearablesUsed) => {
+  e.state.oura = null; e.state.ouraSleep = null;
+  e.state.dashboard = {
+    freshness: { oura: missing, apple_health: missing },
+    recommendation_sources: { open_wearables: { used_for_recommendation: openWearablesUsed } },
+  };
+  e.state.reco = { recommendation: 'strength', reasoning: 'WHOOP recovery 80' };
+  e.paintDashboardFromState();
+  return sandbox.elements['reco-why'].textContent;
+};
+process.stdout.write(JSON.stringify({ withOw: paint(true), withoutOw: paint(false) }));
+""",
+        mocks=["gaugeChart"],
+    )
+    assert "No recent wearable data" not in output["withOw"]
+    assert "No recent wearable data" in output["withoutOw"]

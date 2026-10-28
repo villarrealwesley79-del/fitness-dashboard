@@ -29,7 +29,6 @@ def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "CARDIO_DATA", [])
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     module.LAST_WORKOUT_RECOMMENDATION = None
     module.LAST_WORKOUT_RECOMMENDATION_OWNER = None
     yield module

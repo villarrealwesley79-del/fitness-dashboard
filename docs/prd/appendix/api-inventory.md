@@ -140,15 +140,7 @@ Auth values used below:
 
 | Method(s) | Path | Auth | Purpose | Owning PRD |
 | --- | --- | --- | --- | --- |
-| GET | `/api/whoop/status` | session/owner | Return WHOOP connection, freshness, score state, conflict, and status summary. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| POST | `/api/whoop/connect/start` | session/owner | Create OAuth state and return WHOOP authorization URL. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| GET | `/api/whoop/callback` | session/owner | Consume OAuth callback, validate state, store protected token material, and trigger projection. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| POST | `/api/whoop/disconnect` | session/owner | Revoke/disconnect token state without deleting local WHOOP data. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| POST | `/api/whoop/delete-data` | session/owner | Delete local WHOOP-derived data and import history. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| POST | `/api/whoop/sync` | session/owner | Sync WHOOP API records into local SQLite, guarded by lock. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| POST | `/api/whoop/import-csv` | session/owner | Import bounded UTF-8 WHOOP CSV/export rows. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| GET | `/api/whoop/imports` | session/owner | List recent manual CSV import runs. | [../09-whoop-integration.md](../09-whoop-integration.md) |
-| GET | `/api/whoop/recommendation-signals` | session/owner | Return WHOOP modifier signals used by recommendation. | [../09-whoop-integration.md](../09-whoop-integration.md) |
+| GET | `/api/whoop/callback` | session/owner | WHOOP OAuth redirect; hands the code and state to Open Wearables (no tokens kept). | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 
 ## Open Wearables And Wearable Facts
 

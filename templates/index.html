@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0b1120">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>AI Coach Feed</title>
+    <title>Fitness Dashboard</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/static/css/style.css?v=20260716-fit392-rpe">
     <link rel="stylesheet" href="/static/css/app.css?v=20260713-fit233-adaptation-polling">
@@ -15,26 +15,9 @@
     <div class="app-shell">
         <header class="app-header">
             <div class="app-header-left">
-                <div class="app-header-title" id="app-header-title">AI Coach</div>
+                <div class="app-header-title" id="app-header-title">Fitness</div>
             </div>
-            <button class="app-header-ai" id="btn-ai-status" aria-label="AI coach status" type="button" title="AI coach status">
-                <span class="ai-dot" id="ai-status-dot"></span>
-            </button>
         </header>
-
-        <div id="popover-ai" class="popover-ai" hidden>
-            <div class="popover-arrow"></div>
-            <div class="popover-title">AI Coach · Primary / fallback</div>
-            <div class="popover-grid">
-                <div><div class="pop-label">Reachable</div><div class="pop-value" id="pop-reachable">—</div></div>
-                <div><div class="pop-label">Model Loaded</div><div class="pop-value" id="pop-model-loaded">—</div></div>
-                <div><div class="pop-label">24h Requests</div><div class="pop-value" id="pop-requests">—</div></div>
-                <div><div class="pop-label">Avg Latency</div><div class="pop-value" id="pop-latency">—</div></div>
-                <div><div class="pop-label">Cache Hit</div><div class="pop-value" id="pop-cache">—</div></div>
-                <div><div class="pop-label">Fallbacks</div><div class="pop-value" id="pop-fallbacks">—</div></div>
-            </div>
-            <div class="popover-foot" id="pop-foot">—</div>
-        </div>
 
         <main class="app-main">
 
@@ -63,7 +46,7 @@
 
             <div class="card reco-card">
                 <div class="reco-head">
-                    <div class="reco-badge">AI RECOMMENDATION</div>
+                    <div class="reco-badge">RECOMMENDATION</div>
                     <button type="button" class="chip chip-retry" id="reco-retry" hidden aria-live="polite">Couldn’t load · retry</button>
                     <div class="reco-confidence"><span class="reco-conf-dot"></span><span id="reco-confidence-pct">--%</span></div>
                 </div>
@@ -82,25 +65,16 @@
                     <button id="btn-adjust-plan" class="btn btn-ghost" type="button">Adjust Plan</button>
                 </div>
                 <div class="reco-freshness" id="reco-freshness">
-                    <span class="state-chip" id="reco-fresh-whoop" data-source="whoop" title="WHOOP freshness">WHOOP —</span>
                     <span class="state-chip" id="reco-fresh-oura" data-source="oura" title="Oura freshness">Oura —</span>
                     <span class="state-chip" id="reco-fresh-apple" data-source="apple_health" title="Apple Health freshness">Apple —</span>
-                    <span class="state-chip" id="reco-fresh-food" data-source="food" title="Food log freshness">Food —</span>
                 </div>
                 <div class="reco-source-strip" id="reco-source-strip">
                     <div class="reco-source-copy">
                         <div class="reco-source-eyebrow">Recommendation sources</div>
                         <div class="reco-source-summary" id="reco-sources-summary">Waiting for wearable source detail…</div>
-                        <div class="reco-source-note" id="reco-sources-note">Source attribution stays visible when recovery data ages or conflicts.</div>
+                        <div class="reco-source-note" id="reco-sources-note">Source attribution stays visible when recovery data ages.</div>
                     </div>
                     <div class="reco-source-actions">
-                        <button
-                            id="btn-open-ai-fact-query"
-                            class="btn btn-ghost btn-sm"
-                            type="button"
-                            aria-haspopup="dialog"
-                            aria-controls="modal-ai-fact-query"
-                        >Ask AI</button>
                         <button
                             id="btn-reco-sources"
                             class="btn btn-ghost btn-sm"
@@ -111,119 +85,7 @@
                         >View details</button>
                     </div>
                 </div>
-                <div id="reco-source-conflict" class="reco-source-conflict" hidden aria-live="polite"></div>
             </div>
-
-            <div class="card macro-card" id="macro-card">
-                <div class="card-head">
-                    <div class="card-label">TODAY'S MACROS</div>
-                    <div class="card-sub" id="macro-card-sub">—</div>
-                    <button type="button" class="card-link card-link-btn" id="btn-view-food-log"
-                            aria-haspopup="dialog" aria-controls="modal-food-log">View food log ›</button>
-                </div>
-                <div class="macro-empty" id="macro-empty">
-                    <div class="empty-text">No food logged today.</div>
-                    <div class="empty-hint">Macros will appear after you log a meal.</div>
-                </div>
-                <div class="macro-body" id="macro-body" hidden>
-                    <div class="macro-row" data-macro="calories">
-                        <div class="macro-label">Calories</div>
-                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-cal-fill"></div></div>
-                        <div class="macro-values"><span id="macro-cal-consumed">0</span> / <span id="macro-cal-target">0</span></div>
-                    </div>
-                    <div class="macro-row" data-macro="protein">
-                        <div class="macro-label">Protein</div>
-                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-protein-fill"></div></div>
-                        <div class="macro-values"><span id="macro-protein-consumed">0</span> / <span id="macro-protein-target">0</span> g</div>
-                    </div>
-                    <div class="macro-row" data-macro="carbs">
-                        <div class="macro-label">Carbs</div>
-                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-carbs-fill"></div></div>
-                        <div class="macro-values"><span id="macro-carbs-consumed">0</span> / <span id="macro-carbs-target">0</span> g</div>
-                    </div>
-                    <div class="macro-row" data-macro="fat">
-                        <div class="macro-label">Fat</div>
-                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-fat-fill"></div></div>
-                        <div class="macro-values"><span id="macro-fat-consumed">0</span> / <span id="macro-fat-target">0</span> g</div>
-                    </div>
-                    <div class="macro-row macro-sodium" data-macro="sodium">
-                        <div class="macro-label">Sodium</div>
-                        <div class="macro-values"><span id="macro-sodium-total">0</span> mg</div>
-                    </div>
-                </div>
-                <div id="food-context-chips" class="food-context-chips" hidden></div>
-                <div id="food-context-nextday" class="food-context-nextday" hidden></div>
-
-                <!-- FIT-60: Universal meal composer (text or photo → AI auto-log) -->
-                <form class="meal-composer" id="meal-composer" autocomplete="off" novalidate>
-                    <div class="meal-composer-head">
-                        <span class="meal-composer-label">Log a meal</span>
-                        <span class="meal-composer-status" id="meal-composer-status" hidden></span>
-                    </div>
-                    <div class="meal-composer-row">
-                        <label class="meal-composer-camera" for="meal-composer-image" title="Attach a photo or take one">
-                            <span aria-hidden="true">📷</span>
-                            <span class="visually-hidden">Attach a photo of the meal or take a new one</span>
-                            <!-- FIT-91: no `capture` attribute so iOS/Android shows the native
-                                 "Take Photo / Photo Library" action sheet instead of forcing
-                                 live capture. `accept="image/*"` keeps non-image files filtered.
-                                 FIT-138: `multiple` allows up to 4 photos per meal as one
-                                 combined context (validated client- and server-side). -->
-                            <input type="file" id="meal-composer-image" accept="image/*" multiple hidden>
-                        </label>
-                        <button type="button" class="meal-composer-scan" id="meal-composer-scan" title="Scan a packaged-food barcode">
-                            <span aria-hidden="true">Scan</span>
-                            <span class="visually-hidden">Scan a packaged-food barcode</span>
-                        </button>
-                        <input
-                            type="text"
-                            class="meal-composer-input"
-                            id="meal-composer-text"
-                            placeholder="What did you eat?"
-                            maxlength="500"
-                            aria-label="Describe the meal"
-                            inputmode="text"
-                            enterkeyhint="send"
-                        >
-                        <button type="submit" class="meal-composer-submit" id="meal-composer-submit" disabled>Log</button>
-                    </div>
-                    <!-- FIT-138: multi-photo thumb strip; each thumb has its own × remove. -->
-                    <div class="meal-composer-thumbs" id="meal-composer-thumbs" hidden role="list" aria-label="Attached photos"></div>
-                    <div class="meal-composer-retention" id="meal-composer-retention" hidden>Photos are discarded after extraction.</div>
-                    <div class="meal-composer-barcode" id="meal-composer-barcode" hidden>
-                        <div class="meal-composer-barcode-head">
-                            <span>Barcode lookup</span>
-                            <button type="button" class="meal-composer-barcode-close" id="meal-composer-barcode-close" aria-label="Close barcode lookup">Close</button>
-                        </div>
-                        <video class="meal-composer-barcode-video" id="meal-composer-barcode-video" playsinline muted hidden></video>
-                        <div class="meal-composer-barcode-manual" id="meal-composer-barcode-manual">
-                            <input
-                                type="text"
-                                id="meal-composer-barcode-input"
-                                inputmode="numeric"
-                                pattern="[0-9]*"
-                                maxlength="32"
-                                placeholder="Enter barcode"
-                                aria-label="Barcode number"
-                            >
-                            <button type="submit" class="btn btn-ghost" id="meal-composer-barcode-submit">Look up</button>
-                        </div>
-                        <div class="meal-composer-barcode-status" id="meal-composer-barcode-status" aria-live="polite"></div>
-                    </div>
-                    <button type="button" class="meal-composer-retry" id="meal-composer-retry" hidden>Retry</button>
-                    <div class="meal-composer-offline" id="meal-composer-offline" hidden aria-live="polite">You’re offline. Log is paused — tap <b>Save offline</b> to keep this meal on this device and sync it when you reconnect.</div>
-                    <div class="meal-composer-error" id="meal-composer-error" hidden aria-live="polite"></div>
-                </form>
-
-                <!-- FIT-60/FIT-80: Inline pending-review rows with estimate source provenance. -->
-                <div class="meal-pending-list" id="meal-pending-list" aria-live="polite" data-provenance-surface="meal-estimates"></div>
-            </div>
-
-            <!-- FIT-137: nutrition-driven workout-adaptation confirmation. Rendered by
-                 app.js (showWorkoutAdaptationNotice) ONLY when FIT-136 reports an
-                 applied change to today's plan. Stays empty/hidden on no-change or
-                 low-confidence events, and never surfaces the adaptation audit log. -->
-            <div id="workout-adaptation-host" class="workout-adaptation-host" hidden aria-live="polite"></div>
 
             <div class="section-title">TODAY AT A GLANCE</div>
             <div class="glance-grid">
@@ -251,7 +113,7 @@
 
             <div class="card insight-card">
                 <div class="insight-head">
-                    <span class="insight-tag">AI INSIGHT</span>
+                    <span class="insight-tag">INSIGHT</span>
                     <button type="button" class="chip chip-retry" id="insight-retry" hidden aria-live="polite">Couldn’t load · retry</button>
                 </div>
                 <div class="insight-title" id="insight-title">Gathering data…</div>
@@ -374,10 +236,10 @@
 
         <!-- ============ NEXT WORKOUT TAB ============ -->
         <section id="tab-workout" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-workout" aria-hidden="true">
-            <div class="tab-title-row"><h2 class="tab-title">Next Workout</h2><span class="tab-sub">AI-Designed Plan</span></div>
+            <div class="tab-title-row"><h2 class="tab-title">Next Workout</h2><span class="tab-sub">Rule-Based Plan</span></div>
 
             <div class="card hero-card">
-                <div class="hero-badge">AI RECOMMENDED PLAN</div>
+                <div class="hero-badge">RECOMMENDED PLAN</div>
                 <div class="hero-title" id="nw-title">—</div>
                 <div class="hero-sub" id="nw-sub">Loading…</div>
                 <div class="hero-chips">
@@ -587,16 +449,6 @@
                 </div>
             </div>
 
-            <!-- FIT-13: honest interpretation of recent scale movements
-                 with food context (high sodium / late meals / pending
-                 estimates). Hidden by default; revealed only when there
-                 IS context to share so the body view doesn't get noisy
-                 on quiet days. -->
-            <div class="card body-interpretation-card" id="body-interpretation-card" hidden>
-                <div class="card-head"><div class="card-label">INTERPRETATION</div></div>
-                <ul id="body-interpretation-notes" class="body-interpretation-list"></ul>
-            </div>
-
             <!-- FIT-13: target progress against settings goals. Surfaces
                  the recomp signal the /api/body-recomp summary already
                  computes (current vs target weight/BF, weeks-to-target). -->
@@ -620,18 +472,6 @@
             <div class="card">
                 <div class="card-head"><div class="card-label">COMPOSITION</div><div class="card-sub" id="measurements-date">—</div></div>
                 <div id="measurements-grid" class="measurement-grid"></div>
-            </div>
-
-            <!-- FIT-13: 14-day nutrition trend rolled up from /api/nutrition-history.
-                 Surfaces target adherence per day plus distinguishes estimated
-                 vs corrected entries so the user can see which days' totals
-                 are firm vs AI-guessed. -->
-            <div class="card body-nutrition-card" id="body-nutrition-card" hidden>
-                <div class="card-head">
-                    <div class="card-label">NUTRITION TREND (14D)</div>
-                    <div class="card-sub" id="body-nutrition-sub">—</div>
-                </div>
-                <div id="body-nutrition-rows" class="body-nutrition-rows"></div>
             </div>
 
             <div class="card">
@@ -766,7 +606,6 @@
             <section class="settings-group" data-group="coaching-setup">
                 <header class="settings-group-head">
                     <span class="settings-group-label">Coaching setup</span>
-                    <span id="settings-group-summary-coaching" class="state-chip state-chip-sm">—</span>
                 </header>
 
                 <div class="settings-subtitle">Training goal</div>
@@ -807,79 +646,6 @@
                     </div>
                 </div>
 
-                <div class="settings-subtitle">AI coach</div>
-                <div class="card">
-                    <!-- FIT-166: card-level headline that surfaces the
-                         active host by friendly name (ASUS GX10 primary,
-                         Mac Studio fallback) so the operator can read
-                         the routing state at a glance without parsing
-                         each row's chip. Three states: Ready,
-                         Fallback active, AI offline. -->
-                    <div class="settings-row ai-coach-headline-row" id="ai-coach-headline-row">
-                        <div class="settings-row-label settings-row-label-stack">
-                            <span class="settings-row-label-main ai-coach-headline">
-                                <span class="int-dot" id="ai-coach-headline-dot"></span>
-                                <span id="ai-coach-headline-state">Checking…</span>
-                                <span class="ai-coach-headline-sep" id="ai-coach-headline-sep" aria-hidden="true">·</span>
-                                <span id="ai-coach-headline-host">AI coach</span>
-                            </span>
-                            <span id="ai-coach-headline-detail" class="settings-row-detail">Polling /api/ai/health…</span>
-                        </div>
-                        <div class="settings-row-control">
-                            <span id="ai-coach-headline-chip" class="state-chip">—</span>
-                        </div>
-                    </div>
-                    <!-- FIT-177: polite live region announces host-routing
-                         state changes (Ready / Fallback active / AI offline)
-                         to screen readers. Sibling of the visible headline
-                         row so the announcement reaches the AT buffer
-                         without altering the visible layout above. -->
-                    <div id="ai-coach-headline-announcement" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
-                    <div class="settings-row" id="ai-coach-warning-row" hidden>
-                        <div class="settings-row-label settings-row-label-stack">
-                            <span class="settings-row-label-main">⚠ AI coach is flaky</span>
-                            <span id="ai-coach-warning-detail" class="settings-row-detail">Deterministic plan remains the source of truth.</span>
-                        </div>
-                        <div class="settings-row-control">
-                            <span id="ai-coach-warning-pct" class="state-chip warn">—</span>
-                        </div>
-                    </div>
-                    <div class="settings-row">
-                        <div class="settings-row-label settings-row-label-stack">
-                            <span class="settings-row-label-main">
-                                <span class="int-dot" id="ai-primary-dot"></span>
-                                <span id="ai-primary-host">ASUS GX10</span>
-                                <span class="ai-role-pill">Primary</span>
-                            </span>
-                            <span id="ai-primary-detail" class="settings-row-detail">—</span>
-                        </div>
-                        <div class="settings-row-control">
-                            <span id="ai-primary-state" class="state-chip">—</span>
-                        </div>
-                    </div>
-                    <div class="settings-row">
-                        <div class="settings-row-label settings-row-label-stack">
-                            <span class="settings-row-label-main">
-                                <span class="int-dot" id="ai-fallback-dot"></span>
-                                <span id="ai-fallback-host">Mac Studio</span>
-                                <span class="ai-role-pill" id="ai-fallback-role">Fallback</span>
-                            </span>
-                            <span id="ai-fallback-detail" class="settings-row-detail">—</span>
-                        </div>
-                        <div class="settings-row-control">
-                            <span id="ai-fallback-state" class="state-chip">—</span>
-                        </div>
-                    </div>
-                    <div class="settings-row">
-                        <div class="settings-row-label settings-row-label-stack">
-                            <span class="settings-row-label-main">24h activity</span>
-                            <span id="ai-metrics-detail" class="settings-row-detail">—</span>
-                        </div>
-                        <div class="settings-row-control">
-                            <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
-                        </div>
-                    </div>
-                </div>
             </section>
 
             <section class="settings-group" data-group="data-sources">
@@ -920,50 +686,6 @@
                     <div class="integration-detail-row integration-detail-warn" id="open-wearables-detail-attention-row" hidden>
                         <span class="detail-label">Attention</span>
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
-                    </div>
-                </div>
-                <div class="settings-row" id="whoop-settings-row">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">
-                            <span class="int-dot" id="whoop-int-dot"></span>
-                            WHOOP fallback
-                        </span>
-                        <span id="whoop-last-sync" class="settings-row-detail">Checking WHOOP connection…</span>
-                    </div>
-                    <div class="settings-row-control settings-row-control-stack">
-                        <span id="whoop-connect-state" class="state-chip">—</span>
-                        <div class="settings-inline-actions">
-                            <button id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden aria-haspopup="dialog" aria-controls="modal-whoop-intake">Connect</button>
-                            <button id="btn-sync-whoop" class="btn btn-ghost btn-sm" type="button">Sync</button>
-                            <button id="btn-disconnect-whoop" class="btn btn-ghost btn-sm" type="button">Disconnect</button>
-                            <button id="btn-delete-whoop-data" class="btn btn-ghost btn-sm" type="button">Delete data</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="integration-detail" id="whoop-detail">
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Connection</span>
-                        <span class="detail-value" id="whoop-detail-connection">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Data through</span>
-                        <span class="detail-value" id="whoop-detail-data-through">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Recovery</span>
-                        <span class="detail-value" id="whoop-detail-recovery">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Source</span>
-                        <span class="detail-value" id="whoop-detail-source">—</span>
-                    </div>
-                    <div class="integration-detail-row" id="whoop-detail-attention-row">
-                        <span class="detail-label">Attention</span>
-                        <span class="detail-value" id="whoop-detail-attention">—</span>
-                    </div>
-                    <div class="integration-detail-row integration-detail-warn" id="whoop-conflict-row" hidden>
-                        <span class="detail-label">Conflict</span>
-                        <span class="detail-value" id="whoop-conflict-text">WHOOP and Oura disagree.</span>
                     </div>
                 </div>
                 <div class="settings-row" id="settings-row-oura">
@@ -1209,7 +931,7 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
-                <p class="dim" id="reco-sources-drawer-summary">Source attribution stays visible when recovery data is stale, missing, or conflicted.</p>
+                <p class="dim" id="reco-sources-drawer-summary">Source attribution stays visible when recovery data is stale or missing.</p>
                 <div class="reco-source-drawer-section">
                     <div class="reco-source-drawer-label">Used today</div>
                     <div class="reco-source-list" id="reco-sources-used"></div>
@@ -1218,84 +940,6 @@
                     <div class="reco-source-drawer-label">Wearable signals</div>
                     <div class="reco-source-list" id="reco-sources-signals"></div>
                 </div>
-                <div class="reco-source-drawer-section">
-                    <div class="reco-source-drawer-label">Conflicts</div>
-                    <div class="reco-source-list" id="reco-sources-conflicts"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="modal-ai-fact-query" class="modal" role="dialog" aria-modal="true" aria-labelledby="ai-fact-query-title" hidden>
-        <div class="modal-sheet modal-sheet-tall ai-fact-query-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="ai-fact-query-title">Ask AI</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body whoop-intake-body">
-                <section class="whoop-intake-section" aria-labelledby="ai-fact-question-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="ai-fact-question-title" class="whoop-intake-title">History question</h4>
-                        <span class="state-chip state-chip-sm">Sanitized facts</span>
-                    </div>
-                    <p id="ai-fact-answer" class="settings-row-detail whoop-intake-status" role="status">Ask about workouts, wearable history, or trends. No records are changed by asking.</p>
-                    <div class="ai-fact-query-controls">
-                        <input id="ai-fact-question" class="select-inline ai-fact-query-input" type="text" inputmode="text" autocomplete="off" placeholder="strength history?">
-                        <button id="btn-ai-fact-query" class="btn btn-primary btn-sm" type="button">Ask</button>
-                    </div>
-                    <div id="ai-fact-suggestion-actions" class="settings-inline-actions ai-fact-suggestion-actions" hidden>
-                        <button id="btn-ai-suggestion-approve" class="btn btn-ghost btn-sm" type="button">Approve</button>
-                        <button id="btn-ai-suggestion-reject" class="btn btn-ghost btn-sm" type="button">Reject</button>
-                    </div>
-                </section>
-            </div>
-            <div class="modal-foot modal-foot-row">
-                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="modal-whoop-intake" class="modal" role="dialog" aria-modal="true" aria-labelledby="whoop-intake-title" hidden>
-        <div class="modal-sheet modal-sheet-tall whoop-intake-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="whoop-intake-title">Connect WHOOP</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body whoop-intake-body">
-                <section class="whoop-intake-section" aria-labelledby="whoop-live-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="whoop-live-title" class="whoop-intake-title">Live WHOOP sync</h4>
-                        <span id="whoop-connect-modal-status" class="state-chip state-chip-sm">Ready</span>
-                    </div>
-                    <p class="dim whoop-intake-copy">Open WHOOP, approve access, then return here. Settings will refresh when the callback lands.</p>
-                    <div class="whoop-intake-actions">
-                        <button id="btn-whoop-connect-live" class="btn btn-primary btn-sm" type="button">Open WHOOP</button>
-                        <a id="whoop-connect-open-link" class="btn btn-ghost btn-sm" href="#" target="_blank" rel="noopener noreferrer" hidden>Open link</a>
-                    </div>
-                    <p id="whoop-connect-fallback" class="settings-row-detail whoop-intake-status" hidden>Popup blocked. Use the link above to continue.</p>
-                </section>
-
-                <section class="whoop-intake-section" aria-labelledby="whoop-import-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="whoop-import-title" class="whoop-intake-title">Import WHOOP export</h4>
-                    </div>
-                    <label class="whoop-import-label" for="whoop-import-csv-text">Paste WHOOP CSV/export data</label>
-                    <textarea id="whoop-import-csv-text" class="whoop-import-textarea" rows="8" spellcheck="false" autocomplete="off" placeholder="date,recovery_score,recovery_band,strain,sleep_performance_pct"></textarea>
-                    <p class="settings-row-detail">Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected.</p>
-                    <div class="whoop-import-file-row">
-                        <input id="whoop-import-file" type="file" accept=".csv,text/csv" hidden>
-                        <button id="btn-whoop-import-file" class="btn btn-ghost btn-sm" type="button">Choose file</button>
-                        <span id="whoop-import-file-name" class="settings-row-detail">No file selected</span>
-                    </div>
-                    <div class="whoop-intake-actions">
-                        <button id="btn-whoop-import-submit" class="btn btn-secondary btn-sm" type="button">Import data</button>
-                        <button id="btn-whoop-import-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
-                    </div>
-                    <p id="whoop-import-status" class="settings-row-detail whoop-intake-status" role="status">Manual import stays available even when live WHOOP sync is not configured.</p>
-                </section>
-            </div>
-            <div class="modal-foot modal-foot-row">
-                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
             </div>
         </div>
     </div>
@@ -1306,13 +950,13 @@
                 <h3 class="modal-title" id="open-wearables-setup-title">Add a wearable</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
-            <div class="modal-body whoop-intake-body">
-                <section class="whoop-intake-section" aria-labelledby="open-wearables-hub-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="open-wearables-hub-title" class="whoop-intake-title">Open Wearables</h4>
+            <div class="modal-body ow-intake-body">
+                <section class="ow-intake-section" aria-labelledby="open-wearables-hub-title">
+                    <div class="ow-intake-section-head">
+                        <h4 id="open-wearables-hub-title" class="ow-intake-title">Open Wearables</h4>
                         <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Add device</span>
                     </div>
-                    <p class="dim whoop-intake-copy">This web app prepares the local hub account on this Mac, then opens wearable sign-in when you pick a device.</p>
+                    <p class="dim ow-intake-copy">This web app prepares the local hub account on this Mac, then opens wearable sign-in when you pick a device.</p>
                     <div class="open-wearables-pairing-card">
                         <div>
                             <strong>Add a person or device</strong>
@@ -1332,7 +976,7 @@
                             <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="google" disabled>Google Health Connect</button>
                         </div>
                         <p class="settings-row-detail open-wearables-provider-note">Cloud wearables open provider sign-in when ready. If setup is missing, the button opens Open Wearables so you can finish it there.</p>
-                        <div class="whoop-intake-actions open-wearables-pairing-actions">
+                        <div class="ow-intake-actions open-wearables-pairing-actions">
                             <button id="btn-open-wearables-portal-inline" class="btn btn-ghost btn-sm" type="button">Open Open Wearables</button>
                             <button id="btn-open-wearables-copy-link-inline" class="btn btn-ghost btn-sm" type="button">Copy Open Wearables link</button>
                         </div>
@@ -1357,16 +1001,16 @@
                         <li><strong>Device</strong><span id="open-wearables-step-device">Choose a wearable</span></li>
                         <li><strong>Connection</strong><span id="open-wearables-step-connection">Waiting for pairing</span></li>
                     </ol>
-                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">Prepare pairing, choose a wearable, then check connection.</p>
-                    <div class="whoop-intake-actions">
+                    <p id="open-wearables-setup-status" class="settings-row-detail ow-intake-status" role="status">Prepare pairing, choose a wearable, then check connection.</p>
+                    <div class="ow-intake-actions">
                         <button id="btn-open-wearables-bootstrap" class="btn btn-primary btn-sm" type="button">Prepare pairing</button>
                         <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check connection</button>
                     </div>
                 </section>
 
-                <details class="whoop-intake-section open-wearables-advanced">
+                <details class="ow-intake-section open-wearables-advanced">
                     <summary>Advanced diagnostics</summary>
-                    <p class="dim whoop-intake-copy">For local hub setup, connection details, and safe error codes.</p>
+                    <p class="dim ow-intake-copy">For local hub setup, connection details, and safe error codes.</p>
                     <div class="open-wearables-setup-form">
                         <label class="open-wearables-setup-field" for="open-wearables-base-url">
                             <span>Hub API URL</span>
@@ -1389,12 +1033,12 @@
                             <input id="open-wearables-user-id" class="select-inline" type="text" autocomplete="off" placeholder="Optional">
                         </label>
                     </div>
-                    <div class="whoop-intake-actions">
+                    <div class="ow-intake-actions">
                         <button id="btn-open-wearables-portal" class="btn btn-ghost btn-sm" type="button">Open hub admin</button>
                         <button id="btn-open-wearables-copy-link" class="btn btn-ghost btn-sm" type="button">Copy hub link</button>
                         <button id="btn-open-wearables-setup-save" class="btn btn-ghost btn-sm" type="button">Save advanced</button>
                     </div>
-                    <p class="settings-row-detail whoop-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
+                    <p class="settings-row-detail ow-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
                 </details>
             </div>
             <div class="modal-foot modal-foot-row">
@@ -1410,14 +1054,14 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div id="adjust-body" class="modal-body">
-                <p class="dim">Tell the AI coach what's going on — sore shoulder, tight on time, low energy. It re-intents the plan; the algorithm keeps the final say on exercises and load.</p>
+                <p class="dim">Pick a quick edit, or type an exercise swap such as "replace seated row with lat pulldown". Safety limits on RPE, sets and load still apply.</p>
                 <div class="adjust-presets">
-                    <button class="chip-preset" type="button" data-preset="left shoulder is sore, avoid overhead pressing">Sore shoulder</button>
-                    <button class="chip-preset" type="button" data-preset="only 25 minutes today, cut volume">Tight on time</button>
-                    <button class="chip-preset" type="button" data-preset="feeling low energy, dial it back">Low energy</button>
-                    <button class="chip-preset" type="button" data-preset="skip cardio today">No cardio</button>
+                    <button class="chip-preset" type="button" data-preset="Sore shoulder: skip shoulder work" data-intent='{"avoid_muscles":["shoulders"]}'>Sore shoulder</button>
+                    <button class="chip-preset" type="button" data-preset="Tight on time: 30 minutes" data-intent='{"duration_cap_min":30}'>Tight on time</button>
+                    <button class="chip-preset" type="button" data-preset="Low energy: lower RPE and sets" data-intent='{"rpe_delta":-1,"sets_delta_pct":-20}'>Low energy</button>
+                    <button class="chip-preset" type="button" data-preset="No cardio today" data-intent='{"drop_cardio":true}'>No cardio</button>
                 </div>
-                <textarea id="adjust-constraint" class="adjust-textarea" placeholder="e.g. left knee tweaky, avoid squats" rows="3"></textarea>
+                <textarea id="adjust-constraint" class="adjust-textarea" placeholder="e.g. replace seated row with lat pulldown" rows="3"></textarea>
                 <div id="adjust-state" class="adjust-state"></div>
                 <div class="adjust-actions">
                     <button id="btn-adjust-submit" class="btn btn-primary btn-block" type="button">Apply Adjustment</button>
@@ -1436,46 +1080,6 @@
         </div>
     </div>
 
-    <div id="modal-analyze" class="modal" role="dialog" aria-modal="true" aria-labelledby="analyze-title" hidden>
-        <div class="modal-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="analyze-title">Workout Analysis</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body" id="analyze-body">
-                <div class="skeleton" id="analyze-loading">AI coach reviewing your session…</div>
-                <div id="analyze-content" hidden>
-                    <div class="analyze-section">
-                        <div class="analyze-label">SUMMARY</div>
-                        <div class="analyze-summary" id="analyze-summary"></div>
-                    </div>
-                    <div class="analyze-section" id="analyze-wins-section">
-                        <div class="analyze-label">WHAT WENT WELL</div>
-                        <ul class="analyze-list ok" id="analyze-wins"></ul>
-                    </div>
-                    <div class="analyze-section" id="analyze-concerns-section">
-                        <div class="analyze-label">WATCH FOR</div>
-                        <ul class="analyze-list warn" id="analyze-concerns"></ul>
-                    </div>
-                    <div class="analyze-section">
-                        <div class="analyze-label">VS RECENT SESSIONS</div>
-                        <div class="analyze-comparison" id="analyze-comparison"></div>
-                    </div>
-                    <div class="analyze-section" id="analyze-cue-section">
-                        <div class="analyze-label">NEXT SESSION</div>
-                        <div class="analyze-cue" id="analyze-cue"></div>
-                    </div>
-                    <div class="analyze-section" id="analyze-notes-section" hidden>
-                        <div class="analyze-label">NOTES REVIEWED</div>
-                        <div class="analyze-note-context" id="analyze-notes-context"></div>
-                    </div>
-                    <div class="analyze-meta" id="analyze-meta"></div>
-                </div>
-                <div id="analyze-error" class="empty" hidden></div>
-            </div>
-        </div>
-    </div>
-
     <div id="modal-workout-detail" class="modal" role="dialog" aria-modal="true" aria-labelledby="workout-detail-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
@@ -1485,123 +1089,6 @@
             <div class="modal-body" id="workout-detail-body"></div>
             <div class="modal-foot" id="workout-detail-foot" hidden>
                 <button id="btn-delete-workout" class="btn btn-danger btn-block" type="button">Delete Workout</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- FIT-97: inspect/delete a logged meal entry. Reuses the existing
-         modal pattern. Body is populated dynamically from the food_log
-         entry the user tapped in the Body tab's nutrition-trend
-         expansion. -->
-    <div id="modal-meal-detail" class="modal" role="dialog" aria-modal="true" aria-labelledby="meal-detail-title" hidden>
-        <div class="modal-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="meal-detail-title">Meal details</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body">
-                <!-- View mode -->
-                <dl class="meal-detail-grid" id="meal-detail-view">
-                    <dt>Item</dt><dd id="meal-detail-item">—</dd>
-                    <dt>Portion</dt><dd id="meal-detail-portion">—</dd>
-                    <dt>Logged</dt><dd id="meal-detail-time">—</dd>
-                    <dt>Source</dt><dd id="meal-detail-source">—</dd>
-                    <dt>Confidence</dt><dd id="meal-detail-confidence">—</dd>
-                    <dt>From photo</dt><dd id="meal-detail-from-image">—</dd>
-                    <dt>Calories</dt><dd id="meal-detail-cal">—</dd>
-                    <dt>Protein</dt><dd id="meal-detail-pro">—</dd>
-                    <dt>Carbs</dt><dd id="meal-detail-carb">—</dd>
-                    <dt>Fat</dt><dd id="meal-detail-fat">—</dd>
-                    <dt>Sodium</dt><dd id="meal-detail-sodium">—</dd>
-                </dl>
-                <p class="dim" id="meal-detail-stub-notice" hidden>
-                    The photo path is currently a stub (FIT-90 — vision pipeline not yet on main). Numbers shown were the canned response, not a real AI read of the photo. Once FIT-90 lands, this detail view will reflect the actual LLM/branded-lookup result.
-                </p>
-                <!-- FIT-97 AC2: photo retention note. Per FIT-9 the raw
-                     image is never persisted; show a "logged with photo"
-                     marker so the user knows the photo isn't retrievable
-                     and only the extracted estimate is kept. -->
-                <p class="dim" id="meal-detail-retention-note" hidden>
-                    Logged with photo. Food photos are discarded after extraction (FIT-9); only the final estimate and safe correction metadata are kept.
-                </p>
-
-                <!-- FIT-100: Correct/edit form. Shown when the user taps Correct
-                     in the foot row. Inputs are pre-filled with current values
-                     so the user only edits what was wrong. -->
-                <form id="meal-detail-edit" class="meal-detail-edit-form" hidden onsubmit="return false;">
-                    <div class="form-field">
-                        <label for="meal-edit-item">Item</label>
-                        <input type="text" id="meal-edit-item" maxlength="160" autocomplete="off">
-                    </div>
-                    <div class="form-field">
-                        <label for="meal-edit-portion">Portion</label>
-                        <input type="text" id="meal-edit-portion" maxlength="240" autocomplete="off">
-                    </div>
-                    <div class="form-row-2">
-                        <div class="form-field">
-                            <label for="meal-edit-cal">Calories</label>
-                            <input type="number" id="meal-edit-cal" min="0" step="1" inputmode="numeric">
-                        </div>
-                        <div class="form-field">
-                            <label for="meal-edit-pro">Protein (g)</label>
-                            <input type="number" id="meal-edit-pro" min="0" step="0.1" inputmode="decimal">
-                        </div>
-                    </div>
-                    <div class="form-row-2">
-                        <div class="form-field">
-                            <label for="meal-edit-carb">Carbs (g)</label>
-                            <input type="number" id="meal-edit-carb" min="0" step="0.1" inputmode="decimal">
-                        </div>
-                        <div class="form-field">
-                            <label for="meal-edit-fat">Fat (g)</label>
-                            <input type="number" id="meal-edit-fat" min="0" step="0.1" inputmode="decimal">
-                        </div>
-                    </div>
-                    <div class="form-field">
-                        <label for="meal-edit-sodium">Sodium (mg)</label>
-                        <input type="number" id="meal-edit-sodium" min="0" step="1" inputmode="numeric">
-                    </div>
-                    <div class="meal-detail-edit-error" id="meal-detail-edit-error" hidden></div>
-                </form>
-            </div>
-            <div class="modal-foot modal-foot-row" id="meal-detail-foot-view">
-                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
-                <button id="btn-meal-detail-edit" class="btn btn-secondary" type="button">Correct</button>
-                <button id="btn-meal-detail-delete" class="btn btn-danger" type="button">Delete entry</button>
-            </div>
-            <div class="modal-foot modal-foot-row" id="meal-detail-foot-edit" hidden>
-                <button id="btn-meal-edit-cancel" class="btn btn-ghost" type="button">Cancel</button>
-                <button id="btn-meal-edit-save" class="btn btn-primary" type="button">Save correction</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- FIT-107: Dashboard "View food log" sheet — Today / Yesterday / Recent 14 days -->
-    <div id="modal-food-log" class="modal" role="dialog" aria-modal="true" aria-labelledby="food-log-title" hidden>
-        <div class="modal-sheet modal-sheet-tall">
-            <div class="modal-head">
-                <h3 class="modal-title" id="food-log-title">Food log</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body" id="food-log-body">
-                <section class="food-log-section" data-section="today">
-                    <h4 class="food-log-section-title">Today</h4>
-                    <div class="food-log-section-totals" id="food-log-today-totals" hidden></div>
-                    <div class="food-log-section-meals" id="food-log-today-meals"></div>
-                </section>
-                <section class="food-log-section" data-section="yesterday">
-                    <h4 class="food-log-section-title">Yesterday</h4>
-                    <div class="food-log-section-totals" id="food-log-yesterday-totals" hidden></div>
-                    <div class="food-log-section-meals" id="food-log-yesterday-meals"></div>
-                </section>
-                <section class="food-log-section" data-section="recent">
-                    <h4 class="food-log-section-title">Recent 14 days</h4>
-                    <div class="food-log-section-rows" id="food-log-recent-rows"></div>
-                </section>
-                <div class="food-log-empty" id="food-log-empty" hidden>
-                    <div class="empty-text">No meals logged yet.</div>
-                    <div class="empty-hint">Use Log a Meal to add your first entry.</div>
-                </div>
             </div>
         </div>
     </div>
@@ -1692,7 +1179,6 @@
             </div>
             <div class="modal-foot modal-foot-row">
                 <button id="btn-saved-dismiss" class="btn btn-ghost" type="button">Done</button>
-                <button id="btn-saved-analyze" class="btn btn-primary" type="button">Analyze workout</button>
             </div>
         </div>
     </div>
@@ -1704,7 +1190,7 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
-                <p class="dim sync-queue-intro">Meals and workouts saved on this device while offline, or that the server hasn’t accepted yet. Retry tries again. Discard removes the local entry and clears any offline meal photos.</p>
+                <p class="dim sync-queue-intro">Workouts saved on this device while offline, or that the server hasn’t accepted yet. Retry tries again. Discard removes the local entry.</p>
                 <div id="sync-queue-list" class="sync-queue-list"></div>
             </div>
             <div class="modal-foot">

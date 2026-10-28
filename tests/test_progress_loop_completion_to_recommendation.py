@@ -6,7 +6,6 @@ These tests lock in the round-trip the issue asks for:
 * The just-completed session feeds fatigue/readiness context into the next
   recommendation (was missing — recommendation never read `overall_fatigue`).
 * Recent completed muscle volume shows up in the avoid list and reasoning.
-* /api/workout/analyze still doesn't mutate plan state after a completion.
 * /api/adherence counts completions linked to a recommendation, not stale
   in-process `WORKOUT_RECOMMENDATIONS` (which never gets populated on the
   live path).
@@ -44,7 +43,6 @@ def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "RECOVERY_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_a, **_kw: None)
     module.LAST_WORKOUT_RECOMMENDATION = None
     module.LAST_WORKOUT_RECOMMENDATION_OWNER = None
 
@@ -65,7 +63,6 @@ def fitness_app(monkeypatch, tmp_path):
         "mesocycle": {"rpe_base": 7},
     })
     monkeypatch.setattr(module, "_compute_data_freshness", lambda *_a, **_kw: {})
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_a, **_kw: {"warnings": []})
 
     # OuraClient.get_today_metrics would otherwise raise; the route catches it,
     # but stubbing avoids the noisy traceback path.
@@ -267,34 +264,6 @@ def test_smart_recommendation_unaffected_when_no_recent_completion(fitness_app):
     assert smart["recently_trained"] == []
     # Soreness list is empty (fixture default) so no muscles flagged either.
     assert smart["avoid_muscles"] == []
-
-
-# ──────────────────────────────────────────────────────────────────
-# /api/workout/analyze stays non-mutating after a completion
-# ──────────────────────────────────────────────────────────────────
-
-def test_analyze_after_completion_does_not_resurrect_stale_plan(fitness_app, monkeypatch):
-    """AC4: completing a workout clears LAST_WORKOUT_RECOMMENDATION; calling
-    /api/workout/analyze on the freshly-saved session must not re-populate
-    it (analysis is a read-only summary, never a plan rewrite)."""
-    # Force the deterministic-fallback path so the test doesn't hit LM Studio.
-    monkeypatch.setattr(fitness_app, "_lm_studio", None)
-    client = fitness_app.app.test_client()
-    complete = client.post(
-        "/api/complete-workout",
-        data=json.dumps(_workout_payload()),
-        content_type="application/json",
-    )
-    workout_id = complete.get_json()["workout_id"]
-    assert fitness_app.LAST_WORKOUT_RECOMMENDATION is None
-
-    res = client.post(
-        "/api/workout/analyze",
-        data=json.dumps({"workout_id": workout_id}),
-        content_type="application/json",
-    )
-    assert res.status_code == 200
-    assert fitness_app.LAST_WORKOUT_RECOMMENDATION is None
 
 
 # ──────────────────────────────────────────────────────────────────

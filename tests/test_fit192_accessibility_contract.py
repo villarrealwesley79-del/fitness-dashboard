@@ -152,12 +152,11 @@ sandbox.__fitSet.getSettings(async () => ({
   ], sex_options: [], time_options: [], equipment_options: [],
 }));
 sandbox.__fitSet.getOuraStatus(async () => ({}));
-sandbox.__fitSet.getWhoopStatus(async () => ({}));
 sandbox.__fitSet.getOpenWearablesStatus(async () => ({}));
 sandbox.__fitSet.getWearableSources(async () => ([]));
 sandbox.__fitSet.api(async (path) => path === '/api/freshness' ? { freshness: {} } : {});
 sandbox.__fitSet.updateSetting((value) => selected.push(value.training_goal));
-['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderWhoopFreshnessDetail', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderAiCoachHealth', 'startAiCoachHealthRefresh', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
+['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
 await e.renderSettings();
 const options = host.children;
 let prevented = false;
@@ -172,9 +171,9 @@ process.stdout.write(JSON.stringify({
 }));
 """,
         mocks=[
-            "getSettings", "getOuraStatus", "getWhoopStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
-            "renderOpenWearablesDetail", "renderFreshnessChips", "renderWhoopFreshnessDetail", "renderOuraFreshnessDetail",
-            "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderAiCoachHealth", "startAiCoachHealthRefresh", "renderPushSection",
+            "getSettings", "getOuraStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
+            "renderOpenWearablesDetail", "renderFreshnessChips", "renderOuraFreshnessDetail",
+            "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderPushSection",
         ],
     )
     assert output == {
@@ -282,7 +281,6 @@ let tabPrevented = false;
 e.handleModalTabKeydown({ key: 'Tab', shiftKey: false, preventDefault: () => { tabPrevented = true; } });
 e.handleModalFocusin({ target: { id: 'outside' } });
 e.handleModalFocusout();
-sandbox.__fitSet.refreshWhoopAfterOAuthReturn(() => handlerCalls.push('whoop'));
 e.handleModalWindowFocus();
 await new Promise((resolve) => setTimeout(resolve, 5));
 process.stdout.write(JSON.stringify({
@@ -293,7 +291,6 @@ process.stdout.write(JSON.stringify({
         mocks=[
             "getTopmostModalForFocus",
             "getModalFocusableElements", "restoreFocusInsideModal",
-            "refreshWhoopAfterOAuthReturn",
         ],
     )
     assert output["documentEvents"] == ["keydown", "keydown", "focusin", "focusout"]
@@ -302,7 +299,7 @@ process.stdout.write(JSON.stringify({
     assert output["ordinaryEscapePrevented"] is True
     assert output["ordinaryHidden"] is True
     assert output["tabPrevented"] is True
-    assert output["handlerCalls"] == ["close", "first", "restore", "restore", "restore", "whoop"]
+    assert output["handlerCalls"] == ["close", "first", "restore", "restore", "restore"]
 
 
 def test_modal_markup_exposes_dialog_semantics_and_labels():
@@ -338,3 +335,25 @@ def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
     assert "/static/js/app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
     assert "fitness-dashboard-v20260716-fit392-rpe" in sw
+
+
+def test_settings_hash_route_and_reco_sources_modal_aria_state():
+    """Port of deleted test_whoop_hash_routes_settings_and_recommendation_modal_tracks_aria_state."""
+    output = run_app_js(
+        ["initialTabFromHash", "openRecoSourcesModal"],
+        """
+sandbox.location.hash = '#settings';
+const tab = e.initialTabFromHash();
+const modal = { hidden: true };
+const trigger = { attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } };
+sandbox.elements['modal-reco-sources'] = modal;
+sandbox.elements['btn-reco-sources'] = trigger;
+sandbox.__fitSet.renderRecommendationSourceSummary(() => {});
+sandbox.__fitSet.focusOpenModal(() => {});
+e.openRecoSourcesModal();
+modal.__fit192Close();
+process.stdout.write(JSON.stringify({ tab, expanded: trigger.attrs['aria-expanded'], hidden: modal.hidden }));
+""",
+        mocks=["renderRecommendationSourceSummary", "focusOpenModal"],
+    )
+    assert output == {"tab": "tab-settings", "expanded": "false", "hidden": True}

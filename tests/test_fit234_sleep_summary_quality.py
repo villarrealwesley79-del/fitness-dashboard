@@ -358,7 +358,6 @@ e.state.reco = null;
 e.state.ouraSleep = sleep;
 sandbox.__fitSet.renderFreshnessChips(() => {});
 sandbox.__fitSet.renderRecommendationSourceSummary(() => {});
-sandbox.__fitSet.renderMacroCard(() => {});
 sandbox.__fitSet.sparkline((_container, values) => sparklines.push(values));
 sandbox.__fitSet.getVitals(async () => ({}));
 sandbox.__fitSet.getOuraStatus(async () => ({ sleep_score: 88 }));
@@ -389,7 +388,7 @@ process.stdout.write(JSON.stringify({
 }));
 """,
         mocks=[
-            "renderFreshnessChips", "renderRecommendationSourceSummary", "renderMacroCard",
+            "renderFreshnessChips", "renderRecommendationSourceSummary", 
             "sparkline", "getVitals", "getOuraStatus", "getOuraSleep", "getBody",
             "getOuraTrends",
         ],
@@ -878,20 +877,6 @@ def test_smart_recommendation_excludes_inconsistent_sleep_from_debt_and_reasonin
         lambda *_a, **_kw: {"applied_count": 0},
     )
     monkeypatch.setattr(module, "_cached_wttr", lambda *_a, **_kw: {"available": False})
-    monkeypatch.setattr(
-        module,
-        "_whoop_recommendation_context",
-        lambda *_a, **_kw: {"signals": {}, "source_conflict": {}},
-    )
-    monkeypatch.setattr(
-        module,
-        "apply_wearable_modifiers",
-        lambda recommendation, next_workout, **_kw: {
-            "recommendation": recommendation,
-            "next_workout": next_workout,
-            "load_source": "deterministic",
-        },
-    )
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(
         module,
@@ -902,9 +887,6 @@ def test_smart_recommendation_excludes_inconsistent_sleep_from_debt_and_reasonin
     monkeypatch.setattr(module, "_confidence_level_from", lambda *_a, **_kw: "low")
     monkeypatch.setattr(module, "get_current_workout_plan", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda *_a, **_kw: None)
-    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *_a, **_kw: [])
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_a, **_kw: {"warnings": []})
-    monkeypatch.setattr(module, "_workout_looks_hard", lambda *_a, **_kw: False)
     monkeypatch.setattr(
         module,
         "generate_next_workout",

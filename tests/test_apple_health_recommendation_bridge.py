@@ -54,7 +54,6 @@ def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "RECOVERY_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "get_oura_daily", lambda *_args, **_kwargs: {"readiness_score": 85})
     monkeypatch.setattr(module, "upsert_oura_daily", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "get_oura_daily_range", lambda *_args, **_kwargs: [])
@@ -64,7 +63,6 @@ def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "_fetch_wttr", lambda *_args, **_kwargs: {"available": False})
     monkeypatch.setattr(module, "_compute_data_freshness", lambda *_args, **_kwargs: {"apple_health": {"status": "fresh"}})
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
 
     parser = importlib.import_module("apple_health_parser")
     monkeypatch.setattr(parser, "HEALTH_DIR", str(tmp_path / "health-export"))

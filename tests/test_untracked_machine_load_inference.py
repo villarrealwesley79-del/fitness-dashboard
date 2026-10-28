@@ -42,7 +42,6 @@ def _module(monkeypatch):
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
-    monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
     return module
 
@@ -730,7 +729,6 @@ def test_ai_adjust_can_request_named_untracked_machine_and_get_inferred_load(mon
 def test_adjust_deterministic_fallback_accepts_bare_tricep_extensions(monkeypatch):
     module = _module(monkeypatch)
     module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
-    monkeypatch.setattr(module, "_lm_studio", None)
     monkeypatch.setattr(
         module,
         "WORKOUTS",
@@ -1115,7 +1113,6 @@ def test_adjust_explicit_target_alias_already_in_plan_does_not_substitute(monkey
 
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
     module = _module(monkeypatch)
-    monkeypatch.setattr(module, "_lm_studio", None)
     recommendation = _recommendation_for(module, [_rec_exercise("Chest Press", "chest", 100)])
     _set_last_workout_recommendation(module, monkeypatch, recommendation)
 
@@ -1132,7 +1129,6 @@ def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(mon
 
 def test_adjust_deterministic_rejects_generic_press_false_positive(monkeypatch):
     module = _module(monkeypatch)
-    monkeypatch.setattr(module, "_lm_studio", None)
     recommendation = _recommendation_for(
         module,
         [
@@ -1159,7 +1155,6 @@ def test_adjust_deterministic_rejects_generic_press_false_positive(monkeypatch):
 def test_adjust_direct_history_wins_over_similar_pattern_inference(monkeypatch):
     module = _module(monkeypatch)
     module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
-    monkeypatch.setattr(module, "_lm_studio", None)
     monkeypatch.setattr(
         module,
         "WORKOUTS",
@@ -1264,63 +1259,6 @@ def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Dips"
-
-
-def test_adjust_intent_schema_accepts_optional_target_exercise():
-    adapter = importlib.import_module("lm_studio_adapter")
-
-    adapter._validate_adjust_intent({
-        "summary": "Use the requested deltoid machine.",
-        "intent": {
-            "avoid_muscles": [],
-            "avoid_joints": [],
-            "swap": [
-                {
-                    "replace_exercise": "Shoulder Press",
-                    "target_muscle": "shoulders",
-                    "target_exercise": "Deltoid Raise",
-                    "reason": "user asked for this machine",
-                }
-            ],
-            "rpe_delta": 0,
-            "sets_delta_pct": 0,
-            "duration_cap_min": 0,
-            "drop_cardio": False,
-        },
-    })
-
-
-def test_adjust_intent_strict_schema_requires_nullable_target_exercise():
-    adapter = importlib.import_module("lm_studio_adapter")
-
-    swap_schema = adapter.ADJUST_SCHEMA["properties"]["intent"]["properties"]["swap"]["items"]
-    assert "target_exercise" in swap_schema["required"]
-    assert swap_schema["properties"]["target_exercise"]["type"] == ["string", "null"]
-    adapter._validate_adjust_intent({
-        "summary": "Use the requested muscle but no named machine.",
-        "intent": {
-            "avoid_muscles": [],
-            "avoid_joints": [],
-            "swap": [
-                {
-                    "replace_exercise": "Shoulder Press",
-                    "target_muscle": "shoulders",
-                    "target_exercise": None,
-                    "reason": "keep it shoulder focused",
-                }
-            ],
-            "rpe_delta": 0,
-            "sets_delta_pct": 0,
-            "duration_cap_min": 0,
-            "drop_cardio": False,
-        },
-    })
-
-
-def test_adjust_cache_version_invalidates_pre_fit265_payloads(monkeypatch):
-    module = _module(monkeypatch)
-
-    assert module._ADJUST_CACHE_VERSION == "fit265-honest-adjust-v2"
 
 
 def test_complete_workout_maps_machine_deltoid_raise_to_shoulders(monkeypatch):

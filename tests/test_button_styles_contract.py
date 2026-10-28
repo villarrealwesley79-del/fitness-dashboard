@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_btn_secondary_has_dark_theme_styling():
     """FIT-114: `.btn-secondary` must define a background and dark-theme color
-    or the meal-detail Correct button reverts to unreadable browser defaults."""
+    or secondary buttons revert to unreadable browser defaults."""
     css = (ROOT / "static" / "css" / "style.css").read_text()
 
     assert ".btn-secondary {" in css, ".btn-secondary block missing"
@@ -16,11 +16,3 @@ def test_btn_secondary_has_dark_theme_styling():
     assert "color: var(--fg-1)" in block, ".btn-secondary must use --fg-1 token"
 
     assert ".btn-secondary:hover" in css, ".btn-secondary:hover state missing"
-
-
-def test_meal_detail_correct_button_uses_secondary_class():
-    """FIT-114: the meal-detail Correct button must keep .btn-secondary so the
-    new style applies. Asserts the opening tag verbatim so the class can't
-    silently move to a different button."""
-    template = (ROOT / "templates" / "index.html").read_text()
-    assert '<button id="btn-meal-detail-edit" class="btn btn-secondary"' in template

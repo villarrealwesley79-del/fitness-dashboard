@@ -42,17 +42,6 @@
     line-height: 1.45;
 }
 
-.reco-source-conflict {
-    margin-top: 10px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(248,113,113,0.3);
-    background: rgba(127,29,29,0.18);
-    color: #fecaca;
-    font-size: 12px;
-    line-height: 1.45;
-}
-
 .reco-source-drawer-section + .reco-source-drawer-section {
     margin-top: 18px;
 }
@@ -112,21 +101,11 @@
     gap: 8px;
 }
 
-#whoop-detail-attention-row .detail-value,
-#whoop-conflict-row .detail-value {
-    line-height: 1.45;
-}
-
 #modal-reco-sources .modal-sheet {
     max-width: 540px;
 }
 
-#modal-whoop-intake .modal-sheet {
-    max-width: 620px;
-}
-
-#modal-open-wearables-setup .modal-sheet,
-#modal-ai-fact-query .modal-sheet {
+#modal-open-wearables-setup .modal-sheet {
     max-width: 620px;
 }
 
@@ -134,20 +113,20 @@
     padding-bottom: 96px;
 }
 
-.whoop-intake-body {
+.ow-intake-body {
     display: flex;
     flex-direction: column;
     gap: 16px;
 }
 
-.whoop-intake-section {
+.ow-intake-section {
     border: 1px solid rgba(51,65,85,0.55);
     border-radius: 14px;
     padding: 14px;
     background: rgba(15,23,42,0.42);
 }
 
-.whoop-intake-section-head {
+.ow-intake-section-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -155,7 +134,7 @@
     margin-bottom: 8px;
 }
 
-.whoop-intake-title {
+.ow-intake-title {
     margin: 0;
     color: var(--fg-0);
     font-size: 14px;
@@ -163,55 +142,29 @@
     letter-spacing: 0;
 }
 
-.whoop-intake-copy,
-.whoop-intake-status {
+.ow-intake-copy,
+.ow-intake-status {
     margin: 8px 0 0;
     line-height: 1.45;
 }
 
-.whoop-intake-status.ok {
+.ow-intake-status.ok {
     color: #bbf7d0;
 }
 
-.whoop-intake-status.warn {
+.ow-intake-status.warn {
     color: #fde68a;
 }
 
-.whoop-intake-status.err {
+.ow-intake-status.err {
     color: #fecaca;
 }
 
-.whoop-intake-actions {
+.ow-intake-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 12px;
-}
-
-.whoop-import-label {
-    display: block;
-    color: var(--fg-1);
-    font-size: 12px;
-    font-weight: 600;
-    margin-top: 10px;
-    margin-bottom: 6px;
-}
-
-.whoop-import-textarea {
-    width: 100%;
-    min-height: 148px;
-    resize: vertical;
-    border: 1px solid rgba(71,85,105,0.75);
-    border-radius: 12px;
-    background: rgba(2,6,23,0.42);
-    color: var(--fg-0);
-    padding: 10px 12px;
-    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-.whoop-import-textarea:focus {
-    outline: 2px solid rgba(96,165,250,0.78);
-    outline-offset: 2px;
 }
 
 .open-wearables-setup-list {
@@ -388,7 +341,7 @@
 }
 
 .open-wearables-setup-list code,
-.whoop-intake-status code {
+.ow-intake-status code {
     color: var(--fg-0);
     font-size: 11px;
     overflow-wrap: anywhere;
@@ -398,41 +351,6 @@
     color: var(--fg-dim);
     font-size: 12px;
     line-height: 1.4;
-}
-
-.whoop-import-file-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 10px;
-    min-width: 0;
-}
-
-.whoop-import-file-row .settings-row-detail {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.ai-fact-query-input {
-    min-width: 180px;
-    max-width: 260px;
-}
-
-.ai-fact-query-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 12px;
-}
-
-.ai-fact-query-controls .ai-fact-query-input {
-    flex: 1;
-    max-width: none;
-}
-
-.ai-fact-suggestion-actions {
-    margin-top: 10px;
 }
 
 @media (max-width: 640px) {
@@ -460,18 +378,16 @@
         justify-content: flex-start;
     }
 
-    .whoop-intake-section-head,
-    .whoop-import-file-row {
+    .ow-intake-section-head {
         align-items: flex-start;
         flex-direction: column;
     }
 
-    .whoop-intake-actions {
+    .ow-intake-actions {
         flex-direction: column;
     }
 
-    .whoop-intake-actions .btn,
-    .ai-fact-query-controls .btn {
+    .ow-intake-actions .btn {
         width: 100%;
     }
 
@@ -482,15 +398,5 @@
 
     .open-wearables-provider-list {
         grid-template-columns: 1fr;
-    }
-
-    .ai-fact-query-controls {
-        align-items: stretch;
-        flex-direction: column;
-    }
-
-    .ai-fact-query-input {
-        max-width: none;
-        width: 100%;
     }
 }

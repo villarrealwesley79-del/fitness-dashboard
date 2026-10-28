@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import copy
 import importlib
+import importlib.util
+import sqlite3
+import subprocess
 import threading
+from pathlib import Path
+
+import pytest
 
 import data_store
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_SHA = "7689148"  # last commit with the food tables, used only to build a legacy-schema DB
 
 
 def _recommendation(module):
@@ -73,19 +82,10 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: None)
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(module, "_apply_open_wearables_recommendation_guard", lambda rec, _facts: (rec, None))
-    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *args, **kwargs: [])
-    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *args, **kwargs: {})
-    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", lambda plan, **kwargs: (plan, []))
     monkeypatch.setattr(module, "get_oura_daily", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {"open_wearables": {}})
-    monkeypatch.setattr(module, "_whoop_recommendation_context", lambda _readiness: {"signals": {}, "source_conflict": None})
-    monkeypatch.setattr(
-        module,
-        "apply_wearable_modifiers",
-        lambda _training, workout, **kwargs: {"next_workout": workout, "load_source": None},
-    )
     monkeypatch.setattr(module, "build_open_wearables_recommendation_source", lambda *args, **kwargs: {})
-    monkeypatch.setattr(module, "_wearable_sources_payload", lambda _freshness, _whoop_context: {})
+    monkeypatch.setattr(module, "_wearable_sources_payload", lambda _freshness: {})
     return module, module.app.test_client(), state
 
 
@@ -104,7 +104,7 @@ def test_persist_current_workout_plan_uses_authoritative_saved_plan(monkeypatch,
     persisted_plan = module._persist_current_workout_plan(submitted_plan, "fp-user-1")
 
     assert save_calls == [
-        (1, "fp-user-1", submitted_plan, {"publish_adaptation_event_ids": None})
+        (1, "fp-user-1", submitted_plan, {})
     ]
     assert persisted_plan == authoritative_plan
     assert module.LAST_WORKOUT_RECOMMENDATION is persisted_plan
@@ -170,7 +170,6 @@ def test_adjust_marks_persisted_plan_as_user_customized(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
-    monkeypatch.setattr(module, "_lm_studio", None)
 
     assert client.get("/api/next-workout").status_code == 200
     adjusted = client.post("/api/workout/adjust", json={"constraint": "pectoral fly"})
@@ -180,42 +179,15 @@ def test_adjust_marks_persisted_plan_as_user_customized(monkeypatch, tmp_path):
     assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
 
 
-def test_adjust_does_not_mark_cached_refusal_as_user_customized(monkeypatch, tmp_path):
+def test_adjust_does_not_mark_unrecognised_request_as_user_customized(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
-
-    class FakeAdapter:
-        LM_STUDIO_MODEL_VERSION = "test-model"
-
-        def active_candidate(self):
-            return None
-
-        def model_version_for(self, _candidate):
-            return self.LM_STUDIO_MODEL_VERSION
-
-        def fallback_model_versions(self):
-            return []
-
-    cached = {
-        "status": "ok",
-        "result_kind": "refused",
-        "recommendation": _recommendation(module),
-        "summary": "No safe change.",
-        "applied_notes": [],
-        "constraint": "keep it unchanged",
-        "meta": {"model_version": "test-model"},
-        "cache_hit": False,
-    }
-    monkeypatch.setattr(module, "_lm_studio", FakeAdapter())
-    monkeypatch.setattr(module, "_ai_cache_key", lambda *_args, **_kwargs: "cached-refusal")
-    monkeypatch.setattr(module, "_ai_cache_get", lambda _key: dict(cached))
-    monkeypatch.setattr(module, "_ai_metric_log", lambda *_args, **_kwargs: None)
 
     assert client.get("/api/next-workout").status_code == 200
     adjusted = client.post("/api/workout/adjust", json={"constraint": "keep it unchanged"})
 
     assert adjusted.status_code == 200
-    assert adjusted.get_json()["result_kind"] == "refused"
+    assert adjusted.get_json()["status"] == "fallback"
     assert "_user_customized" not in data_store.get_current_workout_plan(1)["plan"]
 
 
@@ -377,7 +349,7 @@ def test_stale_unsaved_mutation_cannot_overwrite_concurrent_replacement(
     assert durable["plan"]["id"] == "concurrent-replacement"
 
 
-def test_adjust_cache_hit_preserves_absent_plan_cas(monkeypatch, tmp_path):
+def test_adjust_preserves_plan_cas_when_plan_is_replaced_mid_request(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     cached_plan = _recommendation(module)
     module._persist_current_workout_plan(cached_plan, "cached-fingerprint")
@@ -388,43 +360,22 @@ def test_adjust_cache_hit_preserves_absent_plan_cas(monkeypatch, tmp_path):
         lambda: "mutation-fingerprint",
     )
 
-    class FakeAdapter:
-        def active_candidate(self):
-            return None
-
-        def model_version_for(self, _candidate):
-            return "test-model"
-
-        def fallback_model_versions(self):
-            return []
-
     replacement = _plan_with_id(module, "concurrent-replacement")
+    real_payload = module._deterministic_adjust_payload
 
-    def cache_get(_key):
-        data_store.save_current_workout_plan(
-            1,
-            "replacement-fingerprint",
-            replacement,
-        )
+    def payload_after_concurrent_replacement(*args, **kwargs):
+        data_store.save_current_workout_plan(1, "replacement-fingerprint", replacement)
         module._current_workout_plan_for_fingerprint(
             "replacement-fingerprint",
             allow_stale_unsaved=True,
         )
-        return {
-            "status": "ok",
-            "result_kind": "changed",
-            "recommendation": _plan_with_id(module, "cached-adjustment"),
-            "summary": "Cached adjustment",
-            "applied_notes": [],
-        }
+        return real_payload(*args, **kwargs)
 
-    monkeypatch.setattr(module, "_lm_studio", FakeAdapter())
-    monkeypatch.setattr(module, "_ai_cache_get", cache_get)
-    monkeypatch.setattr(module, "_ai_metric_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_deterministic_adjust_payload", payload_after_concurrent_replacement)
 
     response = client.post(
         "/api/workout/adjust",
-        json={"constraint": "use the cached adjustment"},
+        json={"constraint": "no cardio today", "intent": {"drop_cardio": True}},
     )
 
     assert response.status_code == 409
@@ -465,7 +416,6 @@ def test_adjust_initial_generation_rejects_absent_create_delete_aba(
     module, client, _state = _client(monkeypatch, tmp_path)
     generated = _plan_with_id(module, "generated-adjustment-plan")
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
-    monkeypatch.setattr(module, "_lm_studio", None)
     original_save = module.save_current_workout_plan
     interleaved = {"done": False}
 
@@ -584,7 +534,6 @@ def test_dashboard_regeneration_rereads_concurrent_winner_across_fingerprint(
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
     )
-    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
     generated = _plan_with_id(module, "fresh-dashboard-plan")
     winner = _plan_with_id(module, "concurrent-dashboard-winner")
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
@@ -660,7 +609,6 @@ def test_dashboard_delete_race_serves_generated_plan_without_persisting_it(
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
     )
-    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
     generated = _plan_with_id(module, "losing-dashboard-generated-plan")
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
     original_save = module.save_current_workout_plan
@@ -675,41 +623,6 @@ def test_dashboard_delete_race_serves_generated_plan_without_persisting_it(
     assert response.status_code == 200
     assert response.get_json()["next_workout"]["id"] == "losing-dashboard-generated-plan"
     assert data_store.get_current_workout_plan(1) is None
-
-
-def test_repeated_adaptation_event_polling_does_not_backfill_plan_tables(
-    monkeypatch,
-    tmp_path,
-):
-    module, client, _state = _client(monkeypatch, tmp_path)
-    trace = []
-    original_connect = data_store.sqlite3.connect
-
-    def traced_connect(*args, **kwargs):
-        connection = original_connect(*args, **kwargs)
-        connection.set_trace_callback(trace.append)
-        return connection
-
-    monkeypatch.setattr(data_store.sqlite3, "connect", traced_connect)
-    for _ in range(3):
-        response = client.get("/api/workout-adaptation-events?unacknowledged=false")
-        assert response.status_code == 200
-        assert response.get_json()["events"] == []
-
-    plan_table_dml = []
-    for statement in trace:
-        normalized = statement.strip().upper()
-        if (
-            normalized.startswith("INSERT")
-            or normalized.startswith("UPDATE")
-            or normalized.startswith("DELETE")
-        ) and (
-            "WORKOUT_PLAN_GENERATIONS" in normalized
-            or "CURRENT_WORKOUT_PLANS" in normalized
-        ):
-            plan_table_dml.append(statement)
-    assert plan_table_dml == []
-    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == []
 
 
 def test_current_plan_lookup_uses_atomic_plan_snapshot(monkeypatch, tmp_path):
@@ -809,7 +722,6 @@ def test_adjust_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, 
         raise AssertionError("adjust should load the current persisted plan")
 
     monkeypatch.setattr(module, "generate_next_workout", fail_generate)
-    monkeypatch.setattr(module, "_lm_studio", None)
 
     adjusted = client.post("/api/workout/adjust", json={"constraint": "make this easier"})
 
@@ -833,7 +745,6 @@ def test_adjust_uses_persisted_plan_after_fingerprint_drift(monkeypatch, tmp_pat
         raise AssertionError("adjust should load the current persisted plan after fingerprint drift")
 
     monkeypatch.setattr(module, "generate_next_workout", fail_generate)
-    monkeypatch.setattr(module, "_lm_studio", None)
 
     adjusted = client.post("/api/workout/adjust", json={"constraint": "make this easier"})
 
@@ -944,7 +855,6 @@ def test_complete_workout_invalidates_persisted_current_plan(monkeypatch, tmp_pa
     assert completed.status_code == 200
 
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _new_recommendation(module))
-    monkeypatch.setattr(module, "_lm_studio", None)
 
     adjusted = client.post("/api/workout/adjust", json={"constraint": "make this easier"})
 
@@ -1036,3 +946,87 @@ def test_current_plan_cache_read_waits_for_owner_metadata(monkeypatch, tmp_path)
     assert not writer_thread.is_alive()
     assert not reader_thread.is_alive()
     assert reader_result["plan"] is None
+
+
+# Kept migration code (plan_version / plan_generation): legacy table upgrades, later boots are write-free.
+def _base_data_store(tmp_path):
+    shown = subprocess.run(
+        ["git", "-C", str(ROOT), "show", f"{BASE_SHA}:data_store.py"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0:
+        pytest.skip("base commit not available")
+    path = tmp_path / "base_data_store_7689148.py"
+    path.write_text(shown.stdout, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("base_data_store_7689148", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _dump(db_path, tables):
+    conn = sqlite3.connect(db_path)
+    try:
+        return {t: conn.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in sorted(tables)}
+    finally:
+        conn.close()
+
+
+
+_WRITE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "DROP")  # same set as base test_review_259
+
+
+def _trace_writes(monkeypatch):
+    writes = []
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(
+            lambda sql: writes.append(sql) if sql.lstrip().upper().startswith(_WRITE_PREFIXES) else None
+        )
+        return conn
+
+    monkeypatch.setattr(data_store.sqlite3, "connect", connect)
+    return writes
+
+
+
+def test_legacy_plan_table_migrates_and_later_boots_are_write_free(tmp_path, monkeypatch):
+    db_path = tmp_path / "fitness_data.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE current_workout_plans (user_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL, "
+                 "plan_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO current_workout_plans VALUES (1, 'fp-legacy', '{\"id\": \"legacy\"}', '2026-05-23T09:00:00')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+    data_store.init_data_db()
+
+    plan = data_store.get_current_workout_plan(1)
+    assert plan["plan"] == {"id": "legacy"} and plan["fingerprint"] == "fp-legacy"
+    assert (plan["plan_generation"], plan["plan_version"]) == (1, 0)
+    assert data_store.get_workout_plan_generation(1) == 1
+    writes = _trace_writes(monkeypatch)
+    data_store.init_data_db()
+    assert writes == []
+
+
+def test_init_data_db_issues_no_writes_on_base_schema_db_with_food_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "fitness_data.db"
+    base = _base_data_store(tmp_path)
+    base.DATA_DB = str(db_path)
+    base.init_data_db()
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO food_logs (user_id, client_id, date, logged_at, calories) "
+                 "VALUES (1, 'a', '2026-10-20', '2026-10-20T08:00', 300)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()  # first head boot may add nothing; must not touch food tables
+
+    writes = _trace_writes(monkeypatch)
+    data_store.init_data_db()
+    assert writes == []

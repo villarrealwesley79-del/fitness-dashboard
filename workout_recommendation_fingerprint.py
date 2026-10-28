@@ -66,10 +66,6 @@ def build_payload(
     cached_oura: dict,
     oura_rows: list[dict] | None,
     oura_db_file: str,
-    whoop_connection: dict,
-    whoop_freshness: dict,
-    whoop_fact: dict | None,
-    whoop_db_file: str,
 ) -> dict:
     apple_status, apple_last_data, apple_last_sync = apple_health_freshness
     return {
@@ -126,25 +122,6 @@ def build_payload(
                 for row in (oura_rows or [])
             ],
             "db": file_marker(oura_db_file),
-        },
-        "whoop": {
-            "status": whoop_connection.get("status"),
-            "connected_at": whoop_connection.get("connected_at"),
-            "last_successful_sync_at": whoop_connection.get("last_successful_sync_at"),
-            "last_sync_attempt_at": whoop_connection.get("last_sync_attempt_at"),
-            "reauth_required": whoop_connection.get("reauth_required"),
-            "freshness_status": whoop_freshness.get("status"),
-            "freshness_score_state": whoop_freshness.get("score_state"),
-            "daily_fact": {
-                "local_date": (whoop_fact or {}).get("local_date"),
-                "recovery_score": (whoop_fact or {}).get("recovery_score"),
-                "recovery_band": (whoop_fact or {}).get("recovery_band"),
-                "strain": (whoop_fact or {}).get("strain"),
-                "sleep_performance_pct": (whoop_fact or {}).get("sleep_performance_pct"),
-                "sleep_need_gap_min": (whoop_fact or {}).get("sleep_need_gap_min"),
-                "score_state": (whoop_fact or {}).get("score_state"),
-            },
-            "db": file_marker(whoop_db_file),
         },
     }
 

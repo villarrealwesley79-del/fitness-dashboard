@@ -1,22 +1,16 @@
-"""Contract tests for the FIT-14 workout history detail + AI analysis surfaces.
+"""Contract tests for the FIT-14 workout history detail surface.
 
 The history detail modal in the JS reads ``adherence`` (added / skipped /
-modified lists) per workout from the history endpoints and uses
-``/api/workout/analyze`` for the "Analyze workout" affordance. These
-tests lock in the contract the UI relies on:
+modified lists) per workout from the history endpoints. These tests lock
+in the contract the UI relies on:
 
 * /api/history exposes ``adherence`` so the detail modal can label
   exercises as planned / added / modified and surface skipped ones.
 * /api/history-all carries the same field for the analytics surface.
-* /api/workout/analyze accepts a historical reference (``workout_date``
-  or ``workout_id``) and does NOT mutate ``LAST_WORKOUT_RECOMMENDATION``
-  — the detail-modal Analyze button must be safe to use on past
-  workouts.
 """
 from __future__ import annotations
 
 import importlib
-import json
 
 import pytest
 
@@ -26,16 +20,6 @@ def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit14-history-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
-    # Stub the LM Studio call path so analyze tests don't burn 10+s
-    # per test on a real timeout to the local model that isn't running
-    # in the test environment. The route's deterministic-fallback path
-    # is the realistic CI shape anyway.
-    if getattr(module, "_lm_studio", None) is not None:
-        import lm_studio_adapter
-        def _raise(*_a, **_kw):
-            raise lm_studio_adapter.LmStudioError("test stub: LM Studio unreachable")
-        monkeypatch.setattr(lm_studio_adapter, "_completion_json", _raise, raising=False)
-        monkeypatch.setattr(lm_studio_adapter, "_preflight_candidate", _raise, raising=False)
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
 
@@ -184,59 +168,3 @@ def test_history_workout_includes_per_exercise_sets(fitness_app):
 # ──────────────────────────────────────────────────────────────────
 # /api/workout/analyze is read-only and accepts historical refs
 # ──────────────────────────────────────────────────────────────────
-
-def test_workout_analyze_accepts_workout_date_for_historical_ref(fitness_app):
-    """The in-modal Analyze button posts {workout_date: ...}. The
-    endpoint must accept that shape and return a 200 (analysis or
-    fallback). FIT-14 acceptance: "AI analysis can summarize completed
-    or historical workouts."
-    """
-    _seed_workout(fitness_app)
-    res = fitness_app.app.test_client().post(
-        "/api/workout/analyze",
-        data=json.dumps({"workout_date": "2026-05-18"}),
-        content_type="application/json",
-    )
-    assert res.status_code == 200, res.get_data(as_text=True)
-    payload = res.get_json()
-    assert payload.get("status") in ("ok", "fallback")
-    assert "analysis" in payload, "response must carry analysis block"
-
-
-def test_workout_analyze_does_not_mutate_recommendation_state(fitness_app):
-    """FIT-14 acceptance: "AI analysis can summarize completed or
-    historical workouts WITHOUT mutating plan state." Lock that in
-    with a sentinel — if a future refactor wires analyze into the
-    recommendation regeneration path, this catches it.
-    """
-    module = fitness_app
-    _seed_workout(module)
-    sentinel = {"name": "fit14-analyze-sentinel-plan"}
-    original = getattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
-    module.LAST_WORKOUT_RECOMMENDATION = sentinel
-    try:
-        module.app.test_client().post(
-            "/api/workout/analyze",
-            data=json.dumps({"workout_date": "2026-05-18"}),
-            content_type="application/json",
-        )
-        assert module.LAST_WORKOUT_RECOMMENDATION is sentinel, (
-            "LAST_WORKOUT_RECOMMENDATION was replaced by /api/workout/analyze"
-        )
-    finally:
-        module.LAST_WORKOUT_RECOMMENDATION = original
-
-
-def test_workout_analyze_accepts_workout_id_for_historical_ref(fitness_app):
-    """The in-modal Analyze button prefers ``workout_id`` when the
-    history payload has one. Endpoint must accept that too.
-    """
-    _seed_workout(fitness_app)
-    res = fitness_app.app.test_client().post(
-        "/api/workout/analyze",
-        data=json.dumps({"workout_id": "wkt-fit14-test-1"}),
-        content_type="application/json",
-    )
-    assert res.status_code == 200
-    payload = res.get_json()
-    assert payload.get("status") in ("ok", "fallback")

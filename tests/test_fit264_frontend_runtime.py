@@ -37,18 +37,6 @@ process.stdout.write(JSON.stringify({
     assert output == {"zone": "--", "subtitle": ""}
 
 
-def test_meal_refresh_request_ids_use_runtime_uuid_when_available():
-    output = run_app_js(
-        ["mealV2GenerateRequestId"],
-        """
-sandbox.crypto = { randomUUID: () => 'runtime-uuid' };
-process.stdout.write(JSON.stringify(e.mealV2GenerateRequestId()));
-""",
-    )
-
-    assert output == "runtime-uuid"
-
-
 def test_api_merges_caller_headers_with_csrf_and_same_origin_credentials():
     output = run_app_js(
         ["api"],
@@ -350,13 +338,13 @@ e.state.activeWorkout = { id: 'deferred-workout', exercises: [], queuedForSyncRe
 sandbox.__fitSet.activeWorkoutDraftScopeForWorkout(() => '');
 e.saveActiveWorkoutDraft({ syncDom: false });
 sandbox.__fitSet.activeWorkoutDraftScopeForWorkout(() => 'user:owner');
-sandbox.__fitSet.clearMealQueueAuthScopeRetry(() => {});
+sandbox.__fitSet.clearAuthScopeRetry(() => {});
 sandbox.__fitSet.restoreActiveWorkoutDraft(() => {});
 e.settleActiveWorkoutDraftAfterAuthScope({ ok: true });
 process.stdout.write(JSON.stringify(saved));
 """,
         mocks=[
-            "activeWorkoutDraftScopeForWorkout", "clearMealQueueAuthScopeRetry",
+            "activeWorkoutDraftScopeForWorkout", "clearAuthScopeRetry",
             "restoreActiveWorkoutDraft",
         ],
     )
@@ -367,42 +355,18 @@ process.stdout.write(JSON.stringify(saved));
     assert output[0]["value"]["workout"]["id"] == "deferred-workout"
 
 
-def test_whoop_disconnect_invalidates_dashboard_and_rerenders_settings():
-    output = run_app_js(
-        ["disconnectWhoop", "state"],
-        """
-e.state.dashboard = { cached: true };
-e.state.reco = { cached: true };
-e.state.whoopStatus = { connected: true };
-const calls = [];
-sandbox.__fitSet.api(async () => ({}));
-sandbox.__fitSet.renderWhoopFreshnessDetail(() => {});
-sandbox.__fitSet.toast(() => calls.push('toast'));
-sandbox.__fitSet.renderSettings(async () => calls.push('settings'));
-await e.disconnectWhoop();
-process.stdout.write(JSON.stringify({ state: e.state, calls }));
-""",
-        mocks=["api", "renderWhoopFreshnessDetail", "toast", "renderSettings"],
-    )
-
-    assert output["state"]["dashboard"] is None
-    assert output["state"]["reco"] is None
-    assert output["state"]["whoopStatus"]["connected"] is False
-    assert output["calls"] == ["toast", "settings"]
-
-
 def test_auth_scope_settlement_restores_then_flushes_draft():
     output = run_app_js(
         ["settleActiveWorkoutDraftAfterAuthScope"],
         """
 const calls = [];
-sandbox.__fitSet.clearMealQueueAuthScopeRetry(() => calls.push('clear-retry'));
+sandbox.__fitSet.clearAuthScopeRetry(() => calls.push('clear-retry'));
 sandbox.__fitSet.restoreActiveWorkoutDraft(() => calls.push('restore'));
 sandbox.__fitSet.flushPendingActiveWorkoutDraftSave(() => calls.push('flush'));
 e.settleActiveWorkoutDraftAfterAuthScope({ ok: true });
 process.stdout.write(JSON.stringify(calls));
 """,
-        mocks=["clearMealQueueAuthScopeRetry", "restoreActiveWorkoutDraft", "flushPendingActiveWorkoutDraftSave"],
+        mocks=["clearAuthScopeRetry", "restoreActiveWorkoutDraft", "flushPendingActiveWorkoutDraftSave"],
     )
 
     assert output == ["clear-retry", "restore", "flush"]
@@ -419,110 +383,22 @@ sandbox.setInterval = () => 1;
 sandbox.__fitSet.renderGreeting(() => {});
 sandbox.__fitSet.wireEvents(() => {});
 sandbox.__fitSet.switchTabFromHash(() => {});
-sandbox.__fitSet.fetchFoodLogRefreshNotices(async () => {});
-sandbox.__fitSet.refreshAiStatus(() => {});
 sandbox.__fitSet.renderSyncBanner(() => {});
-sandbox.__fitSet.wireMealComposer(() => {});
 sandbox.__fitSet.registerServiceWorker(() => {});
-sandbox.__fitSet.refreshMealQueueAuthScope(async () => scopeResult);
+sandbox.__fitSet.refreshAuthScope(async () => scopeResult);
 sandbox.__fitSet.settleActiveWorkoutDraftAfterAuthScope((result) => settled.push(result));
-sandbox.__fitSet.scheduleMealQueueAuthScopeRetry(() => {});
-sandbox.__fitSet.fetchWorkoutAdaptationNotices(async () => {});
-sandbox.__fitSet.cleanupOrphanedMealQueuePhotos(async () => {});
+sandbox.__fitSet.scheduleAuthScopeRetry(() => {});
 sandbox.__fitSet.flushSyncQueue(() => {});
-sandbox.__fitSet.flushMealSyncQueue(() => {});
 e.boot();
 await new Promise((resolve) => setTimeout(resolve, 0));
 process.stdout.write(JSON.stringify(settled));
 """,
         mocks=[
             "renderGreeting", "wireEvents", "switchTabFromHash",
-            "fetchFoodLogRefreshNotices", "refreshAiStatus", "renderSyncBanner",
-            "wireMealComposer", "registerServiceWorker", "refreshMealQueueAuthScope",
-            "settleActiveWorkoutDraftAfterAuthScope", "scheduleMealQueueAuthScopeRetry",
-            "fetchWorkoutAdaptationNotices", "cleanupOrphanedMealQueuePhotos",
-            "flushSyncQueue", "flushMealSyncQueue",
+            "renderSyncBanner", "registerServiceWorker",
+            "refreshAuthScope", "settleActiveWorkoutDraftAfterAuthScope",
+            "scheduleAuthScopeRetry", "flushSyncQueue",
         ],
     )
 
     assert output == [{"ok": True, "status": "ready", "scope": "user:owner"}]
-
-
-def test_meal_undo_clears_status_before_toast_and_always_refreshes_macros():
-    output = run_app_js(
-        ["postMealUndo"],
-        """
-const calls = [];
-sandbox.__fitSet.api(async () => calls.push('delete'));
-sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear-status'));
-sandbox.__fitSet.toast(() => calls.push('toast'));
-sandbox.__fitSet.refreshMacroCard(() => calls.push('refresh'));
-await e.postMealUndo('meal-1');
-process.stdout.write(JSON.stringify(calls));
-""",
-        mocks=["api", "clearMealComposerStatus", "toast", "refreshMacroCard"],
-    )
-
-    assert output == ["delete", "clear-status", "toast", "refresh"]
-
-
-def test_pending_meal_review_renders_warning_before_macro_refresh():
-    output = run_app_js(
-        ["handleMealIntakeResponse"],
-        """
-const calls = [];
-sandbox.__fitSet.isMealV2Payload(() => false);
-sandbox.__fitSet.upsertMealPendingEntry(() => calls.push('upsert'));
-sandbox.__fitSet.clearMealComposerInputs(() => calls.push('clear-inputs'));
-sandbox.__fitSet.clearMealDraft(() => calls.push('clear-draft'));
-sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear-status'));
-sandbox.__fitSet.renderMealPendingList(() => calls.push('render'));
-sandbox.__fitSet.toast(() => calls.push('toast'));
-sandbox.__fitSet.refreshMacroCard(() => calls.push('refresh'));
-e.handleMealIntakeResponse({ status: 'pending_review', estimate: {} }, {
-  clientId: 'meal-1', imageFiles: [], localTime: {},
-});
-process.stdout.write(JSON.stringify(calls));
-""",
-        mocks=[
-            "isMealV2Payload", "upsertMealPendingEntry", "clearMealComposerInputs",
-            "clearMealDraft", "clearMealComposerStatus", "renderMealPendingList",
-            "toast", "refreshMacroCard",
-        ],
-    )
-
-    assert output == [
-        "upsert", "clear-inputs", "clear-draft", "clear-status", "render", "toast", "refresh"
-    ]
-
-
-def test_dashboard_outage_does_not_block_adapted_workout_refresh_or_event_feed():
-    output = run_app_js(
-        ["fetchWorkoutAdaptationNotices"],
-        """
-const calls = [];
-sandbox.__fitSet.api(async (path) => {
-  calls.push(path.split('?')[0]);
-  return path.includes('/evaluate')
-    ? { evaluated_count: 1, applied_plan_revision: 3, retry_after_ms: null }
-    : { events: [], applied_plan_revision: 3 };
-});
-sandbox.__fitSet.getDashboard(async () => { calls.push('dashboard'); throw new Error('outage'); });
-sandbox.__fitSet.paintDashboardFromState(() => calls.push('paint'));
-sandbox.__fitSet.getNextWorkout(async () => calls.push('workout'));
-sandbox.__fitSet.renderNextWorkout(async () => calls.push('render-workout'));
-sandbox.__fitSet.scheduleWorkoutAdaptationEvaluationRetry(() => calls.push('retry'));
-sandbox.console = { warn() {}, error() {}, log() {} };
-await e.fetchWorkoutAdaptationNotices();
-process.stdout.write(JSON.stringify(calls));
-""",
-        mocks=[
-            "api", "getDashboard", "paintDashboardFromState", "getNextWorkout",
-            "renderNextWorkout", "scheduleWorkoutAdaptationEvaluationRetry",
-        ],
-    )
-
-    assert output == [
-        "/api/workout-adaptation-events/evaluate", "retry", "dashboard", "workout",
-        "render-workout", "retry", "/api/workout-adaptation-events",
-    ]

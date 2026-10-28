@@ -25,7 +25,6 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     monkeypatch.setattr(module, "get_current_workout_plan", lambda _user_id: None)
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fit286-fingerprint")
     monkeypatch.setattr(module, "_workout_with_auth_scope", lambda workout: workout)
-    monkeypatch.setattr(module.workout_adaptation, "project_event", lambda event: event)
     persisted_plans = []
 
     def persist_plan(plan, _fingerprint):
@@ -54,25 +53,6 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
 
     monkeypatch.setattr(module, "generate_next_workout", generate_workout)
 
-    whoop_explanation = "WHOOP recovery 34 triggered one deload modifier"
-    conflict_explanation = "Oura readiness and WHOOP recovery disagree; WHOOP stays conservative"
-    monkeypatch.setattr(
-        module,
-        "_whoop_recommendation_context",
-        lambda _readiness: {
-            "signals": {
-                "display_only": False,
-                "applied_modifiers": ["deload"],
-                "explanations": [whoop_explanation],
-                "freshness": {"status": "fresh"},
-            },
-            "source_conflict": {
-                "has_conflict": True,
-                "conservative_source": "whoop",
-                "explanation": conflict_explanation,
-            },
-        },
-    )
     monkeypatch.setattr(
         module,
         "_open_wearables_recommendation_facts",
@@ -82,6 +62,14 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
             "metric": "sleep_duration",
             "value": 330,
             "unit": "min",
+            "freshness": "fresh",
+            "used_for_recommendation": True,
+        }, {
+            "provider_id": "whoop",
+            "source_provider": "whoop",
+            "metric": "recovery_score",
+            "date": "2026-10-28",
+            "value": 20,
             "freshness": "fresh",
             "used_for_recommendation": True,
         }],
@@ -110,37 +98,36 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     assert response.status_code == 200
     payload = response.get_json()
     exercise = payload["next_workout"]["exercises"][0]
-    assert persisted_plans == []  # GET is read-only; plans are published by POST evaluate
-    assert exercise["target_sets"] == 4  # WHOOP's 0.8 clamp on the base 5 sets
-    assert exercise["rationale"].count("WHOOP modifier applied") == 1
-    assert payload["workout_adaptation_events"] == []
+    assert persisted_plans == []  # GET is read-only
+    assert exercise["target_sets"] == 5  # no WHOOP set clamp any more
+    assert exercise["rpe_target"] == 7  # recovery 20 also gets the RPE cap: worse recovery never shows harder targets
 
     open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
+    # Sleep and recovery both fire, but the recommendation is downgraded once.
     assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [
-        "sleep_caution"
+        "sleep_caution",
+        "recovery_deload",
     ]
     assert len(open_wearables_guard_calls) == 1
-    assert open_wearables_guard_calls[0]["modifier"]["applied_modifiers"] == [
-        "sleep_caution"
-    ]
+    assert open_wearables_guard_calls[0]["modifier"]["downgrade"] is True
     assert generated_recommendations == [open_wearables_guard_calls[0]["output"]]
+    assert open_wearables_guard_calls[0]["output"] == module._downgrade_training_recommendation_once(
+        open_wearables_guard_calls[0]["input"]
+    )
     assert modifier_sequence.index("open_wearables") < modifier_sequence.index("generate")
     assert "330 min" in open_wearables_detail
+    assert "recovery score 20 (provider: whoop, via: open_wearables)" in open_wearables_detail
     reasoning = payload["reasoning"]
-    assert reasoning.count(whoop_explanation) == 1
-    assert reasoning.count(conflict_explanation) == 1
     assert reasoning.count(open_wearables_detail) == 1
-    assert reasoning.index("Readiness 88") < reasoning.index(whoop_explanation)
-    assert reasoning.index(whoop_explanation) < reasoning.index(conflict_explanation)
-    assert reasoning.index(conflict_explanation) < reasoning.index(open_wearables_detail)
+    assert reasoning.index("Readiness 88") < reasoning.index(open_wearables_detail)
     assert list(payload["recommendation_sources"]) == [
         "load_source",
         "load_source_summary_hidden",
         "open_wearables",
-        "source_conflict",
         "source_proof",
         "wearable_sources",
-        "whoop",
     ]
     assert payload["recommendation_sources"]["open_wearables"]["used_for_recommendation"] is True
-    assert payload["recommendation_sources"]["whoop"]["applied_modifiers"] == ["deload"]
+    proof = payload["recommendation_sources"]["source_proof"]["open_wearables"]
+    assert proof["modifier_applied"] is True
+    assert "recovery_score" in proof["fields_used"]
