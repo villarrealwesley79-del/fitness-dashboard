@@ -87,8 +87,7 @@ def test_open_wearables_facts_downgrade_smart_recommendation_route(monkeypatch, 
     assert "sleep_caution" in payload["recommendation_sources"]["open_wearables"]["applied_modifiers"]
     assert payload["recommendation_sources"]["load_source"] == "apple_health"
     assert payload["recommendation_sources"]["load_source_summary_hidden"] is True
-    assert payload["recommendation_sources"]["whoop"]["display_only"] is True
-    assert payload["recommendation_sources"]["whoop"]["summary_hidden"] is True
+    assert "whoop" not in payload["recommendation_sources"]
 
 
 def test_open_wearables_facts_downgrade_dashboard_and_next_workout_routes(monkeypatch, tmp_path):
@@ -108,7 +107,6 @@ def test_open_wearables_facts_downgrade_dashboard_and_next_workout_routes(monkey
     assert next_workout["recommendation_sources"]["open_wearables"]["role"] == "bounded modifier"
     assert next_workout["recommendation_sources"]["load_source"] == "apple_health"
     assert next_workout["recommendation_sources"]["load_source_summary_hidden"] is True
-    assert next_workout["recommendation_sources"]["whoop"]["summary_hidden"] is True
 
 
 def test_open_wearables_facts_route_filters_current_profile(monkeypatch, tmp_path):

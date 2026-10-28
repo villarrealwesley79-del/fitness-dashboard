@@ -877,20 +877,6 @@ def test_smart_recommendation_excludes_inconsistent_sleep_from_debt_and_reasonin
         lambda *_a, **_kw: {"applied_count": 0},
     )
     monkeypatch.setattr(module, "_cached_wttr", lambda *_a, **_kw: {"available": False})
-    monkeypatch.setattr(
-        module,
-        "_whoop_recommendation_context",
-        lambda *_a, **_kw: {"signals": {}, "source_conflict": {}},
-    )
-    monkeypatch.setattr(
-        module,
-        "apply_wearable_modifiers",
-        lambda recommendation, next_workout, **_kw: {
-            "recommendation": recommendation,
-            "next_workout": next_workout,
-            "load_source": "deterministic",
-        },
-    )
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(
         module,

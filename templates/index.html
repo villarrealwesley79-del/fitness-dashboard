@@ -65,7 +65,6 @@
                     <button id="btn-adjust-plan" class="btn btn-ghost" type="button">Adjust Plan</button>
                 </div>
                 <div class="reco-freshness" id="reco-freshness">
-                    <span class="state-chip" id="reco-fresh-whoop" data-source="whoop" title="WHOOP freshness">WHOOP —</span>
                     <span class="state-chip" id="reco-fresh-oura" data-source="oura" title="Oura freshness">Oura —</span>
                     <span class="state-chip" id="reco-fresh-apple" data-source="apple_health" title="Apple Health freshness">Apple —</span>
                 </div>
@@ -73,7 +72,7 @@
                     <div class="reco-source-copy">
                         <div class="reco-source-eyebrow">Recommendation sources</div>
                         <div class="reco-source-summary" id="reco-sources-summary">Waiting for wearable source detail…</div>
-                        <div class="reco-source-note" id="reco-sources-note">Source attribution stays visible when recovery data ages or conflicts.</div>
+                        <div class="reco-source-note" id="reco-sources-note">Source attribution stays visible when recovery data ages.</div>
                     </div>
                     <div class="reco-source-actions">
                         <button
@@ -86,7 +85,6 @@
                         >View details</button>
                     </div>
                 </div>
-                <div id="reco-source-conflict" class="reco-source-conflict" hidden aria-live="polite"></div>
             </div>
 
             <div class="section-title">TODAY AT A GLANCE</div>
@@ -690,50 +688,6 @@
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
                     </div>
                 </div>
-                <div class="settings-row" id="whoop-settings-row">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">
-                            <span class="int-dot" id="whoop-int-dot"></span>
-                            WHOOP fallback
-                        </span>
-                        <span id="whoop-last-sync" class="settings-row-detail">Checking WHOOP connection…</span>
-                    </div>
-                    <div class="settings-row-control settings-row-control-stack">
-                        <span id="whoop-connect-state" class="state-chip">—</span>
-                        <div class="settings-inline-actions">
-                            <button id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden aria-haspopup="dialog" aria-controls="modal-whoop-intake">Connect</button>
-                            <button id="btn-sync-whoop" class="btn btn-ghost btn-sm" type="button">Sync</button>
-                            <button id="btn-disconnect-whoop" class="btn btn-ghost btn-sm" type="button">Disconnect</button>
-                            <button id="btn-delete-whoop-data" class="btn btn-ghost btn-sm" type="button">Delete data</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="integration-detail" id="whoop-detail">
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Connection</span>
-                        <span class="detail-value" id="whoop-detail-connection">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Data through</span>
-                        <span class="detail-value" id="whoop-detail-data-through">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Recovery</span>
-                        <span class="detail-value" id="whoop-detail-recovery">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Source</span>
-                        <span class="detail-value" id="whoop-detail-source">—</span>
-                    </div>
-                    <div class="integration-detail-row" id="whoop-detail-attention-row">
-                        <span class="detail-label">Attention</span>
-                        <span class="detail-value" id="whoop-detail-attention">—</span>
-                    </div>
-                    <div class="integration-detail-row integration-detail-warn" id="whoop-conflict-row" hidden>
-                        <span class="detail-label">Conflict</span>
-                        <span class="detail-value" id="whoop-conflict-text">WHOOP and Oura disagree.</span>
-                    </div>
-                </div>
                 <div class="settings-row" id="settings-row-oura">
                     <div class="settings-row-label">
                         <span class="int-dot int-dot-on"></span>
@@ -977,7 +931,7 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
-                <p class="dim" id="reco-sources-drawer-summary">Source attribution stays visible when recovery data is stale, missing, or conflicted.</p>
+                <p class="dim" id="reco-sources-drawer-summary">Source attribution stays visible when recovery data is stale or missing.</p>
                 <div class="reco-source-drawer-section">
                     <div class="reco-source-drawer-label">Used today</div>
                     <div class="reco-source-list" id="reco-sources-used"></div>
@@ -986,55 +940,6 @@
                     <div class="reco-source-drawer-label">Wearable signals</div>
                     <div class="reco-source-list" id="reco-sources-signals"></div>
                 </div>
-                <div class="reco-source-drawer-section">
-                    <div class="reco-source-drawer-label">Conflicts</div>
-                    <div class="reco-source-list" id="reco-sources-conflicts"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="modal-whoop-intake" class="modal" role="dialog" aria-modal="true" aria-labelledby="whoop-intake-title" hidden>
-        <div class="modal-sheet modal-sheet-tall whoop-intake-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="whoop-intake-title">Connect WHOOP</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body whoop-intake-body">
-                <section class="whoop-intake-section" aria-labelledby="whoop-live-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="whoop-live-title" class="whoop-intake-title">Live WHOOP sync</h4>
-                        <span id="whoop-connect-modal-status" class="state-chip state-chip-sm">Ready</span>
-                    </div>
-                    <p class="dim whoop-intake-copy">Open WHOOP, approve access, then return here. Settings will refresh when the callback lands.</p>
-                    <div class="whoop-intake-actions">
-                        <button id="btn-whoop-connect-live" class="btn btn-primary btn-sm" type="button">Open WHOOP</button>
-                        <a id="whoop-connect-open-link" class="btn btn-ghost btn-sm" href="#" target="_blank" rel="noopener noreferrer" hidden>Open link</a>
-                    </div>
-                    <p id="whoop-connect-fallback" class="settings-row-detail whoop-intake-status" hidden>Popup blocked. Use the link above to continue.</p>
-                </section>
-
-                <section class="whoop-intake-section" aria-labelledby="whoop-import-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="whoop-import-title" class="whoop-intake-title">Import WHOOP export</h4>
-                    </div>
-                    <label class="whoop-import-label" for="whoop-import-csv-text">Paste WHOOP CSV/export data</label>
-                    <textarea id="whoop-import-csv-text" class="whoop-import-textarea" rows="8" spellcheck="false" autocomplete="off" placeholder="date,recovery_score,recovery_band,strain,sleep_performance_pct"></textarea>
-                    <p class="settings-row-detail">Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected.</p>
-                    <div class="whoop-import-file-row">
-                        <input id="whoop-import-file" type="file" accept=".csv,text/csv" hidden>
-                        <button id="btn-whoop-import-file" class="btn btn-ghost btn-sm" type="button">Choose file</button>
-                        <span id="whoop-import-file-name" class="settings-row-detail">No file selected</span>
-                    </div>
-                    <div class="whoop-intake-actions">
-                        <button id="btn-whoop-import-submit" class="btn btn-secondary btn-sm" type="button">Import data</button>
-                        <button id="btn-whoop-import-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
-                    </div>
-                    <p id="whoop-import-status" class="settings-row-detail whoop-intake-status" role="status">Manual import stays available even when live WHOOP sync is not configured.</p>
-                </section>
-            </div>
-            <div class="modal-foot modal-foot-row">
-                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
             </div>
         </div>
     </div>
@@ -1045,13 +950,13 @@
                 <h3 class="modal-title" id="open-wearables-setup-title">Add a wearable</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
-            <div class="modal-body whoop-intake-body">
-                <section class="whoop-intake-section" aria-labelledby="open-wearables-hub-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="open-wearables-hub-title" class="whoop-intake-title">Open Wearables</h4>
+            <div class="modal-body ow-intake-body">
+                <section class="ow-intake-section" aria-labelledby="open-wearables-hub-title">
+                    <div class="ow-intake-section-head">
+                        <h4 id="open-wearables-hub-title" class="ow-intake-title">Open Wearables</h4>
                         <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Add device</span>
                     </div>
-                    <p class="dim whoop-intake-copy">This web app prepares the local hub account on this Mac, then opens wearable sign-in when you pick a device.</p>
+                    <p class="dim ow-intake-copy">This web app prepares the local hub account on this Mac, then opens wearable sign-in when you pick a device.</p>
                     <div class="open-wearables-pairing-card">
                         <div>
                             <strong>Add a person or device</strong>
@@ -1071,7 +976,7 @@
                             <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="google" disabled>Google Health Connect</button>
                         </div>
                         <p class="settings-row-detail open-wearables-provider-note">Cloud wearables open provider sign-in when ready. If setup is missing, the button opens Open Wearables so you can finish it there.</p>
-                        <div class="whoop-intake-actions open-wearables-pairing-actions">
+                        <div class="ow-intake-actions open-wearables-pairing-actions">
                             <button id="btn-open-wearables-portal-inline" class="btn btn-ghost btn-sm" type="button">Open Open Wearables</button>
                             <button id="btn-open-wearables-copy-link-inline" class="btn btn-ghost btn-sm" type="button">Copy Open Wearables link</button>
                         </div>
@@ -1096,16 +1001,16 @@
                         <li><strong>Device</strong><span id="open-wearables-step-device">Choose a wearable</span></li>
                         <li><strong>Connection</strong><span id="open-wearables-step-connection">Waiting for pairing</span></li>
                     </ol>
-                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">Prepare pairing, choose a wearable, then check connection.</p>
-                    <div class="whoop-intake-actions">
+                    <p id="open-wearables-setup-status" class="settings-row-detail ow-intake-status" role="status">Prepare pairing, choose a wearable, then check connection.</p>
+                    <div class="ow-intake-actions">
                         <button id="btn-open-wearables-bootstrap" class="btn btn-primary btn-sm" type="button">Prepare pairing</button>
                         <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check connection</button>
                     </div>
                 </section>
 
-                <details class="whoop-intake-section open-wearables-advanced">
+                <details class="ow-intake-section open-wearables-advanced">
                     <summary>Advanced diagnostics</summary>
-                    <p class="dim whoop-intake-copy">For local hub setup, connection details, and safe error codes.</p>
+                    <p class="dim ow-intake-copy">For local hub setup, connection details, and safe error codes.</p>
                     <div class="open-wearables-setup-form">
                         <label class="open-wearables-setup-field" for="open-wearables-base-url">
                             <span>Hub API URL</span>
@@ -1128,12 +1033,12 @@
                             <input id="open-wearables-user-id" class="select-inline" type="text" autocomplete="off" placeholder="Optional">
                         </label>
                     </div>
-                    <div class="whoop-intake-actions">
+                    <div class="ow-intake-actions">
                         <button id="btn-open-wearables-portal" class="btn btn-ghost btn-sm" type="button">Open hub admin</button>
                         <button id="btn-open-wearables-copy-link" class="btn btn-ghost btn-sm" type="button">Copy hub link</button>
                         <button id="btn-open-wearables-setup-save" class="btn btn-ghost btn-sm" type="button">Save advanced</button>
                     </div>
-                    <p class="settings-row-detail whoop-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
+                    <p class="settings-row-detail ow-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
                 </details>
             </div>
             <div class="modal-foot modal-foot-row">

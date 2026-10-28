@@ -29,13 +29,9 @@ import urllib.parse
 import base64
 import time
 import re
-import secrets
 import uuid
 import tempfile
 import threading
-import fcntl
-import shutil
-from subprocess import SubprocessError
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
@@ -64,46 +60,7 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
-from whoop_client import (
-    WhoopApiError,
-    WhoopClient,
-    create_whoop_authorization_url,
-    exchange_whoop_code,
-    load_whoop_config,
-    redact_whoop_error,
-    revoke_whoop_access,
-)
-from whoop_recommendations import (
-    apply_wearable_modifiers,
-    build_whoop_recommendation_signals,
-    detect_wearable_source_conflicts,
-)
-from whoop_store import (
-    clear_whoop_data,
-    count_whoop_upsert_conflicts,
-    consume_oauth_state,
-    create_oauth_state,
-    delete_protected_secret,
-    disconnect_whoop,
-    get_connection_status as get_whoop_connection_status,
-    get_daily_fact as get_whoop_daily_fact,
-    init_whoop_db,
-    invalidate_oauth_states,
-    latest_whoop_fact_source_reason,
-    latest_whoop_freshness,
-    list_whoop_daily_facts,
-    list_whoop_sync_runs,
-    load_protected_secret,
-    load_connection_token_material,
-    finish_whoop_sync_run,
-    mark_reauth_required,
-    rotate_connection_tokens,
-    save_protected_secret,
-    record_whoop_sync_run,
-    save_connection_tokens,
-    upsert_whoop_records,
-    project_whoop_daily_facts,
-)
+from protected_secrets import delete_protected_secret, load_protected_secret, save_protected_secret
 from history_normalization import canonical_training_category, normalize_history_item
 from open_wearables_adapter import (
     build_open_wearables_status,
@@ -139,8 +96,6 @@ app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
 from auth import (
-    CSRF_HEADER_NAME,
-    CSRF_HEADER_VALUE,
     data_user_id_for,
     init_auth,
     remember_trusted_no_login_oauth_state,
@@ -163,8 +118,6 @@ except Exception as _e:
 # ==================== DATA PERSISTENCE ====================
 # Store runtime data under DATA_DIR when configured, otherwise next to the app.
 JSON_DATA_LOCK = threading.RLock()
-WHOOP_SYNC_LOCK = threading.Lock()
-WHOOP_SYNC_LOCK_FILE = data_path("whoop_sync.lock")
 WORKOUTS_FILE = data_path("data_workouts.json")
 SORENESS_FILE = data_path("data_soreness.json")
 SETTINGS_FILE = data_path("data_settings.json")
@@ -174,11 +127,8 @@ BASELINES_FILE = data_path("data_baselines.json")
 BODY_FILE = data_path("data_body.json")
 SLEEP_FILE = data_path("data_sleep.json")
 OURA_DB_FILE = data_path("oura_daily.sqlite3")
-WHOOP_DB_FILE = data_path("whoop.sqlite3")
 WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
 OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
-WHOOP_CSV_MAX_BYTES = 512 * 1024
-WHOOP_CSV_MAX_ROWS = 5000
 
 # ==================== WEATHER (wttr.in) ====================
 # Lightweight cache to avoid hammering the free endpoint.
@@ -940,7 +890,6 @@ SLEEP_DATA = load_json(SLEEP_FILE, [])
 
 # Initialize Oura SQLite storage (safe no-op if file exists)
 init_oura_db(OURA_DB_FILE)
-init_whoop_db(WHOOP_DB_FILE)
 init_data_db()
 
 
@@ -4180,60 +4129,36 @@ def _same_day_preserved_workout_plan(today_s: str) -> dict | None:
     return plan
 
 
-def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
-    """Apply wearable (WHOOP deload/caution) modifiers to a base plan for
-    DISPLAY, given an already-built wearable context. Fail-open: if the modifier
-    transform raises, degrade to serving the base plan rather than 500-ing.
+def _wearable_adjusted_for_display(base_plan, open_wearables_modifier):
+    """Cap rpe_target at the Open Wearables recovery cap, for DISPLAY only.
 
-    apply_wearable_modifiers deep-copies its input, so ``base_plan`` (and the
-    persisted canonical row it may point at) is never mutated. The returned dict
-    always carries ``next_workout``; the caller must NOT persist it (FIT-256
-    finding 2: the durable plan stays the base/programmed plan).
+    Returns a copy; the persisted canonical plan stays the base plan (FIT-256
+    finding 2), so callers must not persist the result.
     """
-    whoop_context = whoop_context or {}
-    try:
-        return apply_wearable_modifiers(
-            guarded_recommendation,
-            base_plan,
-            whoop_signals=whoop_context.get("signals"),
-            source_conflict=whoop_context.get("source_conflict"),
-        )
-    except Exception:
-        return {"next_workout": base_plan, "load_source": None}
+    cap = (open_wearables_modifier or {}).get("rpe_cap")
+    if cap is None or not isinstance(base_plan, dict):
+        return base_plan
+    plan = copy.deepcopy(base_plan)
+    for exercise in plan.get("exercises") or []:
+        rpe = exercise.get("rpe_target") if isinstance(exercise, dict) else None
+        if isinstance(rpe, (int, float)) and rpe > cap:
+            exercise["rpe_target"] = cap
+    return plan
 
 
 def _wearable_display_adjusted_plan(base_plan):
-    """Self-contained display-time wearable transform for surfaces that render a
-    persisted plan but don't already build the wearable context themselves
-    (``/gym-now``, ``/api/workout/swap``, ``/api/workout/adjust``).
-
-    FIT-256 finding 2 follow-up: the canonical persisted plan is always the
-    base/programmed plan (persisting the modifier-clamped output would ratchet a
-    transient wearable reading into a permanent set reduction). So every surface
-    that returns a plan to the user must re-derive the wearable-adjusted *view*
-    on the way out, or it would show un-clamped base sets/RPE during an active
-    deload/caution while ``/api/dashboard`` and ``/api/next-workout`` show the
-    clamped values -- the opposite of a recovery signal.
-
-    Mirrors the inputs ``/api/next-workout`` uses so those surfaces render
-    identical clamped values. Best-effort; returns ``base_plan`` unchanged on any
-    failure. Never persist the result.
+    """Display-time Open Wearables recovery cap for surfaces that render a
+    persisted plan without building the modifier themselves (``/gym-now``,
+    ``/api/workout/swap``, ``/api/workout/adjust``). Best-effort: returns
+    ``base_plan`` unchanged on any failure. Never persist the result.
     """
     if not isinstance(base_plan, dict) or not base_plan:
         return base_plan
     try:
-        training_recommendation = _current_workout_training_recommendation()
-        open_wearables_facts = _open_wearables_recommendation_facts()
-        guarded_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
-            training_recommendation,
-            open_wearables_facts,
-        )
-        readiness_score = (get_oura_daily(OURA_DB_FILE, _today_str()) or {}).get("readiness_score")
-        whoop_context = _whoop_recommendation_context(readiness_score)
+        modifier = open_wearables_hub.conservative_modifier(_open_wearables_recommendation_facts())
     except Exception:
         return base_plan
-    adjusted = _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context)
-    return adjusted.get("next_workout") or base_plan
+    return _wearable_adjusted_for_display(base_plan, modifier)
 
 
 def _workout_with_display_and_auth_scope(base_plan):
@@ -4468,9 +4393,6 @@ def _workout_recommendation_fingerprint():
         glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
     )
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness()
-    whoop_connection = get_whoop_connection_status(WHOOP_DB_FILE)
-    whoop_fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=today_s) or get_whoop_daily_fact(WHOOP_DB_FILE)
-    whoop_freshness = latest_whoop_freshness(WHOOP_DB_FILE)
 
     return workout_recommendation_fingerprint.build_fingerprint(
         auth_scope=_current_auth_scope(),
@@ -4492,10 +4414,6 @@ def _workout_recommendation_fingerprint():
         cached_oura=cached_oura,
         oura_rows=oura_rows,
         oura_db_file=OURA_DB_FILE,
-        whoop_connection=whoop_connection,
-        whoop_freshness=whoop_freshness,
-        whoop_fact=whoop_fact,
-        whoop_db_file=WHOOP_DB_FILE,
     )
 
 
@@ -4543,31 +4461,20 @@ def api_next_workout():
                 )
         else:
             current_plan = persisted or generated_plan
-    today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
-    whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
-    # Wearable modifiers (WHOOP deload/caution) are a display-time transform
-    # only -- current_plan (the base/programmed plan) was already persisted
-    # above. Do NOT persist the modifier-mutated output: apply_wearable_modifiers
-    # one-directionally clamps target_sets/rpe/etc, and re-persisting it as the
-    # canonical durable plan would ratchet a transient wearable reading into a
-    # permanent reduction across restarts (FIT-256 finding 2). Fail-open so a
-    # modifier error degrades to the base plan instead of a 500.
-    whoop_adjusted = _wearable_adjusted_for_display(
-        current_plan, guarded_training_recommendation, whoop_context
-    )
-    display_workout = whoop_adjusted["next_workout"]
+    # The Open Wearables recovery cap is a display-time transform only: the
+    # durable plan was persisted above and must stay the base plan (FIT-256
+    # finding 2), so a transient reading never ratchets into a stored plan.
+    display_workout = _wearable_adjusted_for_display(current_plan, open_wearables_modifier)
     return jsonify({
         "next_workout": _workout_with_auth_scope(display_workout),
         "recommendation_sources": {
             **_recommendation_sources_payload(
                 freshness,
-                whoop_context,
                 open_wearables_facts,
                 open_wearables_modifier,
-                whoop_adjusted["load_source"],
             ),
-            "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+            "wearable_sources": _wearable_sources_payload(freshness),
         },
     })
 
@@ -4817,16 +4724,9 @@ def api_dashboard():
         if lookup_token is not None:
             next_workout = _copy_workout_plan_cas_identity(lookup_token, next_workout)
     freshness = _compute_data_freshness()
-    whoop_context = _whoop_recommendation_context(readiness_val)
-    # Persist the base/programmed plan (pre-wearable-modifier)
-    # as the canonical durable plan BEFORE applying wearable modifiers.
-    # apply_wearable_modifiers one-directionally clamps target_sets/rpe/etc
-    # for display; re-persisting its output would ratchet a transient WHOOP
-    # deload/caution reading into a permanent reduction across restarts
-    # (FIT-256 finding 2). Wearable modifiers are applied as a display-time
-    # transform on the way out only. Persisting the base first is safe: the base
-    # is the correct canonical value regardless, and the fail-open display
-    # transform below degrades to the base plan rather than 500-ing.
+    # Persist the base/programmed plan BEFORE the display-time recovery cap
+    # so a transient reading never ratchets into the stored plan (FIT-256
+    # finding 2).
     if not using_stored_customization:
         persisted = _persist_current_workout_plan(next_workout, fingerprint)
         if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
@@ -4838,10 +4738,7 @@ def api_dashboard():
             ) or next_workout
         else:
             next_workout = persisted or next_workout
-    whoop_adjusted = _wearable_adjusted_for_display(
-        next_workout, guarded_dashboard_recommendation, whoop_context
-    )
-    next_workout = whoop_adjusted["next_workout"]
+    next_workout = _wearable_adjusted_for_display(next_workout, open_wearables_modifier)
     return jsonify({
         "headline": {
             "total_sets": total_sets,
@@ -4874,13 +4771,11 @@ def api_dashboard():
             "summary_stats": summary_stats
         },
         "freshness": freshness,
-        "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+        "wearable_sources": _wearable_sources_payload(freshness),
         "recommendation_sources": _recommendation_sources_payload(
             freshness,
-            whoop_context,
             open_wearables_facts,
             open_wearables_modifier,
-            whoop_adjusted["load_source"],
         ),
     })
 
@@ -5051,27 +4946,6 @@ def api_vitals():
             and oura_today.get("sleep_score") is not None
         ):
             quality_score = oura_today.get("sleep_score")
-    except Exception:
-        pass
-
-    try:
-        whoop_fact = get_whoop_daily_fact(WHOOP_DB_FILE)
-        whoop_freshness = latest_whoop_freshness(WHOOP_DB_FILE)
-        if whoop_fact and whoop_freshness.get("status") in {"fresh", "aging"}:
-            if resting_bpm is None and whoop_fact.get("resting_hr") is not None:
-                resting_bpm = whoop_fact.get("resting_hr")
-                sources["heart_rate"] = "whoop"
-            if not last_night and whoop_fact.get("sleep_performance_pct") is not None:
-                last_night = {
-                    "date": whoop_fact.get("local_date"),
-                    "total_sleep_min": None,
-                    "total_hours": None,
-                    "sleep_score": whoop_fact.get("sleep_performance_pct"),
-                    "quality_score": whoop_fact.get("sleep_performance_pct"),
-                    "sleep_need_gap_min": whoop_fact.get("sleep_need_gap_min"),
-                }
-                quality_score = whoop_fact.get("sleep_performance_pct")
-                sources["sleep"] = "whoop"
     except Exception:
         pass
 
@@ -6846,126 +6720,6 @@ def _open_wearables_url_is_loopback(url):
     return host in OPEN_WEARABLES_LOOPBACK_HOSTS
 
 
-def _set_env_file_values(path, updates):
-    if not path or not updates:
-        return False
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            lines = handle.readlines()
-    except OSError:
-        return False
-
-    replaced = set()
-    changed = False
-    next_lines = []
-    for raw_line in lines:
-        if "=" not in raw_line or raw_line.lstrip().startswith("#"):
-            next_lines.append(raw_line)
-            continue
-        key, _value = raw_line.split("=", 1)
-        clean_key = key.strip()
-        if clean_key in updates:
-            next_value = f"{clean_key}={updates[clean_key]}\n"
-            next_lines.append(next_value)
-            replaced.add(clean_key)
-            changed = changed or raw_line != next_value
-        else:
-            next_lines.append(raw_line)
-
-    for key, value in updates.items():
-        if key not in replaced:
-            if next_lines and not next_lines[-1].endswith("\n"):
-                next_lines[-1] += "\n"
-            next_lines.append(f"{key}={value}\n")
-            changed = True
-
-    if not changed:
-        return False
-
-    tmp = None
-    try:
-        env_dir = os.path.dirname(os.path.abspath(path))
-        fd, tmp = tempfile.mkstemp(prefix=".open-wearables-env.", suffix=".tmp", dir=env_dir)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.writelines(next_lines)
-            handle.flush()
-            os.fsync(handle.fileno())
-        backup_path = f"{path}.before-managed-connectors-{int(time.time())}"
-        shutil.copy2(path, backup_path)
-        os.chmod(backup_path, 0o600)
-        os.replace(tmp, path)
-        tmp = None
-        os.chmod(path, 0o600)
-    except OSError as exc:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        print(f"Warning: Could not update Open Wearables managed connector config: {exc}")
-        return False
-    return True
-
-
-def _open_wearables_seed_managed_provider_credentials(sidecar_env=None):
-    global OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
-    env_values = sidecar_env
-    env_error = None
-    if env_values is None:
-        env_values, env_error = _load_open_wearables_sidecar_env()
-    if env_error:
-        return {"available": False, "changed": False, "providers": [], "restart_required": False, "error_code": env_error}
-
-    results = []
-    updates = {}
-    whoop_keys = OPEN_WEARABLES_PROVIDER_CREDENTIAL_KEYS["whoop"]
-    whoop_credentials_prepared = False
-    managed_whoop_scope = " ".join((
-        "offline",
-        "read:cycles",
-        "read:sleep",
-        "read:recovery",
-        "read:workout",
-        "read:body_measurement",
-    ))
-    whoop_needs_values = any(_open_wearables_placeholder_value(env_values.get(key)) for key in whoop_keys)
-    if whoop_needs_values:
-        try:
-            whoop_config = load_whoop_config(
-                _whoop_redirect_uri(),
-                client_id_path=data_path(".whoop-client-id"),
-            )
-            updates["WHOOP_CLIENT_ID"] = whoop_config.client_id
-            updates["WHOOP_CLIENT_SECRET"] = whoop_config.client_secret
-            updates["WHOOP_DEFAULT_SCOPE"] = managed_whoop_scope
-            whoop_credentials_prepared = True
-            results.append({"provider": "whoop", "status": "prepared"})
-        except Exception:
-            results.append({"provider": "whoop", "status": "owner_setup_needed"})
-    else:
-        whoop_credentials_prepared = True
-        results.append({"provider": "whoop", "status": "already_prepared"})
-        if str(env_values.get("WHOOP_DEFAULT_SCOPE") or "").strip() != managed_whoop_scope:
-            updates["WHOOP_DEFAULT_SCOPE"] = managed_whoop_scope
-
-    managed_whoop_redirect = _whoop_redirect_uri()
-    if not managed_whoop_redirect.startswith(("http://", "https://")):
-        managed_whoop_redirect = str(env_values.get("WHOOP_REDIRECT_URI") or "").strip()
-    if managed_whoop_redirect and str(env_values.get("WHOOP_REDIRECT_URI") or "").strip() != managed_whoop_redirect:
-        updates["WHOOP_REDIRECT_URI"] = managed_whoop_redirect
-
-    changed = _set_env_file_values(_open_wearables_sidecar_env_file(), updates) if updates else False
-    restart_relevant_changed = bool(changed and whoop_credentials_prepared)
-    if restart_relevant_changed:
-        OPEN_WEARABLES_MANAGED_RESTART_REQUIRED = True
-    return {
-        "available": True,
-        "changed": bool(changed),
-        "providers": results,
-        "restart_required": bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED),
-    }
-
-
 def _open_wearables_provider_actions(*, allow_managed_restart_clear=False):
     can_pair = bool(_open_wearables_user_id() and OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD)
     sidecar_managed = _open_wearables_sidecar_env_managed()
@@ -7312,9 +7066,6 @@ def _open_wearables_bootstrap_local_hub():
         return None, code
 
     try:
-        managed_connectors = _open_wearables_seed_managed_provider_credentials(sidecar_env)
-        if managed_connectors.get("changed"):
-            sidecar_env, _env_error = _load_open_wearables_sidecar_env()
         token, _payload = _open_wearables_login(base_url, username, credential)
         profile_key = _open_wearables_profile_key()
         user_id = _open_wearables_user_id(profile_key)
@@ -7348,8 +7099,6 @@ def _open_wearables_bootstrap_local_hub():
     explicit_sidecar_env_path = _open_wearables_explicit_sidecar_env_path()
     if explicit_sidecar_env_path:
         next_config["sidecar_env_path"] = explicit_sidecar_env_path
-    if managed_connectors.get("restart_required"):
-        next_config["managed_connector_restart_required"] = True
     if not _save_open_wearables_local_config(next_config):
         return None, "config_save_failed"
     if mapping_changed:
@@ -7358,7 +7107,6 @@ def _open_wearables_bootstrap_local_hub():
     return {
         "user_id": user_id,
         "user_state": user_state,
-        "managed_connectors": managed_connectors,
     }, None
 
 
@@ -7498,6 +7246,27 @@ def _open_wearables_complete_oauth_callback(provider, code, state):
         return True
     except Exception:
         return False
+
+
+@app.route('/api/whoop/callback')
+def open_wearables_whoop_callback():
+    """WHOOP's OAuth redirect (registered with the WHOOP app) lands here and is
+    handed to Open Wearables, which owns the connection. No tokens are kept."""
+    state = str(request.args.get("state") or "").strip()
+    code = str(request.args.get("code") or "").strip()
+    accept = request.headers.get("Accept", "").lower()
+    if not state or not code:
+        response = api_error("state and code are required", 400, code="missing_oauth_params")
+    elif not _open_wearables_complete_oauth_callback("whoop", code, state):
+        response = api_error("OAuth state is invalid or expired.", 400, code="invalid_state")
+    elif "text/html" in accept and "application/json" not in accept:
+        response = redirect("/#settings")
+    else:
+        response = jsonify({"status": "success", "provider": "whoop", "source": "open_wearables"})
+    body, status = response if isinstance(response, tuple) else (response, None)
+    body.headers["Cache-Control"] = "no-store"  # the code and state are in the URL
+    body.headers["Referrer-Policy"] = "no-referrer"
+    return (body, status) if status else body
 
 
 def _system_local_zone():
@@ -8410,28 +8179,22 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
     )
 
 
-def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source, source_inputs=None):
+def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None):
     open_wearables_modifier = open_wearables_modifier or {}
     open_wearables_source = build_open_wearables_recommendation_source(
         freshness.get("open_wearables"),
         facts=open_wearables_facts,
         modifier=open_wearables_modifier,
     )
-    whoop_signals = dict(whoop_context["signals"])
-    if whoop_signals.get("display_only"):
-        whoop_signals["summary_hidden"] = True
-
+    load_source = "apple_health"  # shortcut: constant until the Apple direct path is removed (PER-1584 W4c)
     payload = {
         "open_wearables": open_wearables_source,
-        "whoop": whoop_signals,
-        "source_conflict": whoop_context["source_conflict"],
         "load_source": load_source,
     }
     if source_inputs is not None:
         payload["source_proof"] = build_recommendation_source_proof(
             freshness=freshness,
             open_wearables_source=open_wearables_source,
-            whoop_signals=whoop_signals,
             source_inputs={
                 "open_wearables_facts": open_wearables_facts,
                 "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
@@ -8649,7 +8412,6 @@ def open_wearables_setup_bootstrap_api():
         "bootstrap": {
             "user_mapped": bool(bootstrap and bootstrap.get("user_id")),
             "user_state": (bootstrap or {}).get("user_state"),
-            "managed_connectors": (bootstrap or {}).get("managed_connectors"),
         },
         "config": config,
         "open_wearables": status_payload,
@@ -8821,8 +8583,7 @@ def open_wearables_sync_api():
 @app.route('/api/wearable-sources')
 def wearable_sources_api():
     freshness = _compute_data_freshness()
-    whoop_context = _whoop_recommendation_context()
-    sources = _wearable_sources_payload(freshness, whoop_context)
+    sources = _wearable_sources_payload(freshness)
     stored = list_wearable_sources(WEARABLE_FACTS_DB_FILE, profile_key=_open_wearables_profile_key())
     existing_sources = {s.get("source") for s in sources}
     sources.extend([row for row in stored if row.get("source") not in existing_sources])
@@ -8906,592 +8667,9 @@ def _merge_open_wearables_history_rows(base_rows, open_wearables_rows):
     ]
 
 
-def _whoop_redirect_uri():
-    return f"{public_base_url().rstrip('/')}/api/whoop/callback"
-
-
-def _whoop_config_for_redirect(redirect_uri: str):
-    return load_whoop_config(redirect_uri)
-
-
-def _whoop_config_or_none():
-    try:
-        return _whoop_config_for_redirect(_whoop_redirect_uri())
-    except Exception:
-        return None
-
-
-def _whoop_user_binding():
-    try:
-        return str(_current_data_user_id() or "local")
-    except Exception:
-        return "local"
-
-
-def _whoop_no_store(response):
-    status = None
-    if isinstance(response, tuple):
-        response, status = response[0], response[1]
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    if status is not None:
-        return response, status
-    return response
-
-
-def _whoop_mutation_guard():
-    if request.headers.get(CSRF_HEADER_NAME) == CSRF_HEADER_VALUE:
-        return None
-    return api_error(
-        f"Missing {CSRF_HEADER_NAME}: {CSRF_HEADER_VALUE}",
-        403,
-        code="csrf_required",
-    )
-
-
-def _whoop_callback_is_browser_navigation():
-    accept = request.headers.get("Accept", "")
-    return "text/html" in accept.lower() and "application/json" not in accept.lower()
-
-
-def _validate_whoop_token_payload(payload):
-    if not isinstance(payload, dict):
-        return "WHOOP OAuth token response was invalid."
-    if not payload.get("access_token"):
-        return "WHOOP OAuth token response did not include an access token."
-    if not payload.get("refresh_token"):
-        return "WHOOP OAuth token response did not include an offline refresh token."
-    return None
-
-
-def _whoop_number(value):
-    if value in (None, ""):
-        return None
-    try:
-        number = float(value)
-    except Exception:
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _whoop_truthy(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
-
-
-WHOOP_METRIC_BOUNDS = {
-    "recovery_score": (0, 100),
-    "strain": (0, 21),
-    "sleep_performance_pct": (0, 100),
-    "sleep_need_gap_min": (0, 1440),
-    "workout_kj": (0, 20000),
-    "hrv_rmssd": (0, 300),
-    "resting_hr": (25, 220),
-    "respiratory_rate": (5, 40),
-    "spo2": (50, 100),
-    "skin_temp": (-20, 60),
-    "percent_recorded": (0, 100),
-}
-
-
-def _validate_whoop_metric_bounds(record):
-    for field, bounds in WHOOP_METRIC_BOUNDS.items():
-        value = record.get(field)
-        if value is None:
-            continue
-        try:
-            number = float(value)
-        except Exception:
-            raise ValueError(f"{field} must be numeric.")
-        if not math.isfinite(number):
-            raise ValueError(f"{field} must be finite.")
-        minimum, maximum = bounds
-        if number < minimum or number > maximum:
-            raise ValueError(f"{field} must be between {minimum} and {maximum}.")
-
-
-def _validate_whoop_raw_metric_fields(row):
-    for field, bounds in WHOOP_METRIC_BOUNDS.items():
-        value = row.get(field)
-        if value in (None, ""):
-            continue
-        try:
-            number = float(value)
-        except Exception:
-            raise ValueError(f"{field} must be numeric.")
-        if not math.isfinite(number):
-            raise ValueError(f"{field} must be finite.")
-        minimum, maximum = bounds
-        if number < minimum or number > maximum:
-            raise ValueError(f"{field} must be between {minimum} and {maximum}.")
-
-
-def _first_present(*values):
-    for value in values:
-        if value is not None and value != "":
-            return value
-    return None
-
-
-def _whoop_day_from_record(record, record_type=None):
-    def local_date_from_time(value):
-        if not value:
-            return None
-        text = str(value)
-        offset = str(record.get("timezone_offset") or "").strip()
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if offset and len(offset) == 6 and offset[0] in {"+", "-"} and offset[3] == ":":
-                sign = 1 if offset[0] == "+" else -1
-                hours = int(offset[1:3])
-                minutes = int(offset[4:6])
-                dt = dt + (timedelta(hours=hours, minutes=minutes) * sign)
-            return dt.date().isoformat()
-        except Exception:
-            return text[:10]
-
-    for key in ("local_date", "date", "day"):
-        value = record.get(key)
-        if value:
-            return str(value)[:10]
-    if record_type == "sleep":
-        timestamp_fields = ("end", "end_time", "start", "start_time", "created_at", "updated_at")
-    else:
-        timestamp_fields = ("start", "start_time", "end", "end_time", "created_at", "updated_at")
-    for field in timestamp_fields:
-        value = record.get(field)
-        if value:
-            return local_date_from_time(value)
-    return None
-
-
-def _validate_imported_whoop_local_date(local_date, *, now=None):
-    try:
-        parsed = datetime.strptime(str(local_date), "%Y-%m-%d").date()
-    except Exception:
-        raise ValueError("local_date must be a valid YYYY-MM-DD date.")
-    tomorrow = (now or datetime.now()).date() + timedelta(days=1)
-    if parsed > tomorrow:
-        raise ValueError("local_date cannot be more than one day ahead.")
-    return parsed.isoformat()
-
-
-def _whoop_recovery_band(score):
-    try:
-        value = float(score)
-    except Exception:
-        return None
-    if value < 45:
-        return "low"
-    if value < 67:
-        return "medium"
-    return "high"
-
-
-def _whoop_sleep_need_gap_minutes(score):
-    sleep_needed = score.get("sleep_needed") if isinstance(score, dict) else None
-    if sleep_needed in (None, ""):
-        return None
-    if isinstance(sleep_needed, (int, float)):
-        total_need_min = round(float(sleep_needed) / 60000.0, 2)
-        performance = _whoop_number(score.get("sleep_performance_percentage"))
-        if performance is None:
-            return None
-        return round(total_need_min * max(0.0, 1.0 - min(100.0, performance) / 100.0), 2)
-    if not isinstance(sleep_needed, dict):
-        return None
-    total_ms = 0.0
-    found = False
-    for key, value in sleep_needed.items():
-        if not str(key).endswith("_milli"):
-            continue
-        try:
-            total_ms += float(value or 0)
-            found = True
-        except Exception:
-            continue
-    if not found:
-        return None
-    performance = _whoop_number(score.get("sleep_performance_percentage"))
-    if performance is None:
-        return None
-    total_need_min = total_ms / 60000.0
-    return round(total_need_min * max(0.0, 1.0 - min(100.0, performance) / 100.0), 2)
-
-
-def _normalize_whoop_record(record_type, record):
-    local_date = _whoop_day_from_record(record, record_type=record_type)
-    if not local_date:
-        return None
-    upstream_id = (
-        record.get("upstream_id")
-        or record.get("id")
-        or record.get("cycle_id")
-        or record.get("sleep_id")
-        or f"{record_type}-{local_date}"
-    )
-    score = record.get("score") if isinstance(record.get("score"), dict) else {}
-    score_state = record.get("score_state") or record.get("state") or "SCORED"
-    if score.get("user_calibrating") is True or _whoop_truthy(record.get("user_calibrating")):
-        score_state = "CALIBRATING"
-    values = {
-        "upstream_id": str(upstream_id),
-        "local_date": local_date,
-        "start_time": record.get("start") or record.get("start_time"),
-        "end_time": record.get("end") or record.get("end_time"),
-        "score_state": score_state,
-        "upstream_updated_at": record.get("updated_at"),
-    }
-    if record_type == "recovery":
-        recovery_score = _first_present(record.get("recovery_score"), score.get("recovery_score"))
-        values.update(
-            {
-                "recovery_score": _whoop_number(recovery_score),
-                "recovery_band": record.get("recovery_band") or _whoop_recovery_band(recovery_score),
-                "hrv_rmssd": _whoop_number(_first_present(record.get("hrv_rmssd"), score.get("hrv_rmssd_milli"))),
-                "resting_hr": _whoop_number(_first_present(record.get("resting_hr"), score.get("resting_heart_rate"))),
-                "respiratory_rate": _whoop_number(_first_present(record.get("respiratory_rate"), score.get("respiratory_rate"))),
-                "spo2": _whoop_number(_first_present(record.get("spo2"), score.get("spo2_percentage"))),
-                "skin_temp": _whoop_number(_first_present(record.get("skin_temp"), score.get("skin_temp_celsius"))),
-            }
-        )
-    elif record_type == "sleep":
-        if _whoop_truthy(record.get("nap")) or _whoop_truthy(score.get("nap")):
-            return None
-        sleep_score = _first_present(record.get("sleep_performance_pct"), score.get("sleep_performance_percentage"))
-        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"), _whoop_sleep_need_gap_minutes(score))
-        values.update(
-            {
-                "sleep_performance_pct": _whoop_number(sleep_score),
-                "sleep_need_gap_min": _whoop_number(gap),
-            }
-        )
-    elif record_type == "cycle":
-        values["strain"] = _whoop_number(_first_present(record.get("strain"), score.get("strain")))
-    elif record_type == "workout":
-        values["workout_kj"] = _whoop_number(_first_present(record.get("workout_kj"), score.get("kilojoule")))
-    return values
-
-
-def _normalize_whoop_records(record_type, records):
-    normalized = []
-    for record in records or []:
-        if not isinstance(record, dict):
-            continue
-        row = _normalize_whoop_record(record_type, record)
-        if row:
-            normalized.append(row)
-    return normalized
-
-
-def _whoop_sync_window(days_back=7):
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=int(days_back or 7))
-    return start, end
-
-
-def _coerce_whoop_sync_days(value):
-    try:
-        days = int(value)
-    except (TypeError, ValueError):
-        return None, api_error("days_back must be an integer.", 400, code="invalid_days_back")
-    if days < 1 or days > 30:
-        return None, api_error("days_back must be between 1 and 30.", 400, code="invalid_days_back")
-    return days, None
-
-
-class _WhoopMutationGuard:
-    def __init__(self, lock_path: str):
-        self.lock_path = lock_path
-        self.handle = None
-        self.thread_acquired = False
-
-    def acquire(self) -> bool:
-        if not WHOOP_SYNC_LOCK.acquire(blocking=False):
-            return False
-        self.thread_acquired = True
-        try:
-            os.makedirs(os.path.dirname(self.lock_path) or ".", exist_ok=True)
-            self.handle = open(self.lock_path, "a", encoding="utf-8")
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            self.release()
-            return False
-
-    def release(self) -> None:
-        if self.handle is not None:
-            try:
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                self.handle.close()
-                self.handle = None
-        if self.thread_acquired:
-            WHOOP_SYNC_LOCK.release()
-            self.thread_acquired = False
-
-
-def _acquire_whoop_mutation_guard() -> _WhoopMutationGuard | None:
-    guard = _WhoopMutationGuard(WHOOP_SYNC_LOCK_FILE)
-    return guard if guard.acquire() else None
-
-
-def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient):
-    guard = _acquire_whoop_mutation_guard()
-    if guard is None:
-        return None, api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
-    try:
-        return _run_whoop_sync_unlocked(reason, days_back=days_back, client_factory=client_factory)
-    finally:
-        guard.release()
-
-
-def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=WhoopClient):
-    connection = get_whoop_connection_status(WHOOP_DB_FILE, include_private=True)
-    if connection.get("status") != "connected":
-        return None, api_error("WHOOP is not connected.", 409, code="whoop_not_connected")
-    material = load_connection_token_material(WHOOP_DB_FILE)
-    if not material.get("session_value"):
-        return None, api_error("WHOOP token material is unavailable. Reconnect WHOOP.", 409, code="whoop_token_unavailable")
-    try:
-        config = _whoop_config_for_redirect(_whoop_redirect_uri())
-    except Exception:
-        return None, api_error("WHOOP OAuth is not configured on this server.", 503, code="missing_whoop_config")
-    start, end = _whoop_sync_window(days_back)
-    run_id = record_whoop_sync_run(
-        WHOOP_DB_FILE,
-        reason=reason,
-        window_start=start.isoformat(),
-        window_end=end.isoformat(),
-    )
-    client = None
-
-    def persist_rotated_material_if_needed():
-        nonlocal material, client
-        if client is None:
-            return
-        session_value = getattr(client, "access_token", None)
-        renewal_value = getattr(client, "refresh_token", None)
-        if session_value != material.get("session_value") or renewal_value != material.get("renewal_value"):
-            rotate_connection_tokens(
-                WHOOP_DB_FILE,
-                {
-                    "access_token": session_value,
-                    "refresh_token": renewal_value,
-                    "expires_in": 3600,
-                    "scope": "offline",
-                },
-            )
-            material = {
-                "session_value": session_value,
-                "renewal_value": renewal_value,
-            }
-
-    try:
-        client = client_factory(
-            config,
-            session_value=material.get("session_value"),
-            renewal_value=material.get("renewal_value"),
-        )
-        collections = {
-            "recovery": client.fetch_recovery(start=start, end=end),
-        }
-        persist_rotated_material_if_needed()
-        collections["sleep"] = client.fetch_sleep(start=start, end=end)
-        persist_rotated_material_if_needed()
-        collections["cycle"] = client.fetch_cycles(start=start, end=end)
-        persist_rotated_material_if_needed()
-        collections["workout"] = client.fetch_workouts(start=start, end=end)
-        persist_rotated_material_if_needed()
-        upserted = 0
-        for record_type, rows in collections.items():
-            upserted += upsert_whoop_records(
-                WHOOP_DB_FILE,
-                record_type,
-                _normalize_whoop_records(record_type, rows),
-                sync_run_id=run_id,
-            )
-        project_whoop_daily_facts(WHOOP_DB_FILE)
-        finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=upserted)
-        return {
-            "run_id": run_id,
-            "records_upserted": upserted,
-            "window_start": start.isoformat(),
-            "window_end": end.isoformat(),
-        }, None
-    except WhoopApiError as exc:
-        persist_rotated_material_if_needed()
-        if exc.status_code in {400, 401}:
-            mark_reauth_required(WHOOP_DB_FILE, message=redact_whoop_error(exc))
-        finish_whoop_sync_run(
-            WHOOP_DB_FILE,
-            run_id,
-            status="error",
-            retryable=exc.retryable,
-            redacted_error=redact_whoop_error(exc),
-        )
-        return None, api_error(str(exc), 502, code="whoop_sync_failed")
-    except Exception as exc:
-        redacted = redact_whoop_error(f"{type(exc).__name__}: {exc}")
-        try:
-            persist_rotated_material_if_needed()
-        except Exception as persist_exc:
-            redacted = redact_whoop_error(f"{redacted}; token rotation failed: {type(persist_exc).__name__}: {persist_exc}")
-        finish_whoop_sync_run(
-            WHOOP_DB_FILE,
-            run_id,
-            status="error",
-            retryable=False,
-            redacted_error=redacted,
-        )
-        return None, api_error("WHOOP sync failed unexpectedly.", 500, code="whoop_sync_failed")
-
-
-def _parse_whoop_csv_rows(text):
-    reader = csv.DictReader(io.StringIO(text))
-    records = []
-    outcomes = {
-        "parsed_rows": 0,
-        "accepted_rows": 0,
-        "skipped_unsupported_rows": 0,
-        "ignored_nap_rows": 0,
-    }
-    for index, row in enumerate(reader, start=1):
-        if index > WHOOP_CSV_MAX_ROWS:
-            raise ValueError(f"WHOOP CSV row limit exceeded ({WHOOP_CSV_MAX_ROWS}).")
-        outcomes["parsed_rows"] += 1
-        if not isinstance(row, dict):
-            continue
-        record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
-        if record_type not in {"recovery", "sleep", "cycle", "workout"}:
-            outcomes["skipped_unsupported_rows"] += 1
-            continue
-        _validate_whoop_raw_metric_fields(row)
-        is_nap = record_type == "sleep" and _whoop_truthy(row.get("nap"))
-        normalized = _normalize_whoop_record(record_type, row)
-        if is_nap:
-            outcomes["ignored_nap_rows"] += 1
-            continue
-        if normalized is None:
-            raise ValueError(f"WHOOP CSV row {index} is missing a valid date.")
-        normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
-        _validate_whoop_metric_bounds(normalized)
-        records.append((record_type, normalized))
-        outcomes["accepted_rows"] += 1
-    return records, outcomes
-
-
-def _whoop_has_csv_imported_data(freshness=None):
-    node = freshness or {}
-    local_date = node.get("last_data_point")
-    if not local_date:
-        return False
-    try:
-        return latest_whoop_fact_source_reason(WHOOP_DB_FILE, local_date=local_date) == "csv_import"
-    except Exception:
-        return False
-
-
-def _annotate_whoop_freshness(freshness):
-    node = dict(freshness or {})
-    if not node.get("connected") and _whoop_has_csv_imported_data(node):
-        node["source_kind"] = "csv_only"
-        node["csv_only"] = True
-    return node
-
-
-def _whoop_freshness_is_relevant(freshness):
-    node = freshness or {}
-    return bool(
-        node.get("connected")
-        or node.get("reauth_required")
-        or node.get("connection_status") == "reauth_required"
-        or node.get("csv_only")
-        or node.get("source_kind") == "csv_only"
-    )
-
-
-def _whoop_public_status(now=None):
-    config = _whoop_config_or_none()
-    connection = get_whoop_connection_status(WHOOP_DB_FILE)
-    freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
-    fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
-    if config is None:
-        status = "missing_config"
-    elif connection.get("reauth_required") or connection.get("status") == "reauth_required":
-        status = "reauth_required"
-    elif connection.get("status") == "connected":
-        status = "connected"
-    elif connection.get("status") == "disconnected":
-        status = "disconnected"
-    else:
-        status = "error"
-    return {
-        "status": status,
-        "configured": config is not None,
-        "connected": status == "connected",
-        "reauth_required": status == "reauth_required",
-        "connected_at": connection.get("connected_at"),
-        "last_successful_sync_at": connection.get("last_successful_sync_at"),
-        "last_sync_attempt_at": connection.get("last_sync_attempt_at"),
-        "last_error": connection.get("last_error"),
-        "scopes": connection.get("scopes") or [],
-        "freshness": freshness,
-        "local_date": (fact or {}).get("local_date"),
-        "recovery_score": (fact or {}).get("recovery_score"),
-        "recovery_band": (fact or {}).get("recovery_band"),
-        "strain": (fact or {}).get("strain"),
-        "sleep_performance_pct": (fact or {}).get("sleep_performance_pct"),
-        "sleep_need_gap_min": (fact or {}).get("sleep_need_gap_min"),
-        "score_state": (fact or {}).get("score_state"),
-    }
-
-
-def _whoop_recommendation_context(oura_readiness=None, *, now=None):
-    freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
-    public_status = _whoop_public_status(now=now)
-    fact = None
-    has_csv_import = bool(freshness.get("source_kind") == "csv_only")
-    if freshness.get("connected") or has_csv_import:
-        fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
-    signals = build_whoop_recommendation_signals(fact, freshness=freshness)
-    if has_csv_import and not public_status.get("connected"):
-        signals["source_kind"] = "csv_only"
-    source_conflict = detect_wearable_source_conflicts(
-        oura_readiness=oura_readiness,
-        whoop_signals=signals,
-    )
-    return {
-        "status": public_status,
-        "fact": fact,
-        "signals": signals,
-        "source_conflict": source_conflict,
-    }
-
-
-def _wearable_sources_payload(freshness, whoop_context):
-    whoop_status = whoop_context.get("status") or {}
-    whoop_signals = whoop_context.get("signals") or {}
+def _wearable_sources_payload(freshness):
     open_wearables_source = _open_wearables_status_source()
     direct_sources = [
-        {
-            "source": "whoop",
-            "status": (freshness.get("whoop") or {}).get("status"),
-            "last_data_point": (freshness.get("whoop") or {}).get("last_data_point"),
-            "last_sync_attempt": (freshness.get("whoop") or {}).get("last_sync_attempt"),
-            "score_state": (freshness.get("whoop") or {}).get("score_state"),
-            "source_kind": (freshness.get("whoop") or {}).get("source_kind") or whoop_signals.get("source_kind"),
-            "csv_only": bool((freshness.get("whoop") or {}).get("csv_only") or whoop_signals.get("source_kind") == "csv_only"),
-            "connected": whoop_status.get("connected"),
-            "reauth_required": bool((freshness.get("whoop") or {}).get("reauth_required") or whoop_status.get("reauth_required")),
-            "used_for_recommendation": not whoop_signals.get("display_only"),
-        },
         {
             "source": "oura",
             "status": (freshness.get("oura") or {}).get("status"),
@@ -9517,239 +8695,6 @@ def _wearable_sources_payload(freshness, whoop_context):
         if not _open_wearables_supersedes_direct_source(source.get("source"), open_wearables_source)
     ] + [open_wearables_source]
 
-
-@app.route('/api/whoop/status')
-def whoop_status():
-    return jsonify(_whoop_public_status())
-
-
-@app.route('/api/whoop/connect/start', methods=['POST'])
-def whoop_connect_start():
-    guard = _whoop_mutation_guard()
-    if guard:
-        return guard
-    try:
-        redirect_uri = _whoop_redirect_uri()
-        config = _whoop_config_for_redirect(redirect_uri)
-    except Exception:
-        return api_error(
-            "WHOOP OAuth is not configured on this server.",
-            503,
-            code="missing_whoop_config",
-        )
-    if config is None:
-        return api_error(
-            "WHOOP OAuth is not configured on this server.",
-            503,
-            code="missing_whoop_config",
-        )
-    state = secrets.token_urlsafe(32)
-    create_oauth_state(
-        WHOOP_DB_FILE,
-        state=state,
-        redirect_uri=redirect_uri,
-        user_binding=_whoop_user_binding(),
-        ttl_minutes=10,
-    )
-    remember_trusted_no_login_oauth_state(state)
-    return _whoop_no_store(jsonify(
-        {
-            "status": "success",
-            "authorization_url": create_whoop_authorization_url(config, state=state),
-            "connection": _whoop_public_status(),
-        }
-    ))
-
-
-@app.route('/api/whoop/callback')
-def whoop_callback():
-    state = str(request.args.get("state") or "").strip()
-    code = str(request.args.get("code") or "").strip()
-    if not state:
-        return _whoop_no_store(api_error("state is required", 400, code="missing_state"))
-    if not code:
-        return _whoop_no_store(api_error("code is required", 400, code="missing_code"))
-    mutation_guard = _acquire_whoop_mutation_guard()
-    if mutation_guard is None:
-        return _whoop_no_store(api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress"))
-    try:
-        saved_state = consume_oauth_state(WHOOP_DB_FILE, state, user_binding=_whoop_user_binding())
-        if saved_state is None:
-            if _open_wearables_complete_oauth_callback("whoop", code, state):
-                if _whoop_callback_is_browser_navigation():
-                    return _whoop_no_store(redirect("/#settings"))
-                return _whoop_no_store(jsonify({"status": "success", "provider": "whoop", "source": "open_wearables"}))
-            return _whoop_no_store(api_error("WHOOP OAuth state is invalid or expired.", 400, code="invalid_state"))
-        config = _whoop_config_for_redirect(saved_state["redirect_uri"])
-        grant_payload = exchange_whoop_code(config, code=code)
-        validation_error = _validate_whoop_token_payload(grant_payload)
-        if validation_error:
-            return _whoop_no_store(api_error(validation_error, 502, code="invalid_whoop_token_payload"))
-        save_connection_tokens(WHOOP_DB_FILE, grant_payload)
-    except WhoopApiError as exc:
-        return _whoop_no_store(api_error(str(exc), 502, code="whoop_oauth_failed"))
-    except Exception:
-        return _whoop_no_store(api_error("WHOOP OAuth is not configured on this server.", 503, code="missing_whoop_config"))
-    finally:
-        mutation_guard.release()
-    if _whoop_callback_is_browser_navigation():
-        return _whoop_no_store(redirect("/#settings"))
-    return _whoop_no_store(jsonify({"status": "success", "connection": _whoop_public_status()}))
-
-
-@app.route('/api/whoop/disconnect', methods=['POST'])
-def whoop_disconnect():
-    guard = _whoop_mutation_guard()
-    if guard:
-        return guard
-    mutation_guard = _acquire_whoop_mutation_guard()
-    if mutation_guard is None:
-        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
-    try:
-        revocation = {"status": "skipped"}
-        material = load_connection_token_material(WHOOP_DB_FILE)
-        session_value = material.get("session_value")
-        if session_value:
-            try:
-                config = _whoop_config_for_redirect(_whoop_redirect_uri())
-                revoke_whoop_access(config, session_value=session_value)
-                revocation = {"status": "revoked"}
-            except WhoopApiError as exc:
-                revocation = {"status": "failed", "message": redact_whoop_error(exc)}
-            except Exception:
-                revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
-        try:
-            invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
-            disconnect_whoop(WHOOP_DB_FILE)
-        except (OSError, RuntimeError, SubprocessError):
-            return api_error(
-                "WHOOP local token material could not be removed. Disconnect was not completed.",
-                500,
-                code="whoop_disconnect_failed",
-            )
-        return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
-    finally:
-        mutation_guard.release()
-
-
-@app.route('/api/whoop/delete-data', methods=['POST'])
-def whoop_delete_data():
-    guard = _whoop_mutation_guard()
-    if guard:
-        return guard
-    guard = _acquire_whoop_mutation_guard()
-    if guard is None:
-        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
-    try:
-        invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
-        clear_whoop_data(WHOOP_DB_FILE)
-        return jsonify({"status": "success", "connection": _whoop_public_status()})
-    finally:
-        guard.release()
-
-
-@app.route('/api/whoop/sync', methods=['POST'])
-def whoop_sync():
-    guard = _whoop_mutation_guard()
-    if guard:
-        return guard
-    body = request.get_json(silent=True) or {}
-    days_back_value = body["days_back"] if "days_back" in body else 7
-    days_back, err = _coerce_whoop_sync_days(days_back_value)
-    if err:
-        return err
-    result, err = _run_whoop_sync("manual", days_back=days_back)
-    if err:
-        return err
-    return jsonify({"status": "success", "sync": result, "connection": _whoop_public_status()})
-
-
-@app.route('/api/whoop/import-csv', methods=['POST'])
-def whoop_import_csv():
-    guard = _whoop_mutation_guard()
-    if guard:
-        return guard
-    text = ""
-    content_length = request.content_length
-    if content_length is not None and content_length > WHOOP_CSV_MAX_BYTES:
-        return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
-    if request.files:
-        upload = next(iter(request.files.values()))
-        raw = upload.stream.read(WHOOP_CSV_MAX_BYTES + 1)
-        if len(raw) > WHOOP_CSV_MAX_BYTES:
-            return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return api_error("WHOOP CSV must be UTF-8 encoded.", 400, code="invalid_whoop_csv_encoding")
-    else:
-        body = request.get_json(silent=True) or {}
-        text = str(body.get("csv") or "")
-        if len(text.encode("utf-8")) > WHOOP_CSV_MAX_BYTES:
-            return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
-    if not text.strip():
-        return api_error("CSV content is required.", 400, code="missing_csv")
-    try:
-        parsed, outcomes = _parse_whoop_csv_rows(text)
-    except ValueError as exc:
-        error_code = "whoop_csv_too_many_rows" if "row limit" in str(exc).lower() else "invalid_whoop_csv_metric"
-        status_code = 413 if error_code == "whoop_csv_too_many_rows" else 400
-        return api_error(str(exc), status_code, code=error_code)
-    if not parsed:
-        return api_error("No WHOOP rows could be imported from the CSV.", 400, code="empty_whoop_csv")
-    mutation_guard = _acquire_whoop_mutation_guard()
-    if mutation_guard is None:
-        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
-    try:
-        run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="csv_import")
-        by_type = {"recovery": [], "sleep": [], "cycle": [], "workout": []}
-        for record_type, row in parsed:
-            by_type[record_type].append(row)
-        duplicate_or_upserted = sum(
-            count_whoop_upsert_conflicts(WHOOP_DB_FILE, record_type, rows)
-            for record_type, rows in by_type.items()
-        )
-        accepted_rows = outcomes.pop("accepted_rows")
-        outcomes["imported_rows"] = accepted_rows - duplicate_or_upserted
-        outcomes["duplicate_or_upserted_rows"] = duplicate_or_upserted
-        upserted = 0
-        for record_type, rows in by_type.items():
-            upserted += upsert_whoop_records(WHOOP_DB_FILE, record_type, rows, sync_run_id=run_id)
-        project_whoop_daily_facts(WHOOP_DB_FILE)
-        finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=upserted)
-        return jsonify(
-            {
-                "status": "success",
-                "import": {
-                    "run_id": run_id,
-                    **outcomes,
-                    "records_upserted": upserted,
-                },
-                "connection": _whoop_public_status(),
-            }
-        )
-    finally:
-        mutation_guard.release()
-
-
-@app.route('/api/whoop/imports')
-def whoop_imports():
-    return jsonify({"status": "success", "imports": list_whoop_sync_runs(WHOOP_DB_FILE, reason="csv_import", limit=20)})
-
-
-@app.route('/api/whoop/recommendation-signals')
-def whoop_recommendation_signals():
-    today = _today_str()
-    cached = get_oura_daily(OURA_DB_FILE, today) or {}
-    context = _whoop_recommendation_context(cached.get("readiness_score"))
-    return jsonify(
-        {
-            "status": "success",
-            "connection": context["status"],
-            "signals": context["signals"],
-            "source_conflict": context["source_conflict"],
-        }
-    )
 
 @app.route('/api/oura/status')
 def oura_status():
@@ -10412,18 +9357,16 @@ def freshness_only():
 
 
 def _compute_data_freshness(now=None):
-    """Per-source freshness for Oura, WHOOP, and Apple Health.
+    """Per-source freshness for Oura and Apple Health.
 
     Returns:
         {
           "oura":         {status, last_data_point, last_sync_attempt, source: "live|cached"},
-          "whoop":        {status, last_data_point, last_sync_attempt, score_state, connected},
           "apple_health": {status, last_data_point, last_sync_attempt},
         }
     """
     now = now or datetime.now()
     oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
-    whoop_freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
     open_wearables_providers, open_wearables_error = _fetch_open_wearables_provider_statuses()
     open_wearables_status = _open_wearables_public_status(
@@ -10452,7 +9395,6 @@ def _compute_data_freshness(now=None):
             "last_sync_attempt": oura_last_sync,
             "source": _oura_source_label(oura_last_sync, now=now),
         },
-        "whoop": whoop_freshness,
         "apple_health": {
             "status": apple_status,
             "last_data_point": apple_last_data,
@@ -10487,11 +9429,9 @@ def _push_alert_preview(now=None):
     freshness = _compute_data_freshness(now=now)
     open_wearables_source = freshness.get("open_wearables") or {}
     alerts = []
-    for source_key, label in (("oura", "Oura"), ("whoop", "WHOOP"), ("apple_health", "Apple Health")):
+    for source_key, label in (("oura", "Oura"), ("apple_health", "Apple Health")):
         source = freshness.get(source_key) or {}
         if _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
-            continue
-        if source_key == "whoop" and not _whoop_freshness_is_relevant(source):
             continue
         if source.get("status") in {"aging", "stale", "missing"}:
             alerts.append({
@@ -10708,13 +9648,10 @@ def _confidence_level_from(effective_readiness, freshness):
     A stale or fully-missing wearable forces 'low' — we can't claim a confident
     recommendation when the underlying signal is gone.
     """
-    whoop_freshness = (freshness.get("whoop") or {})
     wearable_states = [
         (freshness.get("oura") or {}).get("status"),
         (freshness.get("apple_health") or {}).get("status"),
     ]
-    if _whoop_freshness_is_relevant(whoop_freshness):
-        wearable_states.append(whoop_freshness.get("status"))
     wearable_states = [state for state in wearable_states if state is not None]
     if "stale" in wearable_states:
         return "low"
@@ -10990,20 +9927,6 @@ def smart_recommendation_api():
         weather=weather,
     )
     factor_recommendation = recommendation
-    whoop_context = _whoop_recommendation_context(recommendation_readiness)
-    recommendation_before_whoop = recommendation
-    whoop_recommendation = apply_wearable_modifiers(
-        recommendation,
-        None,
-        whoop_signals=whoop_context["signals"],
-        source_conflict=whoop_context["source_conflict"],
-    )
-    recommendation = whoop_recommendation["recommendation"]
-    whoop_recommendation_changed = recommendation != recommendation_before_whoop
-    for explanation in whoop_context["signals"].get("explanations") or []:
-        reason_bits.append(explanation)
-    if whoop_context["source_conflict"].get("explanation"):
-        reason_bits.append(whoop_context["source_conflict"]["explanation"])
     open_wearables_facts = _open_wearables_recommendation_facts()
     recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
         recommendation,
@@ -11055,23 +9978,7 @@ def smart_recommendation_api():
     if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
         next_workout = dict(canonical_plan)
         next_workout.pop("_user_customized", None)
-    next_workout_before_whoop = copy.deepcopy(next_workout or {})
-    whoop_adjusted = apply_wearable_modifiers(
-        recommendation,
-        next_workout,
-        whoop_signals=whoop_context["signals"],
-        source_conflict=whoop_context["source_conflict"],
-    )
-    next_workout = whoop_adjusted["next_workout"]
-    whoop_workout_changed = next_workout != next_workout_before_whoop
-    whoop_modifier_effective = bool(
-        whoop_recommendation_changed
-        or whoop_workout_changed
-        or (
-            whoop_adjusted.get("applied_modifiers")
-            and next_workout.get("_whoop_modifier_signature")
-        )
-    )
+    next_workout = _wearable_adjusted_for_display(next_workout, open_wearables_modifier)
     recommendation_without_weather, _ = _training_recommendation_from_factors(
         recommendation_readiness,
         recovery_bonus=recovery_bonus,
@@ -11113,12 +10020,6 @@ def smart_recommendation_api():
             ),
         )
         if value is not None
-    ]
-    whoop_fact = whoop_context.get("fact") or {}
-    whoop_fields = [
-        field
-        for field in ("recovery_score", "strain", "sleep_performance_pct", "sleep_need_gap_min")
-        if whoop_fact.get(field) is not None
     ]
     apple_health_fields = []
     try:
@@ -11166,8 +10067,6 @@ def smart_recommendation_api():
             recommendation_hrv_trend,
             recommendation_sleep_debt,
         ),
-        "whoop_fields": whoop_fields,
-        "whoop_modifier_applied": whoop_modifier_effective,
         "apple_health_fields": apple_health_fields,
         "apple_health_modifier_applied": (
             apple_health_hr_used
@@ -11200,17 +10099,15 @@ def smart_recommendation_api():
         "history_context": history_context,
         "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
         "freshness": freshness,
-        "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+        "wearable_sources": _wearable_sources_payload(freshness),
         "recommendation_sources": {
             **_recommendation_sources_payload(
                 freshness,
-                whoop_context,
                 open_wearables_facts,
                 open_wearables_modifier,
-                whoop_adjusted["load_source"],
                 source_inputs,
             ),
-            "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+            "wearable_sources": _wearable_sources_payload(freshness),
         },
         "next_workout": _workout_with_auth_scope(next_workout),
         "confidence_level": confidence_level,
@@ -11949,7 +10846,6 @@ def export_backup():
             "baselines": BASELINES_DATA,
             "body": BODY_DATA,
             "sleep": SLEEP_DATA,
-            "whoop_daily_facts": list_whoop_daily_facts(WHOOP_DB_FILE, limit=366),
         }
     }
 
@@ -11960,54 +10856,6 @@ def export_backup():
         mimetype="application/json",
         headers={"Content-Disposition": f"attachment;filename={filename}"}
     )
-
-
-def _validated_whoop_backup_records(facts):
-    if not isinstance(facts, list):
-        raise ValueError("whoop_daily_facts must be a list")
-    material_word = "token"
-    client_material_word = "secret"
-    blocked_fields = {
-        "access_" + material_word,
-        "refresh_" + material_word,
-        material_word + "_ref",
-        "material_ref",
-        "raw",
-        "raw_json",
-        "payload",
-        "provider_payload",
-        "client_" + client_material_word,
-    }
-    records = []
-    for fact in facts:
-        if not isinstance(fact, dict):
-            raise ValueError("whoop_daily_facts entries must be objects")
-        present_forbidden = blocked_fields.intersection(fact.keys())
-        if present_forbidden:
-            raise ValueError(f"WHOOP backup fact includes forbidden field: {sorted(present_forbidden)[0]}")
-        local_date = str(fact.get("local_date") or "").strip()
-        if not local_date:
-            continue
-        record = {
-            "upstream_id": f"backup-{local_date}",
-            "local_date": _validate_imported_whoop_local_date(local_date),
-            "score_state": fact.get("score_state"),
-            "recovery_score": fact.get("recovery_score"),
-            "recovery_band": fact.get("recovery_band"),
-            "strain": fact.get("strain"),
-            "sleep_performance_pct": fact.get("sleep_performance_pct"),
-            "sleep_need_gap_min": fact.get("sleep_need_gap_min"),
-            "workout_kj": fact.get("workout_kj"),
-            "hrv_rmssd": fact.get("hrv_rmssd"),
-            "resting_hr": fact.get("resting_hr"),
-            "respiratory_rate": fact.get("respiratory_rate"),
-            "spo2": fact.get("spo2"),
-            "skin_temp": fact.get("skin_temp"),
-            "percent_recorded": fact.get("percent_recorded"),
-        }
-        _validate_whoop_metric_bounds(record)
-        records.append(record)
-    return records
 
 
 @app.route('/api/import-backup', methods=['POST'])
@@ -12025,14 +10873,6 @@ def import_backup():
             return api_error("Invalid backup format: missing 'data' object", 400, code="invalid_field")
 
         data = backup_data["data"]
-        whoop_backup_records = []
-        whoop_restore_guard = None
-        if "whoop_daily_facts" in data:
-            whoop_backup_records = _validated_whoop_backup_records(data["whoop_daily_facts"])
-            whoop_restore_guard = _acquire_whoop_mutation_guard()
-            if whoop_restore_guard is None:
-                return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
-
         # Restore each JSON-backed data type under one lock so readers never see
         # a clear/extend half-state between the in-memory update and disk write.
         with JSON_DATA_LOCK:
@@ -12068,18 +10908,6 @@ def import_backup():
                 _json_restore_sequence(SLEEP_DATA, data["sleep"])
                 save_json(SLEEP_FILE, SLEEP_DATA)
 
-        if "whoop_daily_facts" in data:
-            clear_whoop_data(WHOOP_DB_FILE)
-            if whoop_backup_records:
-                run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="backup_import")
-                upsert_whoop_records(WHOOP_DB_FILE, "recovery", whoop_backup_records, sync_run_id=run_id)
-                project_whoop_daily_facts(WHOOP_DB_FILE)
-                finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=len(whoop_backup_records))
-
-        if whoop_restore_guard is not None:
-            whoop_restore_guard.release()
-            whoop_restore_guard = None
-
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -12092,13 +10920,9 @@ def import_backup():
                 "baselines": len(data.get("baselines", {})),
                 "body": len(data.get("body", [])),
                 "sleep": len(data.get("sleep", [])),
-                "whoop_daily_facts": len(data.get("whoop_daily_facts", [])),
             }
         })
     except Exception as e:
-        whoop_restore_guard = locals().get("whoop_restore_guard")
-        if whoop_restore_guard is not None:
-            whoop_restore_guard.release()
         return jsonify({"status": "error", "message": str(e)}), 400
 
 

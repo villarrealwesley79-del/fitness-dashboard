@@ -26,11 +26,6 @@ def test_smart_recommendation_does_not_replace_current_swapped_plan(monkeypatch,
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: sidecar_plan)
     monkeypatch.setattr(
         module,
-        "_whoop_recommendation_context",
-        lambda _readiness: {"signals": {}, "source_conflict": {}},
-    )
-    monkeypatch.setattr(
-        module,
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
     )
@@ -38,15 +33,6 @@ def test_smart_recommendation_does_not_replace_current_swapped_plan(monkeypatch,
         module,
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
-    )
-    monkeypatch.setattr(
-        module,
-        "apply_wearable_modifiers",
-        lambda recommendation, workout, **kwargs: {
-            "recommendation": recommendation,
-            "next_workout": workout,
-            "load_source": None,
-        },
     )
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fp-after-refresh")
     stale_global_plan = _recommendation(module)
@@ -94,22 +80,8 @@ def test_smart_recommendation_does_not_reuse_same_day_noncustom_plan_after_drift
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: fresh_plan)
     monkeypatch.setattr(
         module,
-        "_whoop_recommendation_context",
-        lambda _readiness: {"signals": {}, "source_conflict": {}},
-    )
-    monkeypatch.setattr(
-        module,
         "_apply_open_wearables_recommendation_guard",
         lambda recommendation, _facts: (recommendation, {}),
-    )
-    monkeypatch.setattr(
-        module,
-        "apply_wearable_modifiers",
-        lambda recommendation, workout, **kwargs: {
-            "recommendation": recommendation,
-            "next_workout": workout,
-            "load_source": None,
-        },
     )
 
     smart = client.get("/api/recommendation/smart")

@@ -4,24 +4,23 @@ import pytest
 
 from recommendation_sources import build_recommendation_source_proof
 
-FIVE = {"open_wearables", "whoop", "oura", "apple_health", "weather"}
+SOURCES = {"open_wearables", "oura", "apple_health", "weather"}
 NODE_KEYS = {"used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"}
 
 
-def _proof(freshness, whoop_signals=None, ow_used=False, **inputs):
+def _proof(freshness, ow_used=False, **inputs):
     return build_recommendation_source_proof(
         freshness=freshness,
         open_wearables_source={"used_for_recommendation": ow_used, "freshness": "missing"},
-        whoop_signals=whoop_signals or {},
         source_inputs=inputs,
     )
 
 
-def test_unstubbed_smart_endpoint_on_empty_data_exposes_five_honest_sources(isolated_client):
+def test_unstubbed_smart_endpoint_on_empty_data_exposes_four_honest_sources(isolated_client):
     resp = isolated_client.get("/api/recommendation/smart")
     assert resp.status_code == 200, resp.get_data(as_text=True)[:500]
     proof = resp.get_json()["recommendation_sources"]["source_proof"]
-    assert set(proof) == FIVE
+    assert set(proof) == SOURCES
     for name, node in proof.items():
         assert set(node) == NODE_KEYS, name
         # Nothing exists in a fresh DATA_DIR, so nothing may claim influence.
@@ -51,20 +50,6 @@ def test_superseded_source_reports_superseded_reason():
     proof = _proof({"apple_health": {"status": "fresh", "superseded_by": "whoop"}})
     assert proof["apple_health"]["used_for_recommendation"] is False
     assert proof["apple_health"]["ignored_reason"] == "superseded_by_whoop"
-
-
-def test_whoop_display_only_is_not_claimed_as_used():
-    proof = _proof(
-        {"whoop": {"status": "fresh"}},
-        whoop_signals={"display_only": True, "recovery_score": 40},
-        whoop_modifier_applied=True,
-    )
-    assert proof["whoop"] == {
-        "used_for_recommendation": False,
-        "fields_used": [],
-        "modifier_applied": False,
-        "ignored_reason": "display_only",
-    }
 
 
 @pytest.mark.parametrize("status,reason", [("stale", "stale_source"), ("missing", "missing_data")])

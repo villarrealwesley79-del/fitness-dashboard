@@ -131,9 +131,6 @@ HEALTH_SYNC_TOKEN=
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=
 FITNESS_DASHBOARD_NO_LOGIN=
 APPLE_HEALTH_WEBHOOK_URL=
-WHOOP_CLIENT_ID_FILE=
-WHOOP_SCOPES=
-WHOOP_PROTECTED_MATERIAL_DIR=
 OW_BASE_URL=
 OW_USERNAME=
 OW_PASSWORD=
@@ -162,19 +159,11 @@ Header: X-Sync-Token: <HEALTH_SYNC_TOKEN>
 
 Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different Tailnet path. Keep the token out of the URL.
 
-WHOOP setup is split between public client configuration and protected token
-material:
-
-- `WHOOP_CLIENT_ID_FILE` points at a local file containing only the WHOOP client
-  ID. If unset, the app looks for `.whoop-client-id` at the repo root.
-- The WHOOP client secret is read from macOS Keychain service
-  `fitness-dashboard-whoop-client-secret`.
-- OAuth access/refresh material is stored through the protected WHOOP material
-  store, not in backups or normal API responses. `WHOOP_PROTECTED_MATERIAL_DIR`
-  can point that protected store outside the repo.
-- Manual WHOOP CSV import is available through Settings when OAuth is not
-  configured. CSV input is size/row capped, UTF-8 validated, normalized into
-  daily facts, and treated as untrusted input.
+WHOOP data reaches the app only through Open Wearables (the direct WHOOP OAuth,
+CSV import and token store were removed). The Open Wearables sidecar env holds
+the WHOOP client credentials; `/api/whoop/callback` only hands WHOOP's OAuth
+redirect to Open Wearables and keeps no tokens. A recent WHOOP recovery score
+below 34 downgrades the recommendation once; 34-66 caps the displayed RPE.
 
 Open Wearables setup is exposed through Settings as a non-technical wearable
 wrapper. The app can prepare the local hub profile from the local Open Wearables
@@ -193,8 +182,7 @@ Open Wearables has separate metadata-check and durable-sync contracts:
   facts, then returns source metadata, counts, and `facts_upserted`. Dashboard
   sync buttons use this durable route.
 
-Neither route returns raw health payloads. Durable WHOOP OAuth sync remains a
-separate provider-specific flow.
+Neither route returns raw health payloads.
 
 Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint is explicitly exempt because it is called by an external system rather than the dashboard UI.
 

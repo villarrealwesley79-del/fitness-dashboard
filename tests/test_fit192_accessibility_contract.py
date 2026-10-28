@@ -152,12 +152,11 @@ sandbox.__fitSet.getSettings(async () => ({
   ], sex_options: [], time_options: [], equipment_options: [],
 }));
 sandbox.__fitSet.getOuraStatus(async () => ({}));
-sandbox.__fitSet.getWhoopStatus(async () => ({}));
 sandbox.__fitSet.getOpenWearablesStatus(async () => ({}));
 sandbox.__fitSet.getWearableSources(async () => ([]));
 sandbox.__fitSet.api(async (path) => path === '/api/freshness' ? { freshness: {} } : {});
 sandbox.__fitSet.updateSetting((value) => selected.push(value.training_goal));
-['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderWhoopFreshnessDetail', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
+['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
 await e.renderSettings();
 const options = host.children;
 let prevented = false;
@@ -172,8 +171,8 @@ process.stdout.write(JSON.stringify({
 }));
 """,
         mocks=[
-            "getSettings", "getOuraStatus", "getWhoopStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
-            "renderOpenWearablesDetail", "renderFreshnessChips", "renderWhoopFreshnessDetail", "renderOuraFreshnessDetail",
+            "getSettings", "getOuraStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
+            "renderOpenWearablesDetail", "renderFreshnessChips", "renderOuraFreshnessDetail",
             "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderPushSection",
         ],
     )
@@ -282,7 +281,6 @@ let tabPrevented = false;
 e.handleModalTabKeydown({ key: 'Tab', shiftKey: false, preventDefault: () => { tabPrevented = true; } });
 e.handleModalFocusin({ target: { id: 'outside' } });
 e.handleModalFocusout();
-sandbox.__fitSet.refreshWhoopAfterOAuthReturn(() => handlerCalls.push('whoop'));
 e.handleModalWindowFocus();
 await new Promise((resolve) => setTimeout(resolve, 5));
 process.stdout.write(JSON.stringify({
@@ -293,7 +291,6 @@ process.stdout.write(JSON.stringify({
         mocks=[
             "getTopmostModalForFocus",
             "getModalFocusableElements", "restoreFocusInsideModal",
-            "refreshWhoopAfterOAuthReturn",
         ],
     )
     assert output["documentEvents"] == ["keydown", "keydown", "focusin", "focusout"]
@@ -302,7 +299,7 @@ process.stdout.write(JSON.stringify({
     assert output["ordinaryEscapePrevented"] is True
     assert output["ordinaryHidden"] is True
     assert output["tabPrevented"] is True
-    assert output["handlerCalls"] == ["close", "first", "restore", "restore", "restore", "whoop"]
+    assert output["handlerCalls"] == ["close", "first", "restore", "restore", "restore"]
 
 
 def test_modal_markup_exposes_dialog_semantics_and_labels():
