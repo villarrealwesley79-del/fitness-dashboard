@@ -31,6 +31,6 @@ Ask the owner first, and do not do these on your own: credentials and secrets, p
 
 ## Private runtime
 
-- The dashboard is tailnet-only (or localhost). Never bind `0.0.0.0` and never put it behind Funnel or another public proxy.
+- The dashboard is tailnet-only (or localhost). The host process binds 127.0.0.1 or the Tailscale IP, never `0.0.0.0` on the host, and never put it behind Funnel or another public proxy.
 - The MCP endpoint is the only planned public surface, and it must sit behind login.
 - Secrets come from the environment or protected stores, and are never printed, logged or committed.

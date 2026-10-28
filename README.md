@@ -19,7 +19,7 @@ Being removed (not part of the product):
 ## Access and privacy
 
 - The dashboard is private: it is reachable only on the owner's Tailnet (or localhost). It is never exposed publicly.
-- The MCP endpoint is the only planned public surface, and it sits behind login.
+- The MCP endpoint is the only planned public surface, and it will require owner authentication (OAuth login or the owner's bearer token).
 - Sensitive runtime data stays local. This repo holds source only; `.env` files, auth and SQLite databases, health exports and caches, OAuth material, logs and backups never go into Git.
 
 Contributor and agent rules are in `AGENTS.md`.
@@ -169,10 +169,10 @@ VISION_OLLAMA_MODEL=
 Do not commit real values for these variables.
 Production must set `SECRET_KEY` via environment or a secret manager; `.flask-secret` is local-dev only and is excluded from images and bundles.
 
-For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one public URL source for setup URL generation:
+For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one Tailnet URL source for setup URL generation:
 
 ```bash
-FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
+FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<tailnet-host>.ts.net
 ```
 
 The owner-only setup route returns the webhook URL and the request header to configure:
@@ -182,7 +182,7 @@ URL: ${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync
 Header: X-Sync-Token: <HEALTH_SYNC_TOKEN>
 ```
 
-Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. Keep the token out of the URL.
+Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different Tailnet path. Keep the token out of the URL.
 
 WHOOP setup is split between public client configuration and protected token
 material:
