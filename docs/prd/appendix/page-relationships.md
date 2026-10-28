@@ -67,7 +67,7 @@ flowchart TD
 
 On boot, `static/js/app.js` renders only the initial hash-selected tab. Dashboard is the default initial tab and fetches:
 
-- `/api/dashboard`, `/api/oura/status`, `/api/recommendation/smart`, `/api/oura/sleep-summary`, `/api/oura/trends`, and `/api/history-all`.
+- `/api/dashboard`, `/api/wearables/today`, `/api/recommendation/smart`, `/api/sleep/summary`, `/api/wearables/trends`, and `/api/history-all`.
 - Other tabs lazy-load and cache their data on first visit; the union of per-tab endpoints includes `/api/next-workout`, `/api/vitals`, `/api/whoop/status`, `/api/open-wearables/status`, `/api/wearable-sources`, `/api/insights`, `/api/apple-health/workouts`, `/api/body-history`, `/api/settings`, `/api/analytics/advanced`, `/api/muscle-fatigue`, and `/api/exercises`.
 - Dashboard, next workout, Oura status/sleep, WHOOP status, Open Wearables status, wearable sources, and smart recommendation use a 30-second timeout where configured.
 - AI status uses `/api/ai/health` and `/api/ai/metrics`, with a 60-second refresh interval after boot.
@@ -78,7 +78,7 @@ Shared state relationships:
 | Source action | Immediate API | Surfaces refreshed or affected |
 | --- | --- | --- |
 | Open app shell | Initial tab GETs listed above | Initial tab only; other tabs populate on first switch. |
-| Retry readiness/recommendation/insights | `/api/oura/status` (readiness), `/api/dashboard` + `/api/recommendation/smart` (recommendation), `/api/oura/sleep-summary` (insight) | Readiness card, recommendation card, source chips, insight card. |
+| Retry readiness/recommendation/insights | `/api/wearables/today` (readiness), `/api/dashboard` + `/api/recommendation/smart` (recommendation), `/api/sleep/summary` (insight) | Readiness card, recommendation card, source chips, insight card. |
 | Change settings goal/time/equipment | `/api/settings` or `/api/settings/equipment` | Next workout, smart recommendation, Settings summaries, Dashboard recommendation. |
 | AI status timer | `/api/ai/health`, `/api/ai/metrics` | Header AI dot/popover and Settings AI coach card. |
 | Source freshness read | `/api/freshness` | Settings integration chips and freshness detail; used there specifically because `/api/dashboard` would regenerate `next_workout`. Dashboard freshness chips instead read freshness blocks inside `/api/dashboard` and `/api/recommendation/smart` payloads. |
@@ -127,7 +127,6 @@ Downstream coupling:
 
 | Surface | Primary actions | API | Coupled surfaces |
 | --- | --- | --- | --- |
-| Oura Settings row | Sync sleep, inspect latest daily/sleep/source. | `/api/oura/status`, `/api/oura/trends`, `/api/oura/sync-sleep`, `/api/oura/sleep-summary` | Dashboard readiness, Vitals sleep/RHR/HRV, recommendation confidence, freshness chips. |
 | Apple Health setup modal | Show tokenized setup URL and sync evidence. | `/api/apple-health/sync/setup-url`, `/api/apple-health/sync/status` | Settings Apple row, freshness chips, Vitals/Activity, History workouts, recommendation load context. |
 | Health Auto Export webhook | External phone/shortcut posts health records. | `/api/apple-health/sync` | Apple sync DB, `/api/apple-health/*` reads, Dashboard/Vitals/History after refresh. |
 | WHOOP intake modal | Start OAuth, poll status, manual CSV import, disconnect/delete. | `/api/whoop/connect/start`, `/api/whoop/callback`, `/api/whoop/sync`, `/api/whoop/import-csv`, `/api/whoop/disconnect`, `/api/whoop/delete-data` | Settings WHOOP row, recommendation modifiers, source conflict drawer, freshness chips. |

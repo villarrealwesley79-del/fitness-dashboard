@@ -27,7 +27,7 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: None)
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(module, "_apply_open_wearables_recommendation_guard", lambda rec, _f: (rec, None))
-    monkeypatch.setattr(module, "get_oura_daily", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_readiness_with_basis", lambda: (None, None))
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {})
     monkeypatch.setattr(module, "_recommendation_sources_payload", lambda *a, **k: {})
     monkeypatch.setattr(module, "_wearable_sources_payload", lambda *a, **k: {})

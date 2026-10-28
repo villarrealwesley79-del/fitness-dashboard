@@ -1,7 +1,7 @@
 """Contract tests for the wearable-freshness UI surfaces (FIT-16).
 
-The Settings INTEGRATIONS panel renders Oura + Apple Health freshness
-evidence by reading specific fields from `/api/oura/status` and
+The Settings INTEGRATIONS panel renders wearable + Apple Health freshness
+evidence by reading specific fields from `/api/wearables/today` and
 `/api/apple-health/sync/status`. These tests pin the field set + types
 so a backend refactor can't silently break the UI's ability to show
 "latest daily / sleep / cached vs live" and "last accepted / attempt /
@@ -97,62 +97,56 @@ def test_apple_health_status_does_not_leak_raw_health_data(fitness_app):
 
 
 # ──────────────────────────────────────────────────────────────────
-# /api/oura/status — fields the FIT-16 panel renders
+# /api/wearables/today — the readiness/sleep numbers read from stored facts
 # ──────────────────────────────────────────────────────────────────
 
-def _stub_oura_cached_row(monkeypatch, fitness_app, row):
-    """Force /api/oura/status onto the cached path by monkeypatching
-    ``get_oura_daily``. Bypasses the OURA_API_TOKEN check so the test
-    works in dev envs without a token.
-    """
-    monkeypatch.setattr(fitness_app, "get_oura_daily",
-                        lambda _db, _today: dict(row), raising=False)
+def _store_today(fitness_app):
+    from datetime import date
+    from wearable_fact_store import WearableDailyFact, upsert_daily_facts
+
+    today = date.today().isoformat()
+    metrics = {
+        "recovery_score": 78, "heart_rate_variability": 42, "resting_heart_rate": 52, "steps": 8500,
+        "temperature_deviation": 0.1, "sleep_duration": 452, "sleep_deep_duration": 80,
+        "sleep_rem_duration": 92, "sleep_light_duration": 270, "sleep_awake_duration": 10,
+    }
+    upsert_daily_facts(fitness_app.WEARABLE_FACTS_DB_FILE, [
+        WearableDailyFact(
+            date=today, provider_id="oura", source_label="Oura", metric=metric, value=float(value),
+            source_provider="oura", source_system="open_wearables", source_id="s",
+            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True,
+        )
+        for metric, value in metrics.items()
+    ], profile_key=fitness_app._open_wearables_profile_key())
 
 
-def test_oura_status_exposes_source_field(monkeypatch, fitness_app):
-    """The UI labels Oura as "Live" vs "Cached" based on ``source``.
-    Even when the live API is unreachable, the cached path must still
-    set ``source`` so the panel can render an honest state.
-    """
-    _stub_oura_cached_row(monkeypatch, fitness_app, {
-        "readiness_score": 78, "sleep_score": 85, "hrv": 42,
-        "steps": 8500, "activity_score": 88, "resting_hr": 52,
-        "temperature_deviation": 0.1, "sleep_duration_min": 452,
-        "sleep_deep_min": 80, "sleep_rem_min": 92, "sleep_light_min": 270, "sleep_awake_min": 10,
-    })
-    res = fitness_app.app.test_client().get("/api/oura/status")
+def test_wearables_today_exposes_source_field(monkeypatch, fitness_app):
+    """The UI labels the data by ``source`` and names each domain's provider."""
+    _store_today(fitness_app)
+    res = fitness_app.app.test_client().get("/api/wearables/today")
     assert res.status_code == 200
     payload = res.get_json()
-    assert "source" in payload, "source field is the live-vs-cached signal"
-    # Real values are "db" (cached) or "api" (live).
-    assert payload["source"] in ("db", "api"), (
-        f"unexpected source value: {payload['source']!r}"
-    )
+    assert payload["source"] == "open_wearables"
+    assert payload["sources"]["sleep"]["provider"] == "oura"
+    assert payload["sources"]["recovery"]["via"] == "open_wearables"
 
 
-def test_oura_status_carries_daily_and_sleep_rows(monkeypatch, fitness_app):
-    """The UI's "Latest daily" row reads ``date`` + ``readiness`` /
-    ``hrv`` / ``resting_hr``; "Latest sleep" reads
-    ``sleep_duration_min`` + ``sleep_score``. All keys must be present
-    in the response (null is fine when no row exists).
+def test_wearables_today_carries_daily_and_sleep_rows(monkeypatch, fitness_app):
+    """The UI's daily row reads ``date`` + ``readiness`` / ``hrv`` / ``resting_hr``;
+    the sleep row reads ``sleep_duration_min``. All keys are present (null is fine).
     """
-    _stub_oura_cached_row(monkeypatch, fitness_app, {
-        "readiness_score": 78, "sleep_score": 85, "hrv": 42,
-        "steps": 8500, "activity_score": 88, "resting_hr": 52,
-        "temperature_deviation": 0.1, "sleep_duration_min": 452,
-        "sleep_deep_min": 80, "sleep_rem_min": 92, "sleep_light_min": 270, "sleep_awake_min": 10,
-    })
-    res = fitness_app.app.test_client().get("/api/oura/status")
-    payload = res.get_json()
+    _store_today(fitness_app)
+    payload = fitness_app.app.test_client().get("/api/wearables/today").get_json()
     for key in (
         "date", "readiness", "hrv", "resting_hr",
         "sleep_score", "sleep_duration_min",
     ):
-        assert key in payload, f"FIT-16 panel reads {key!r}; must be in payload"
-    # Sanity check the values are wired through correctly.
+        assert key in payload, f"the dashboard reads {key!r}; must be in payload"
     assert payload["readiness"] == 78
-    assert payload["sleep_score"] == 85
+    assert payload["hrv"] == 42
     assert payload["sleep_duration_min"] == 452
+    assert payload["sleep_breakdown_min"] == {"deep": 80, "rem": 92, "light": 270, "awake": 10}
+    assert payload["sleep_score"] is None  # facts carry no vendor sleep score
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -169,7 +163,7 @@ def test_dashboard_freshness_block_distinguishes_attempt_from_data_point(fitness
     res = fitness_app.app.test_client().get("/api/dashboard")
     payload = res.get_json()
     freshness = payload.get("freshness") or {}
-    for source in ("oura", "apple_health"):
+    for source in ("wearable_facts", "apple_health"):
         assert source in freshness, f"freshness.{source} block must exist"
         block = freshness[source]
         assert "last_data_point" in block, (

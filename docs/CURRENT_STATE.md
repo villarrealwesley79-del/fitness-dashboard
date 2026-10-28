@@ -45,7 +45,7 @@ Core files:
 - `app.py`: Flask routes, deterministic workout engine, recommendation logic, AI apply/analyze routes, metrics, backup/import, history, body, settings, Oura, Apple Health, WHOOP, Open Wearables, and food-intake endpoints.
 - `auth.py`: login/session handling, single-owner guard, public-prefix allowlist.
 - `apple_health_parser.py`: Apple Health file parsing, Health Auto Export webhook ingestion, sync DB reads, status/setup endpoints.
-- `oura_client.py` and `oura_sleep_sync.py`: Oura API wrapper, daily cache, sleep sync.
+- Oura reaches the app only through Open Wearables facts; `scripts/import_archive_facts.py` imports archived Oura and Apple history.
 - `whoop_client.py`, `whoop_store.py`, and `whoop_recommendations.py`: WHOOP OAuth/API client, protected token-material references, local SQLite storage, normalized daily facts, freshness, and bounded recommendation modifiers.
 - `lm_studio_adapter.py`: LM Studio health checks, strict JSON schemas, adjust/analyze validators, fallback behavior.
 - `meal_estimate_schema.py`, `local_vision_adapter.py`, `claude_vision_adapter.py`, and food lookup modules: structured food-photo/text/barcode estimation and sanitization helpers.

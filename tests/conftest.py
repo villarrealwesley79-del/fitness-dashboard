@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import ipaddress
 import socket
+import sys
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -24,6 +25,12 @@ _CSRF_TEST_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _CSRF_TEST_OMIT_ENVIRON = "fitness_dashboard.omit_auto_csrf_header"
 
 
+def _isolate_wearable_facts(monkeypatch: pytest.MonkeyPatch, module, tmp_path: Path) -> None:
+    """Per-test wearable facts DB and an open 15-minute refresh gate."""
+    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(tmp_path / "wearable_facts.sqlite3"))
+    monkeypatch.setitem(module._WEARABLE_REFRESH_STATE, "at", None)
+
+
 @pytest.fixture
 def isolated_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Return the Flask module with a per-test data database and auth disabled."""
@@ -31,6 +38,7 @@ def isolated_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
     module = importlib.import_module("app")
+    _isolate_wearable_facts(monkeypatch, module, tmp_path)
     previous_secret_key = module.app.config.get("SECRET_KEY")
     previous_testing = module.app.config.get("TESTING")
     previous_login_disabled = module.app.config.get("LOGIN_DISABLED")
@@ -109,6 +117,15 @@ def csrf_browser_header_for_test_clients(monkeypatch: pytest.MonkeyPatch) -> Ite
         return original_open(self, *args, **kwargs)
 
     monkeypatch.setattr(FlaskClient, "open", open_with_csrf_header)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def isolated_wearable_facts_for_imported_app(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:
+    """Tests that import ``app`` themselves must not share one facts database."""
+    module = sys.modules.get("app")
+    if module is not None and hasattr(module, "_WEARABLE_REFRESH_STATE"):
+        _isolate_wearable_facts(monkeypatch, module, tmp_path)
     yield
 
 

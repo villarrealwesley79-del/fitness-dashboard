@@ -84,7 +84,7 @@ stores = {
     "baselines_json": app.BASELINES_FILE,
     "body_json": app.BODY_FILE,
     "sleep_json": app.SLEEP_FILE,
-    "oura_db": app.OURA_DB_FILE,
+    "wearable_facts_db": app.WEARABLE_FACTS_DB_FILE,
     "fitness_data_db": data_store.DATA_DB,
     "auth_db": auth.AUTH_DB,
     "apple_health_sync_db": apple_health_parser._apple_health_sync_db_path(),
@@ -119,7 +119,7 @@ print(json.dumps({name: {"path": path, "exists": os.path.exists(path)} for name,
         "baselines_json": "data_baselines.json",
         "body_json": "data_body.json",
         "sleep_json": "data_sleep.json",
-        "oura_db": "oura_daily.sqlite3",
+        "wearable_facts_db": "wearable_facts.sqlite3",
         "fitness_data_db": "fitness_data.db",
         "auth_db": "auth.db",
         "apple_health_sync_db": "apple_health_sync.db",
@@ -217,25 +217,19 @@ with app.app.test_request_context("/api/push/test", base_url="http://127.0.0.1:5
     assert payload == {"sub": "mailto:admin@example.com"}
 
 
-def test_auth_and_oura_sync_helpers_use_data_dir(tmp_path):
+def test_auth_helpers_use_data_dir(tmp_path):
     script = r"""
 import json
 
 import app
 import auth
-import oura_sleep_sync
 
-print(json.dumps({
-    "auth_db": auth.AUTH_DB,
-    "oura_sleep_db": oura_sleep_sync.default_db_path(),
-}))
+print(json.dumps({"auth_db": auth.AUTH_DB}))
 """
 
     payload = _run_probe(script, DATA_DIR=str(tmp_path))
 
     assert _under(tmp_path, payload["auth_db"])
-    assert _under(tmp_path, payload["oura_sleep_db"])
-    assert Path(payload["oura_sleep_db"]).name == "oura_daily.sqlite3"
 
 
 def test_launchd_installer_exports_data_dir_and_public_base_url(tmp_path):

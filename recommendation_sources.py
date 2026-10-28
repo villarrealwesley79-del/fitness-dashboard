@@ -3,11 +3,36 @@
 from __future__ import annotations
 
 
-def is_whoop_recovery(fact) -> bool:
-    """The only recovery_score the guard and its proof count: one attributed to WHOOP."""
+def whoop_recovery_value(fact) -> float | None:
+    """The 0-100 score of a WHOOP recovery_score fact, else None.
+
+    The one check the guard, the consumed test and the proof share: booleans and
+    out-of-range scores are excluded, never clamped or counted as used.
+    """
     if not isinstance(fact, dict) or fact.get("metric") != "recovery_score":
-        return False
-    return "whoop" in {str(fact.get(key) or "").lower() for key in ("provider_id", "source_provider")}
+        return None
+    if "whoop" not in {str(fact.get(key) or "").lower() for key in ("provider_id", "source_provider")}:
+        return None
+    value = fact.get("value")
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
+def is_whoop_recovery(fact) -> bool:
+    return whoop_recovery_value(fact) is not None
+
+
+def consumed_facts(facts) -> list[dict]:
+    """Facts the recommendation reads; HRV, RHR and SpO2 alone do not feed it."""
+    return [
+        f for f in facts or []
+        if isinstance(f, dict) and (f.get("metric") in {"sleep_duration", "active_minutes"} or is_whoop_recovery(f))
+    ]
 
 
 def build_open_wearables_recommendation_source(
@@ -23,15 +48,16 @@ def build_open_wearables_recommendation_source(
     status = freshness.get("status") or ("fresh" if facts else ("connected" if providers else "missing"))
     if facts and modifier.get("applied") and status == "missing":
         status = "fresh"
-    # Only facts the recommendation reads count; HRV, RHR and SpO2 alone do not.
-    consumed = any(isinstance(f, dict) and (f.get("metric") in {"sleep_duration", "active_minutes"} or is_whoop_recovery(f)) for f in facts)
-    used = consumed and status in {"fresh", "aging", "connected"}
+    consumed = consumed_facts(facts)
+    used = bool(consumed) and status in {"fresh", "aging", "connected"}
     provider_labels = [p.get("label") or p.get("provider_id") for p in providers if isinstance(p, dict)]
     detail = "Open Wearables is the wearable hub."
     if modifier.get("applied"):
         detail = modifier.get("detail") or "Open Wearables facts applied a conservative recommendation guard."
+    elif consumed:
+        detail = f"Open Wearables contributed {len(consumed)} normalized fact{'s' if len(consumed) != 1 else ''}."
     elif facts:
-        detail = f"Open Wearables contributed {len(facts)} normalized fact{'s' if len(facts) != 1 else ''}."
+        detail = f"Open Wearables has {len(facts)} fact{'s' if len(facts) != 1 else ''}; none feed today's recommendation."
     elif provider_labels:
         detail = "Open Wearables hub providers visible: " + ", ".join(provider_labels[:4]) + ". No fresh normalized facts were applied."
     elif status in {"missing", "stale", "error", "blocked"}:
@@ -46,7 +72,7 @@ def build_open_wearables_recommendation_source(
         "influence": "bounded_modifier" if used else "none",
         "detail": detail,
         "used_for_recommendation": used,
-        "facts_used": len(facts),
+        "facts_used": len(consumed),
         "applied_modifiers": modifier.get("applied_modifiers") or [],
     }
 
@@ -95,11 +121,36 @@ def build_recommendation_source_proof(
             "ignored_reason": ignored_reason,
         }
 
-    open_fields = [
-        fact.get("metric")
-        for fact in source_inputs.get("open_wearables_facts") or []
-        if isinstance(fact, dict) and (fact.get("metric") in {"sleep_duration", "active_minutes"} or is_whoop_recovery(fact))
-    ]
+    domain_sources = source_inputs.get("domain_sources") or {}
+    domain_fields = source_inputs.get("domain_fields") or {}
+
+    def domain_proof(domain, modifier_applied):
+        """Provider, date and freshness behind one domain, and whether today's plan read it."""
+        node = domain_sources.get(domain) or {}
+        status = node.get("freshness") or "missing"
+        fields = sorted({str(field) for field in domain_fields.get(domain) or [] if field})
+        used = bool(fields) and status in {"fresh", "aging"}
+        if used:
+            ignored_reason = None
+        elif not node:
+            ignored_reason = "missing_data"
+        elif status not in {"fresh", "aging"}:
+            ignored_reason = f"{status}_source"
+        else:
+            ignored_reason = "not_used"
+        return {
+            "provider": node.get("provider"),
+            "via": node.get("via") or "open_wearables",
+            "date": node.get("date"),
+            "freshness": status,
+            "used_for_recommendation": used,
+            "fields_used": fields if used else [],
+            "modifier_applied": bool(modifier_applied and used),
+            "ignored_reason": ignored_reason,
+            "conflict_state": node.get("conflict_state"),
+        }
+
+    open_fields = [fact.get("metric") for fact in consumed_facts(source_inputs.get("open_wearables_facts"))]
     open_used = bool(open_fields) and bool(open_wearables_source.get("used_for_recommendation"))
     open_status = str(open_wearables_source.get("freshness") or "missing")
     freshness_with_open = dict(freshness)
@@ -113,12 +164,10 @@ def build_recommendation_source_proof(
             bool(source_inputs.get("open_wearables_modifier_applied")),
             used_override=open_used,
         ),
-        "oura": proof(
-            "oura",
-            source_inputs.get("oura_fields"),
-            bool(source_inputs.get("oura_modifier_applied")),
-            used_override=source_inputs.get("oura_used_override"),
-        ),
+        **{
+            domain: domain_proof(domain, bool(source_inputs.get("wearable_modifier_applied")))
+            for domain in ("sleep", "recovery", "activity")
+        },
         "apple_health": proof(
             "apple_health",
             source_inputs.get("apple_health_fields"),

@@ -6,8 +6,6 @@ import importlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -84,248 +82,6 @@ def _apple_health_workout(*, start="2026-07-12T07:00:00-05:00", avg_hr=None):
             "start": start,
         },
     }
-
-
-def test_extract_workouts_normalizes_exact_open_wearables_schema_without_raw_data():
-    rows = hub.extract_workouts(_open_wearables_payload())
-
-    assert rows == [_normalized_workout()]
-    serialized = json.dumps(rows)
-    assert "must-not-leak" not in serialized
-    assert "access_token" not in serialized
-    assert "raw" not in serialized
-
-
-def test_extract_workouts_keeps_missing_metrics_null_and_supports_kilojoule_fallback():
-    payload = _open_wearables_payload(include_max_hr=False)
-    workout = payload["data"][0]
-    workout.pop("calories_kcal")
-    workout["kilojoules"] = 418.4
-
-    row = hub.extract_workouts(payload)[0]
-
-    assert row["calories_burned"] == pytest.approx(100.0)
-    assert row["avg_heart_rate"] == 148
-    assert row["max_heart_rate"] is None
-
-
-def test_extract_workouts_uses_zone_offset_for_local_history_date():
-    payload = _open_wearables_payload()
-    workout = payload["data"][0]
-    workout["start_time"] = "2026-07-13T04:30:00Z"
-    workout["end_time"] = "2026-07-13T05:12:00Z"
-    workout["zone_offset"] = "-05:00"
-
-    row = hub.extract_workouts(payload)[0]
-
-    assert row["date"] == "2026-07-12"
-    assert "zone_offset" not in row
-
-
-def test_workout_fetch_uses_utc_bounds_for_seven_local_calendar_days(fitness_app, monkeypatch):
-    captured = {}
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            value = cls(2026, 7, 13, 12, 0)
-            return value.replace(tzinfo=tz) if tz else value
-
-    monkeypatch.setenv("TZ", "America/Chicago")
-    monkeypatch.setattr(fitness_app, "datetime", FrozenDateTime)
-    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
-    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
-    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
-    def capture_request(url, **_kwargs):
-        captured["url"] = url
-        return {"data": [], "pagination": {"has_more": False, "next_cursor": None}}
-
-    monkeypatch.setattr(fitness_app, "_ow_request", capture_request)
-
-    result = fitness_app._fetch_open_wearables_workout_data()
-
-    query = parse_qs(urlsplit(captured["url"]).query)
-    assert query["start_date"] == ["2026-07-07T05:00:00Z"]
-    assert query["end_date"] == ["2026-07-14T05:00:00Z"]
-    assert datetime.fromisoformat("2026-07-14T01:30:00+00:00") < datetime.fromisoformat(
-        query["end_date"][0].replace("Z", "+00:00")
-    )
-    assert result["errors"] == {}
-
-
-def test_workout_fetch_falls_back_when_tz_key_is_malformed(fitness_app, monkeypatch):
-    captured = {}
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            value = cls(2026, 11, 2, 12, 0)
-            return value.replace(tzinfo=tz) if tz else value
-
-    monkeypatch.setenv("TZ", "../invalid")
-    monkeypatch.setattr(fitness_app, "datetime", FrozenDateTime)
-    monkeypatch.setattr(
-        fitness_app,
-        "_system_local_timezone",
-        lambda: ZoneInfo("America/Chicago"),
-        raising=False,
-    )
-    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
-    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
-    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
-    def capture_request(url, **_kwargs):
-        captured["url"] = url
-        return {"data": [], "pagination": {"has_more": False, "next_cursor": None}}
-
-    monkeypatch.setattr(
-        fitness_app,
-        "_ow_request", capture_request,
-    )
-
-    result = fitness_app._fetch_open_wearables_workout_data()
-
-    query = parse_qs(urlsplit(captured["url"]).query)
-    assert query["start_date"] == ["2026-10-27T05:00:00Z"]
-    assert query["end_date"] == ["2026-11-03T06:00:00Z"]
-    assert result == {"workouts": {"data": []}, "errors": {}}
-
-
-def test_workout_fetch_follows_open_wearables_cursor_pagination(fitness_app, monkeypatch):
-    urls = []
-    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
-    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
-    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
-
-    def fake_request(url, **_kwargs):
-        urls.append(url)
-        if "cursor=" in url:
-            return {
-                "data": [{"id": "page-2"}],
-                "pagination": {"has_more": False, "next_cursor": None},
-            }
-        return {
-            "data": [{"id": "page-1"}],
-            "pagination": {"has_more": True, "next_cursor": "next page"},
-        }
-
-    monkeypatch.setattr(fitness_app, "_ow_request", fake_request)
-
-    result = fitness_app._fetch_open_wearables_workout_data()
-
-    assert [row["id"] for row in result["workouts"]["data"]] == ["page-1", "page-2"]
-    assert "limit=100" in urls[0]
-    assert "cursor=next+page" in urls[1]
-
-
-def test_workout_fetch_rejects_schema_invalid_success_page(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
-    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
-    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
-    monkeypatch.setattr(
-        fitness_app,
-        "_ow_request",
-        lambda _url, **_kwargs: {"pagination": {"has_more": False}},
-    )
-
-    result = fitness_app._fetch_open_wearables_workout_data()
-
-    assert result["workouts"] is None
-    assert "workouts" in result["errors"]
-
-
-def test_open_wearables_workouts_endpoint_returns_only_normalized_rows(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_fetch_open_wearables_workout_data", lambda: {
-        "workouts": _open_wearables_payload(),
-        "errors": {},
-    })
-
-    response = fitness_app.app.test_client().get("/api/open-wearables/workouts")
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["total"] == 1
-    row = payload["workouts"][0]
-    assert row["source"] == "open_wearables"
-    assert row["source_label"] == "Open Wearables"
-    assert row["calories_burned"] == 386.4
-    assert row["avg_heart_rate"] == 148
-    assert row["max_heart_rate"] == 176
-    assert "raw" not in json.dumps(payload)
-
-
-def test_open_wearables_workouts_endpoint_is_empty_when_hub_is_not_configured(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_fetch_open_wearables_workout_data", lambda: {
-        "workouts": None,
-        "errors": {"config": "missing"},
-    })
-
-    response = fitness_app.app.test_client().get("/api/open-wearables/workouts")
-
-    assert response.status_code == 200
-    assert response.get_json() == {"workouts": [], "total": 0}
-
-
-def test_open_wearables_workouts_endpoint_does_not_cache_configured_hub_failure(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_fetch_open_wearables_workout_data", lambda: {
-        "workouts": None,
-        "errors": {"workouts": "timeout"},
-    }, raising=False)
-
-    response = fitness_app.app.test_client().get("/api/open-wearables/workouts")
-
-    assert response.status_code == 503
-    assert response.get_json()["error"]["code"] == "open_wearables_workouts_unavailable"
-
-
-def test_cross_source_merge_uses_unique_utc_second_and_preserves_base_values(fitness_app):
-    apple = _apple_health_workout(start="2026-07-12T07:00:00.900-05:00", avg_hr=0)
-    open_wearables = {**_normalized_workout(), "activity_type": "Tempo Run"}
-
-    merged = fitness_app._merge_open_wearables_history_rows([apple], [open_wearables])
-
-    assert len(merged) == 1
-    assert merged[0]["id"] == apple["id"]
-    assert merged[0]["source"] == "apple_health"
-    assert merged[0]["unrelated"] == "preserve-me"
-    assert merged[0]["calories_burned"] == 386.4
-    assert merged[0]["avg_heart_rate"] == 0
-    assert merged[0]["max_heart_rate"] == 176
-
-
-def test_cross_source_merge_leaves_ambiguous_and_startless_rows_unmerged(fitness_app):
-    apple = _apple_health_workout()
-    duplicate_apple = {**apple, "id": "apple-health:second"}
-    open_wearables = _normalized_workout()
-
-    ambiguous = fitness_app._merge_open_wearables_history_rows(
-        [apple, duplicate_apple],
-        [open_wearables],
-    )
-    startless = fitness_app._merge_open_wearables_history_rows(
-        [{**apple, "created_at": None, "apple_health": {"activity_type": "Running"}}],
-        [{**open_wearables, "start_time": None}],
-    )
-
-    assert [row["id"] for row in ambiguous] == [
-        "apple-health:synthetic-id",
-        "apple-health:second",
-        open_wearables["id"],
-    ]
-    assert len(startless) == 2
-
-
-def test_cross_source_merge_accepts_canonical_activity_candidate(fitness_app):
-    apple = _apple_health_workout()
-    apple["session_type"] = "Treadmill Run"
-    apple["apple_health"]["activity_type"] = "Treadmill Run"
-    open_wearables = {
-        **_normalized_workout(),
-        "activity_type": "Treadmill Run",
-        "session_type": "running",
-    }
-
-    merged = fitness_app._merge_open_wearables_history_rows([apple], [open_wearables])
-
-    assert len(merged) == 1
-    assert merged[0]["calories_burned"] == 386.4
 
 
 def test_history_cross_source_merge_runtime_is_unique_and_collision_safe():
@@ -536,42 +292,6 @@ def test_open_wearables_history_row_escapes_hostile_labels():
     assert "<img" not in html and "<script>" not in html
 
 
-def test_extract_workouts_hardens_labels_and_date_helper_is_single_definition():
-    payload = _open_wearables_payload()
-    workout = payload["data"][0]
-    workout["source"] = {"provider": {"x": 1}, "device": ["nope"]}
-
-    row = hub.extract_workouts(payload)[0]
-
-    assert row["provider_source"] is None
-    assert row["device"] is None
-    # FIT-350 stored facts and FIT-382 rows must agree on the local date.
-    assert hub._workout_local_date("2026-07-13T04:30:00Z", "-05:00") == "2026-07-12"
-
-
-def test_workout_fetch_accepts_events_key_and_bounds_pagination(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
-    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "synthetic-token")
-    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "https://ow.example.test/users/u")
-    calls = []
-
-    def endless(url, headers=None, **_kwargs):
-        calls.append(url)
-        return {"events": [], "pagination": {"has_more": True, "next_cursor": f"c{len(calls)}"}}
-
-    monkeypatch.setattr(fitness_app, "_ow_request", endless)
-    result = fitness_app._fetch_open_wearables_workout_data()
-    assert result["workouts"] is None
-    assert "pagination_limit" in result["errors"]["workouts"]
-    assert len(calls) == 5
-
-    monkeypatch.setattr(
-        fitness_app, "_ow_request",
-        lambda url, headers=None, **_kwargs: {"events": [{"id": "e1"}], "pagination": {"has_more": False}},
-    )
-    assert fitness_app._fetch_open_wearables_workout_data()["workouts"] == {"data": [{"id": "e1"}]}
-
-
 def test_logged_lift_shows_folded_open_wearables_metrics_once():
     result = run_app_js(
         [
@@ -680,3 +400,70 @@ process.stdout.write(JSON.stringify(out));
     assert rows[0]["wearable_avg_heart_rate"] == 120
     assert rows[1]["source"] == "open_wearables"
     assert rows[1]["calories_burned"] == 500
+
+
+def _store_workout(module, *, provider="whoop", via="open_wearables", start="2026-07-12T12:00:00Z"):
+    from wearable_fact_store import WearableDailyFact, upsert_daily_facts
+
+    metrics = {
+        "workout_duration": (42.0, "min"), "workout_active_calories": (386.4, "kcal"),
+        "workout_avg_heart_rate": (148.0, "bpm"), "workout_max_heart_rate": (176.0, "bpm"),
+    }
+    upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
+        WearableDailyFact(
+            date=start[:10], provider_id=provider, source_label=provider, metric=metric, value=value, unit=unit,
+            source_provider=provider, source_system=via, source_record_kind="event", source_id=f"{provider}-run-1",
+            observed_at=start, original_label="Outdoor Run", category="cardio",
+        )
+        for metric, (value, unit) in metrics.items()
+    ], profile_key=module._open_wearables_profile_key())
+
+
+def test_open_wearables_workouts_endpoint_returns_only_normalized_stored_rows(isolated_app, monkeypatch):
+    _store_workout(isolated_app)
+    monkeypatch.setattr(
+        isolated_app, "fetch_open_wearables_data",
+        lambda **_: pytest.fail("History must read stored facts, never fetch live"),
+    )
+
+    response = isolated_app.app.test_client().get("/api/open-wearables/workouts")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["total"] == 1
+    row = payload["workouts"][0]
+    assert row["source"] == "open_wearables"
+    assert row["source_label"] == "WHOOP"
+    assert row["activity_type"] == "Outdoor Run"
+    assert (row["duration_minutes"], row["calories_burned"]) == (42.0, 386.4)
+    assert (row["avg_heart_rate"], row["max_heart_rate"]) == (148.0, 176.0)
+    assert row["archive"] is False
+    assert "raw" not in json.dumps(payload)
+
+
+def test_open_wearables_workouts_endpoint_is_empty_when_nothing_is_stored(isolated_app):
+    response = isolated_app.app.test_client().get("/api/open-wearables/workouts")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"workouts": [], "total": 0}
+
+
+def test_open_wearables_workouts_endpoint_serves_stored_rows_during_an_outage_without_503(isolated_app, monkeypatch):
+    _store_workout(isolated_app, provider="apple", via="archive", start="2025-03-01T17:30:00Z")
+
+    monkeypatch.setattr(
+        isolated_app, "fetch_open_wearables_data",
+        lambda **_: pytest.fail("History must not call Open Wearables, up or down"),
+    )
+
+    response = isolated_app.app.test_client().get("/api/open-wearables/workouts")
+
+    assert response.status_code == 200
+    [row] = response.get_json()["workouts"]
+    assert row["archive"] is True
+    assert row["source_label"] == "Apple Health (archive)"
+
+
+def test_stored_facts_and_history_rows_agree_on_the_local_date():
+    # FIT-350 stored facts and FIT-382 rows must agree on the local date.
+    assert hub._workout_local_date("2026-07-13T04:30:00Z", "-05:00") == "2026-07-12"

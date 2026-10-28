@@ -101,7 +101,7 @@ process.stdout.write(JSON.stringify([
 
 
 def test_dashboard_source_markup_is_present_and_has_no_whoop_chip():
-    for token in ('id="reco-fresh-oura"', 'id="btn-reco-sources"', 'id="modal-reco-sources"'):
+    for token in ('id="reco-fresh-wearables"', 'id="btn-reco-sources"', 'id="modal-reco-sources"'):
         assert token in INDEX_HTML
     assert 'id="reco-fresh-whoop"' not in INDEX_HTML
 
@@ -114,7 +114,7 @@ const captured = [];
 e.state.dashboard = {
   freshness: {
     open_wearables: { status: 'fresh' },
-    oura: { status: 'fresh' },
+    wearable_facts: { status: 'fresh' },
   },
 };
 e.state.reco = { suggested_workout: 'strength' };
@@ -139,7 +139,7 @@ process.stdout.write(JSON.stringify(captured));
     assert output == [{
         "sameDash": True,
         "sameReco": True,
-        "freshness": {"open_wearables": {"status": "fresh"}, "oura": {"status": "fresh"}},
+        "freshness": {"open_wearables": {"status": "fresh"}, "wearable_facts": {"status": "fresh"}},
     }]
 
 
@@ -187,7 +187,7 @@ const missing = { status: 'missing' };
 const paint = (openWearablesUsed) => {
   e.state.oura = null; e.state.ouraSleep = null;
   e.state.dashboard = {
-    freshness: { oura: missing, apple_health: missing },
+    freshness: { wearable_facts: missing, apple_health: missing },
     recommendation_sources: { open_wearables: { used_for_recommendation: openWearablesUsed } },
   };
   e.state.reco = { recommendation: 'strength', reasoning: 'WHOOP recovery 80' };

@@ -325,12 +325,12 @@ Wearable fact store:
 | --- | --- | --- |
 | `DATA_DIR` | Env override or app directory. | `runtime_config.py:11` |
 | `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json` | JSON-backed local stores. | `app.py:200` |
-| `oura_daily.sqlite3`, `whoop.sqlite3`, `wearable_facts.sqlite3`, `fitness_data.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3` | SQLite local stores/caches. | `app.py:209`, `data_store.py:24`, `apple_health_parser.py:78`, `app.py:8978` |
+| `whoop.sqlite3`, `wearable_facts.sqlite3`, `fitness_data.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3` | SQLite local stores/caches. | `app.py:209`, `data_store.py:24`, `apple_health_parser.py:78`, `app.py:8978` |
 | Backup version | `1.1` | Exported backup schema version. | `app.py:15161` |
 | Backup filename | `fitness_backup_YYYY-MM-DD.json` | Export filename pattern. | `app.py:15185` |
 | Forbidden WHOOP backup fields | `access_token`, `refresh_token`, `token_ref`, `material_ref`, `raw`, `raw_json`, `payload`, `provider_payload`, `client_secret` | Import rejection fields. | `app.py:15216` |
 | `DEBUG_TIMING` | `1` enables timing logs for selected endpoints. | `app.py:11579` |
-| Debug timing endpoints | `/api/dashboard`, `/api/oura/status`, `/api/recommendation/smart`, `/api/oura/sleep-summary` | Routes with optional timing logs. | `app.py:11570` |
+| Debug timing endpoints | `/api/dashboard`, `/api/wearables/today`, `/api/recommendation/smart`, `/api/sleep/summary` | Routes with optional timing logs. | `app.py:11570` |
 | Default port | `5050` | Runtime port when `PORT` unset. | `app.py:16040` |
 | Default host | `127.0.0.1` | Runtime host when `HOST` unset. | `app.py:16059` |
 | `FLASK_DEBUG` | `1` enables debug mode. | `app.py:16055` |

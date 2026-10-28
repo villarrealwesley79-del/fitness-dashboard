@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
     WebPushException = None
     webpush = None
 
-# Load .env file if present (for OURA_API_TOKEN etc.)
+# Load .env file if present
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
@@ -52,14 +52,6 @@ if os.path.exists(_env_path):
 from data_loader import parse_workout_log, get_workout_summary
 from runtime_config import DATA_DIR, data_path, public_base_url as _runtime_public_base_url
 from settings_contract import DEFAULT_SETTINGS
-from oura_client import (
-    OuraClient,
-    init_oura_db,
-    upsert_oura_daily,
-    get_oura_daily,
-    get_oura_daily_range,
-    compute_hrv_trend,
-)
 from protected_secrets import delete_protected_secret, load_protected_secret, save_protected_secret
 from history_normalization import canonical_training_category, normalize_history_item
 from open_wearables_adapter import (
@@ -69,12 +61,14 @@ from open_wearables_adapter import (
     redacted_base_url,
     validate_open_wearables_base_url,
 )
-from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof
+from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof, consumed_facts
 from wearable_fact_store import (
     WearableDailyFact,
     delete_provider_data,
+    init_wearable_fact_db,
     list_recommendation_facts,
     list_wearable_sources,
+    preferred_daily_facts,
     upsert_daily_facts,
     upsert_wearable_source,
 )
@@ -126,7 +120,6 @@ RECOVERY_FILE = data_path("data_recovery.json")
 BASELINES_FILE = data_path("data_baselines.json")
 BODY_FILE = data_path("data_body.json")
 SLEEP_FILE = data_path("data_sleep.json")
-OURA_DB_FILE = data_path("oura_daily.sqlite3")
 WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
 OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
 
@@ -888,9 +881,8 @@ BASELINES_DATA = load_json(BASELINES_FILE, {})
 BODY_DATA = load_json(BODY_FILE, [])
 SLEEP_DATA = load_json(SLEEP_FILE, [])
 
-# Initialize Oura SQLite storage (safe no-op if file exists)
-init_oura_db(OURA_DB_FILE)
 init_data_db()
+init_wearable_fact_db(WEARABLE_FACTS_DB_FILE)
 
 
 def _normalize_exercise_name(name):
@@ -2249,60 +2241,81 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     }
 
 
+_WEARABLE_REFRESH_SECONDS = 15 * 60
+_WEARABLE_REFRESH_STATE = {"at": None}
+_WEARABLE_BACKFILL_CHUNK_DAYS = 28
+
+
+def _refresh_wearable_facts(force=False):
+    """Store the live Open Wearables window when the last attempt is over 15 minutes old.
+
+    Failures are swallowed: readers fall back to the facts already stored.
+    """
+    last = _WEARABLE_REFRESH_STATE["at"]
+    if not force and last is not None and time.monotonic() - last < _WEARABLE_REFRESH_SECONDS:
+        return False
+    _WEARABLE_REFRESH_STATE["at"] = time.monotonic()
+    try:
+        _store_wearable_facts_from_open_wearables(fetch_open_wearables_data())
+        return True
+    except Exception:
+        app.logger.warning("Open Wearables refresh failed; using stored facts", exc_info=True)
+        return False
+
+
+def backfill_open_wearables_facts(days=365):
+    """Store ``days`` of Open Wearables history in 28-day windows, oldest first so the newest wins last."""
+    now = datetime.now().astimezone()
+    window_ends = [now - timedelta(days=offset) for offset in range(0, max(1, int(days)), _WEARABLE_BACKFILL_CHUNK_DAYS)]
+    return sum(
+        _store_wearable_facts_from_open_wearables(
+            fetch_open_wearables_data(days=_WEARABLE_BACKFILL_CHUNK_DAYS, now=window_end)
+        )
+        for window_end in reversed(window_ends)
+    )
+
+
+def _preferred_facts(metrics, days=7):
+    """{date: {metric: fact}} for the last ``days`` days under the owner's source rule."""
+    end = datetime.now().date()
+    try:
+        return preferred_daily_facts(
+            WEARABLE_FACTS_DB_FILE,
+            metrics,
+            (end - timedelta(days=days - 1)).isoformat(),
+            end.isoformat(),
+            _open_wearables_profile_key(),
+        )
+    except Exception:
+        app.logger.warning("Stored wearable facts unreadable", exc_info=True)
+        return {}
+
+
+def _readiness_with_basis():
+    """(readiness 0-100, basis) from fresh facts: the preferred recovery score, else a sleep estimate."""
+    days = _preferred_facts({"recovery_score", "sleep_duration", "sleep_avg_heart_rate"}, days=2)
+    for fact_date in sorted(days, reverse=True):
+        fresh = {m: f for m, f in days[fact_date].items() if f["freshness"] == "fresh"}
+        score = fresh.get("recovery_score")
+        if score and 0 <= score["value"] <= 100:
+            return int(round(score["value"])), "recovery_score"
+        if "sleep_duration" in fresh:
+            break
+    else:
+        return None, None
+    duration_min = fresh["sleep_duration"]["value"]
+    avg_hr = (fresh.get("sleep_avg_heart_rate") or {}).get("value")
+    adjust = -5 if duration_min < 360 else -3 if duration_min < 420 else 3 if duration_min >= 540 else 0
+    if avg_hr is not None:
+        adjust += -4 if avg_hr >= 75 else -2 if avg_hr >= 70 else 2 if avg_hr <= 55 else 0
+    return int(max(0, min(100, round(70 + 1.5 * adjust)))), "sleep_estimate"
+
+
 def _get_oura_readiness_today(include_open_wearables=True):
-    today_s = _today_str()
-    cached = get_oura_daily(OURA_DB_FILE, today_s)
-    readiness = None
-    if cached:
-        readiness = cached.get("readiness_score")
-        try:
-            readiness = int(readiness)
-        except Exception:
-            readiness = None
-
-    ow_sleep = None
+    """Readiness 0-100 for today's plan (refreshing facts first unless told not to)."""
     if include_open_wearables:
-        try:
-            ow_data = fetch_open_wearables_data()
-            ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
-        except Exception:
-            ow_sleep = None
-
-    if not ow_sleep or not ow_sleep.get("recent"):
-        return readiness
-
-    duration_min = ow_sleep.get("duration_min")
-    avg_hr = ow_sleep.get("avg_hr")
-
-    def _duration_adjust(d_min, base_scale):
-        if d_min is None:
-            return 0
-        if d_min < 360:
-            return -5 * base_scale
-        if d_min < 420:
-            return -3 * base_scale
-        if d_min >= 540:
-            return 3 * base_scale
-        return 0
-
-    def _hr_adjust(hr, base_scale):
-        if hr is None:
-            return 0
-        if hr >= 75:
-            return -4 * base_scale
-        if hr >= 70:
-            return -2 * base_scale
-        if hr <= 55:
-            return 2 * base_scale
-        return 0
-
-    if readiness is None:
-        base = 70
-        adj = _duration_adjust(duration_min, 1.5) + _hr_adjust(avg_hr, 1.5)
-        return int(max(0, min(100, round(base + adj))))
-
-    adj = _duration_adjust(duration_min, 1.0) + _hr_adjust(avg_hr, 1.0)
-    return int(max(0, min(100, round(readiness + adj))))
+        _refresh_wearable_facts()
+    return _readiness_with_basis()[0]
 
 
 def _equipment_allowed(exercise, preference: str):
@@ -3798,38 +3811,61 @@ def calculate_acwr(workouts: list, *, include_apple_health: bool = True) -> dict
     }
 
 
-def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
-    """Calculate accumulated sleep debt over the last N days from Oura SQLite cache."""
+def _sleep_rows_from_facts(days=7):
+    """Nightly sleep rows, newest first, one per date from the preferred provider."""
+    metrics = {
+        "sleep_duration", "sleep_deep_duration", "sleep_rem_duration", "sleep_light_duration",
+        "sleep_awake_duration", "sleep_efficiency", "sleep_avg_heart_rate", "sleep_time_in_bed",
+    }
+    rows = []
+    for day, by_metric in sorted(_preferred_facts(metrics, days=days).items(), reverse=True):
+        duration = by_metric.get("sleep_duration")
+        if not duration:
+            continue
+        value = lambda name: (by_metric.get(name) or {}).get("value")
+        end_at = duration.get("observed_at")
+        time_in_bed = value("sleep_time_in_bed") or duration["value"]
+        rows.append({
+            "day": day,
+            "sleep_duration_min": duration["value"],
+            "total_sleep_min": duration["value"],
+            "sleep_deep_min": value("sleep_deep_duration"),
+            "sleep_rem_min": value("sleep_rem_duration"),
+            "sleep_light_min": value("sleep_light_duration"),
+            "sleep_awake_min": value("sleep_awake_duration"),
+            "deep_sleep_min": value("sleep_deep_duration"),
+            "rem_sleep_min": value("sleep_rem_duration"),
+            "light_sleep_min": value("sleep_light_duration"),
+            "awake_time_min": value("sleep_awake_duration"),
+            "avg_heart_rate": value("sleep_avg_heart_rate"),
+            "efficiency": value("sleep_efficiency"),
+            "sleep_score": None,
+            "provider": duration["provider"],
+            "via": duration["via"],
+            "freshness": duration["freshness"],
+            "conflict_state": duration["conflict_state"],
+            "sleep_end": end_at,
+            # Estimated: wake time minus time in bed (only the offset-free spread is scored).
+            "bedtime_start": _estimated_bedtime(end_at, time_in_bed),
+        })
+    return rows
+
+
+def _estimated_bedtime(wake_at, time_in_bed_min):
+    try:
+        wake = datetime.fromisoformat(str(wake_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if len(str(wake_at)) <= 10:  # a bare date carries no time of day
+        return None
+    return (wake - timedelta(minutes=float(time_in_bed_min))).isoformat()
+
+
+def calculate_sleep_debt(days: int = 7) -> dict:
+    """Accumulated sleep debt over the last N days from the preferred sleep facts."""
     target = 420  # minutes
     days = max(1, int(days or 7))
-
-    try:
-        conn = sqlite3.connect(oura_db_file)
-        conn.row_factory = sqlite3.Row
-        try:
-            cur = conn.execute(
-                """
-                SELECT day, sleep_type, sleep_duration_min, sleep_score,
-                       sleep_deep_min, sleep_rem_min, sleep_light_min
-                FROM oura_daily
-                WHERE sleep_duration_min IS NOT NULL
-                ORDER BY day DESC
-                """
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
-    except Exception as e:
-        return {
-            "debt_minutes": 0,
-            "debt_hours": 0.0,
-            "nights_under": 0,
-            "avg_sleep_min": 0.0,
-            "status": "good",
-            "message": f"Sleep debt unavailable (DB error: {str(e)}).",
-            "sample_count": 0,
-        }
-
+    rows = _sleep_rows_from_facts(days=days)
     rows = rows[:days]
     rows = [r for r in rows if _is_valid_nightly_sleep_row(r)]
     if not rows:
@@ -3839,7 +3875,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "nights_under": 0,
             "avg_sleep_min": 0.0,
             "status": "good",
-            "message": "No recent sleep-duration data available from Oura cache.",
+            "message": "No recent sleep-duration data available from wearable facts.",
             "sample_count": 0,
         }
 
@@ -4291,15 +4327,36 @@ def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
     return scoped
 
 
+def compute_hrv_trend(hrv_values):
+    """Trend label from last-3 vs previous-3 averages (2 ms threshold); 'stable' under 4 samples."""
+    vals = [v for v in hrv_values if v is not None]
+    if len(vals) < 4:
+        return "stable"
+    last = vals[-3:]
+    prev = vals[-6:-3] if len(vals) >= 6 else vals[:-3]
+    if not prev:
+        return "stable"
+    diff = sum(last) / len(last) - sum(prev) / len(prev)
+    return "improving" if diff > 2.0 else "declining" if diff < -2.0 else "stable"
+
+
+_HRV_METRICS = ("heart_rate_variability", "sleep_hrv_rmssd", "sleep_hrv_sdnn")
+
+
+def _hrv_series(days=7):
+    """HRV values oldest first. One metric only, so RMSSD and SDNN are never mixed."""
+    facts = _preferred_facts(set(_HRV_METRICS), days=days)
+    for metric in _HRV_METRICS:
+        values = [facts[day][metric]["value"] for day in sorted(facts) if metric in facts[day]]
+        if values:
+            return values
+    return []
+
+
 def get_recent_hrv_trend(days=7, minimum_samples=None):
-    """Return the recent Oura HRV trend, or unknown when data is sparse/unavailable."""
+    """Return the recent HRV trend, or unknown when data is sparse/unavailable."""
     try:
-        end = datetime.now().date()
-        start = end - timedelta(days=days - 1)
-        rows = get_oura_daily_range(
-            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-        )
-        hrv_values = [row.get("hrv") for row in rows if row.get("hrv") is not None]
+        hrv_values = _hrv_series(days)
         if minimum_samples is not None and len(hrv_values) < minimum_samples:
             return "unknown"
         return compute_hrv_trend(hrv_values)
@@ -4309,13 +4366,7 @@ def get_recent_hrv_trend(days=7, minimum_samples=None):
 
 def _current_workout_training_recommendation():
     """Mirror the dashboard's readiness context for lightweight workout loads."""
-    today_s = _today_str()
-    cached_oura = get_oura_daily(OURA_DB_FILE, today_s)
-    readiness_val = cached_oura.get("readiness_score") if cached_oura else None
-    try:
-        readiness_val = int(readiness_val) if readiness_val is not None else None
-    except Exception:
-        readiness_val = None
+    readiness_val = _readiness_with_basis()[0]
 
     recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=24)
     max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
@@ -4329,7 +4380,7 @@ def _current_workout_training_recommendation():
         readiness_val,
         recovery_bonus=calculate_recovery_bonus(RECOVERY_DATA, hours=48),
         hrv_trend=hrv_trend,
-        sleep_debt=calculate_sleep_debt(OURA_DB_FILE, days=7),
+        sleep_debt=calculate_sleep_debt(days=7),
         acwr_data=calculate_acwr(WORKOUTS),
         last_completed=last_completed,
         last_hours_ago=last_hours_ago,
@@ -4377,17 +4428,24 @@ def _open_wearables_recommendation_marker(refresh=False):
         }
 
 
+_PROOF_FACT_METRICS = {
+    "sleep_duration", "recovery_score", "resting_heart_rate", "steps", "active_minutes", "active_calories",
+    *_HRV_METRICS,
+}
+_FINGERPRINT_FACT_METRICS = {
+    "recovery_score", "heart_rate_variability", "resting_heart_rate",
+    "sleep_duration", "sleep_efficiency", "active_minutes", "steps",
+}
+
+
 def _workout_recommendation_fingerprint():
     """Fingerprint inputs that should force a new next-workout plan."""
     today_s = _today_str()
-    cached_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
-    oura_rows = []
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        oura_rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")) or []
-    except Exception:
-        oura_rows = []
+    wearable_facts = [
+        fact
+        for day, by_metric in sorted(_preferred_facts(_FINGERPRINT_FACT_METRICS, days=7).items())
+        for _metric, fact in sorted(by_metric.items())
+    ]
 
     health_workout_files = sorted(
         glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
@@ -4411,9 +4469,8 @@ def _workout_recommendation_fingerprint():
         apple_health_freshness=(apple_status, apple_last_data, apple_last_sync),
         apple_health_sync_db_file=_apple_health_sync_db_file(),
         apple_health_workout_files=health_workout_files,
-        cached_oura=cached_oura,
-        oura_rows=oura_rows,
-        oura_db_file=OURA_DB_FILE,
+        wearable_facts=wearable_facts,
+        readiness=_readiness_with_basis()[0],
     )
 
 
@@ -4600,7 +4657,7 @@ def api_dashboard():
 
     # Readiness factors (new)
     acwr = calculate_acwr(WORKOUTS)
-    sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
+    sleep_debt = calculate_sleep_debt(days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
     hrv_trend = get_recent_hrv_trend()
 
@@ -4661,12 +4718,7 @@ def api_dashboard():
 
     # Recomp command center signal
     today_s = _today_str()
-    cached_oura = get_oura_daily(OURA_DB_FILE, today_s)
-    readiness_val = cached_oura.get("readiness_score") if cached_oura else None
-    try:
-        readiness_val = int(readiness_val) if readiness_val is not None else None
-    except Exception:
-        readiness_val = None
+    readiness_val = _readiness_with_basis()[0]
     recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=24)
     max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
     signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
@@ -4801,153 +4853,53 @@ def api_vitals():
     change_7d = _trend_change(trend_7d)
     change_30d = _trend_change(trend_30d)
 
-    ow_data = fetch_open_wearables_data()
-    activity_summaries = _extract_open_wearables_activity_summaries(ow_data.get("activity_summary"))
-    sleep_events = _extract_open_wearables_sleep_events(ow_data.get("sleep"))
+    _refresh_wearable_facts()
+    facts = _preferred_facts(
+        {"resting_heart_rate", "steps", "active_calories", "active_minutes"}, days=7
+    )
 
-    today = datetime.now().date()
-    start = today - timedelta(days=6)
-
-    activity_7d = [a for a in activity_summaries if a.get("date") and start <= a["date"] <= today]
-    activity_7d.sort(key=lambda x: x["date"])
-
-    def _latest_activity():
-        if not activity_7d:
-            return None
-        today_entry = next((a for a in activity_7d if a["date"] == today), None)
-        return today_entry or activity_7d[-1]
-
-    latest_activity = _latest_activity()
-
-    steps_avg_7d = None
-    steps_vals = [a.get("steps") for a in activity_7d if a.get("steps") is not None]
-    if steps_vals:
-        steps_avg_7d = int(round(sum(steps_vals) / len(steps_vals)))
+    def latest(metric):
+        return next((facts[day][metric] for day in sorted(facts, reverse=True) if metric in facts[day]), None)
 
     hr_trend = [
-        {
-            "date": a["date"].strftime("%Y-%m-%d"),
-            "resting": a.get("resting"),
-            "average": a.get("average"),
-        }
-        for a in activity_7d
+        {"date": day, "resting": facts[day]["resting_heart_rate"]["value"], "average": None}
+        for day in sorted(facts) if "resting_heart_rate" in facts[day]
     ]
-
-    sleep_7d = [s for s in sleep_events if s.get("event_time") and start <= s["event_time"].date() <= today]
-    last_night, avg_7d_hours = _sleep_metrics_from_events(sleep_7d)
-
-    resting_bpm = latest_activity.get("resting") if latest_activity else None
-    average_bpm = latest_activity.get("average") if latest_activity else None
-    steps_today = latest_activity.get("steps") if latest_activity else None
-    active_calories_today = latest_activity.get("active_calories") if latest_activity else None
-    active_minutes_today = latest_activity.get("active_minutes") if latest_activity else None
+    steps_vals = [facts[day]["steps"]["value"] for day in facts if "steps" in facts[day]]
+    steps_avg_7d = int(round(sum(steps_vals) / len(steps_vals))) if steps_vals else None
+    sleep_rows = [row for row in _sleep_rows_from_facts(days=7) if _is_valid_nightly_sleep_row(row)]
+    last_night = None
+    if sleep_rows:
+        row = sleep_rows[0]
+        last_night = {
+            "date": row["day"],
+            "total_sleep_min": row["total_sleep_min"],
+            "total_hours": round(row["total_sleep_min"] / 60.0, 2),
+            "deep_sleep_min": row["deep_sleep_min"],
+            "rem_sleep_min": row["rem_sleep_min"],
+            "light_sleep_min": row["light_sleep_min"],
+            "awake_min": row["awake_time_min"],
+            "efficiency_pct": row["efficiency"],
+            "sleep_score": None,
+            "quality_score": None,
+        }
+    avg_7d_hours = (
+        round(sum(r["total_sleep_min"] for r in sleep_rows) / len(sleep_rows) / 60.0, 2) if sleep_rows else None
+    )
+    value_of = lambda fact: fact["value"] if fact else None
+    resting = latest("resting_heart_rate")
+    steps = latest("steps")
+    resting_bpm = value_of(resting)
+    steps_today = value_of(steps)
+    active_calories_today = value_of(latest("active_calories"))
+    active_minutes_today = value_of(latest("active_minutes"))
     quality_score = None
     sources = {
-        "heart_rate": "open_wearables" if resting_bpm is not None else None,
-        "activity": "open_wearables" if steps_today is not None else None,
-        "sleep": "open_wearables" if last_night else None,
+        "heart_rate": resting["provider"] if resting else None,
+        "activity": steps["provider"] if steps else None,
+        "sleep": sleep_rows[0]["provider"] if sleep_rows else None,
     }
-
-    # Fallback from oura_daily.sqlite3 when Open Wearables is unavailable/empty.
-    try:
-        today_s = today.strftime("%Y-%m-%d")
-        start_s = start.strftime("%Y-%m-%d")
-        oura_today = get_oura_daily(OURA_DB_FILE, today_s)
-        oura_week = get_oura_daily_range(OURA_DB_FILE, start_s, today_s) or []
-        nightly_oura_week = [r for r in oura_week if _is_valid_nightly_sleep_row(r)]
-
-        def _latest_with(field, rows=oura_week):
-            for r in reversed(rows):
-                if r.get(field) is not None:
-                    return r
-            return None
-
-        if resting_bpm is None:
-            row = (oura_today if oura_today and oura_today.get("resting_hr") is not None
-                   else _latest_with("resting_hr"))
-            if row:
-                resting_bpm = row.get("resting_hr")
-                sources["heart_rate"] = "oura"
-
-        if steps_today is None:
-            row = (oura_today if oura_today and oura_today.get("steps") is not None
-                   else _latest_with("steps"))
-            if row:
-                steps_today = row.get("steps")
-                sources["activity"] = "oura"
-
-        if active_calories_today is None:
-            row = (oura_today if oura_today and oura_today.get("active_calories") is not None
-                   else _latest_with("active_calories"))
-            if row:
-                active_calories_today = row.get("active_calories")
-                sources["activity"] = "oura"
-
-        # Backfill active calories from raw Oura daily_activity payloads saved before
-        # we promoted active_calories to a first-class SQLite column.
-        if active_calories_today is None:
-            for row in ([oura_today] if oura_today else []) + list(reversed(oura_week)):
-                try:
-                    raw = row.get("raw_json") if row else None
-                    if isinstance(raw, str):
-                        raw = json.loads(raw)
-                    acts = (raw or {}).get("daily_activity") or []
-                    if acts:
-                        val = acts[-1].get("active_calories")
-                        if val is not None:
-                            active_calories_today = int(round(float(val)))
-                            sources["activity"] = "oura_raw"
-                            break
-                except Exception:
-                    continue
-
-        if steps_avg_7d is None:
-            step_vals = [r.get("steps") for r in oura_week if r.get("steps") is not None]
-            if step_vals:
-                steps_avg_7d = int(round(sum(step_vals) / len(step_vals)))
-
-        if not last_night:
-            row = (
-                oura_today
-                if oura_today
-                and oura_today.get("sleep_duration_min") is not None
-                and _is_valid_nightly_sleep_row(oura_today)
-                else _latest_with("sleep_duration_min", nightly_oura_week)
-            )
-            if row:
-                dur_min = row.get("sleep_duration_min") or 0
-                last_night = {
-                    "date": row.get("day"),
-                    "total_sleep_min": dur_min,
-                    "total_hours": round(dur_min / 60.0, 2) if dur_min else None,
-                    "deep_sleep_min": row.get("sleep_deep_min"),
-                    "rem_sleep_min": row.get("sleep_rem_min"),
-                    "light_sleep_min": row.get("sleep_light_min"),
-                    "awake_min": row.get("sleep_awake_min"),
-                    "sleep_score": row.get("sleep_score"),
-                    "quality_score": row.get("sleep_score"),
-                }
-                quality_score = row.get("sleep_score")
-                sources["sleep"] = "oura"
-
-        if avg_7d_hours is None:
-            dur_vals = [
-                r.get("sleep_duration_min")
-                for r in nightly_oura_week
-                if r.get("sleep_duration_min") is not None
-            ]
-            if dur_vals:
-                avg_7d_hours = round((sum(dur_vals) / len(dur_vals)) / 60.0, 2)
-
-        if (
-            quality_score is None
-            and oura_today
-            and _is_valid_nightly_sleep_row(oura_today)
-            and oura_today.get("sleep_score") is not None
-        ):
-            quality_score = oura_today.get("sleep_score")
-    except Exception:
-        pass
+    average_bpm = None
 
     return jsonify({
         "weight": {
@@ -6199,7 +6151,7 @@ def weather_api():
     return jsonify(_fetch_wttr(loc))
 
 
-# ==================== OURA INTEGRATION ====================
+# ==================== OPEN WEARABLES INTEGRATION ====================
 
 def _load_open_wearables_local_config():
     config = load_json(OPEN_WEARABLES_CONFIG_FILE, {})
@@ -7292,12 +7244,12 @@ def _system_local_zone():
     return None
 
 
-def _open_wearables_window_bounds(*, now=None, local_zone=None):
+def _open_wearables_window_bounds(*, now=None, local_zone=None, days=7):
     zone = local_zone or _system_local_zone()
     if zone is None and now is not None and isinstance(now.tzinfo, ZoneInfo):
         zone = now.tzinfo
     local_now = (now or datetime.now(zone)).astimezone(zone)
-    start_day = local_now.date() - timedelta(days=6)
+    start_day = local_now.date() - timedelta(days=days - 1)
     end_day = local_now.date() + timedelta(days=1)
     if zone is None:
         # Naive astimezone() asks the operating system for each target instant,
@@ -7310,8 +7262,11 @@ def _open_wearables_window_bounds(*, now=None, local_zone=None):
     return window_start.isoformat(), window_end.isoformat()
 
 
-def fetch_open_wearables_data():
-    """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort)."""
+def fetch_open_wearables_data(days=7, now=None):
+    """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort).
+
+    ``now`` moves the window for a history backfill; only the live window feeds the plan marker.
+    """
     missing = _missing_open_wearables_config()
     if missing:
         return {
@@ -7330,7 +7285,7 @@ def fetch_open_wearables_data():
     token = _get_ow_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    start_at, end_at = _open_wearables_window_bounds()
+    start_at, end_at = _open_wearables_window_bounds(days=days, now=now)
     event_range_query = urllib.parse.urlencode(
         {"start_date": start_at, "end_date": end_at, "limit": 100}
     )
@@ -7431,7 +7386,8 @@ def fetch_open_wearables_data():
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
-    _store_open_wearables_recommendation_marker(result)
+    if now is None:
+        _store_open_wearables_recommendation_marker(result)
     return result
 
 
@@ -7444,88 +7400,10 @@ def _system_local_timezone():
         return datetime.now().astimezone().tzinfo
 
 
-def _fetch_open_wearables_workout_data():
-    """Fetch the most recent seven local calendar days of workout events."""
-    missing = _missing_open_wearables_config()
-    if missing:
-        return {
-            "workouts": None,
-            "errors": {"config": f"missing:{','.join(missing)}"},
-        }
-
-    token = _get_ow_token()
-    if not token:
-        return {"workouts": None, "errors": {"auth": "missing_token"}}
-
-    timezone_name = os.environ.get("TZ", "").strip()
-    try:
-        local_timezone = ZoneInfo(timezone_name) if timezone_name else _system_local_timezone()
-    except (ZoneInfoNotFoundError, ValueError):
-        local_timezone = _system_local_timezone()
-    today = datetime.now(local_timezone).date()
-    start_local = datetime.combine(
-        today - timedelta(days=6),
-        datetime.min.time(),
-        tzinfo=local_timezone,
-    )
-    exclusive_end_local = datetime.combine(
-        today + timedelta(days=1),
-        datetime.min.time(),
-        tzinfo=local_timezone,
-    )
-    start_date = start_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    exclusive_end_date = exclusive_end_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    base_url = f"{_open_wearables_user_base()}/events/workouts"
-    headers = {"Authorization": f"Bearer {token}"}
-    rows = []
-    cursor = None
-    seen_cursors = set()
-    try:
-        # Same bounds as fetch_open_wearables_data: data/events/items row keys, 5 pages max.
-        for _ in range(5):
-            query = {
-                "start_date": start_date,
-                "end_date": exclusive_end_date,
-                "limit": 100,
-            }
-            if cursor:
-                query["cursor"] = cursor
-            page = _ow_request(f"{base_url}?{urllib.parse.urlencode(query)}", headers=headers)
-            if not isinstance(page, dict):
-                raise ValueError("invalid workout page")
-            row_key = next((key for key in ("data", "events", "items") if key in page), None)
-            page_rows = page.get(row_key) if row_key else None
-            if not isinstance(page_rows, list):
-                raise ValueError("invalid workout page data")
-            rows.extend(page_rows)
-            pagination = page.get("pagination") if isinstance(page.get("pagination"), dict) else {}
-            if not pagination.get("has_more"):
-                break
-            next_cursor = pagination.get("next_cursor")
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-                raise ValueError("invalid workout cursor")
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
-        else:
-            raise ValueError("open_wearables_workouts_pagination_limit")
-    except Exception as exc:
-        return {"workouts": None, "errors": {"workouts": str(exc)}}
-    return {"workouts": {"data": rows}, "errors": {}}
-
-
-def _load_open_wearables_workouts():
-    """Return safe normalized recent workouts; distinguish absence from failure."""
-    data = _fetch_open_wearables_workout_data()
-    if not isinstance(data, dict):
-        raise ConnectionError("Open Wearables workout response was invalid")
-    errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
-    workout_payload = data.get("workouts")
-    if workout_payload is None:
-        if "config" in errors:
-            return []
-        raise ConnectionError("Open Wearables workouts are unavailable")
-    rows = open_wearables_hub.extract_workouts(workout_payload)
-    return [normalize_history_item(row, source="open_wearables") for row in rows]
+def _stored_open_wearables_workouts():
+    """History rows from stored workout facts; never calls Open Wearables, so an outage cannot fail History."""
+    rows = open_wearables_hub.stored_workouts(WEARABLE_FACTS_DB_FILE, _open_wearables_profile_key())
+    return [{**normalize_history_item(row, source="open_wearables"), "source_label": row["source_label"]} for row in rows]
 
 
 def _extract_open_wearables_sleep(payload):
@@ -7774,85 +7652,11 @@ def _trend_change(trend: list):
         return None
 
 
-def _sleep_metrics_from_events(events: list):
-    main_sleep_events = [event for event in events or [] if event.get("is_nap") is not True]
-    if not main_sleep_events:
-        return None, None
-    events_sorted = sorted(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
-    most_recent = events_sorted[-1]
-
-    stages = most_recent.get("stages_min") or {}
-    deep = stages.get("deep")
-    rem = stages.get("rem")
-    light = stages.get("light")
-    awake = stages.get("awake")
-
-    def _coerce_min(v):
-        try:
-            return int(round(float(v))) if v is not None else None
-        except Exception:
-            return None
-
-    deep = _coerce_min(deep)
-    rem = _coerce_min(rem)
-    light = _coerce_min(light)
-    awake = _coerce_min(awake)
-
-    duration_min = most_recent.get("duration_min")
-    try:
-        duration_min = float(duration_min) if duration_min is not None else None
-    except Exception:
-        duration_min = None
-
-    total_stage = sum(v for v in (deep, rem, light, awake) if v is not None)
-    total = total_stage if total_stage > 0 else duration_min
-    sleep_minutes = sum(v for v in (deep, rem, light) if v is not None)
-
-    efficiency = None
-    if total and sleep_minutes is not None:
-        try:
-            efficiency = int(round((sleep_minutes / total) * 100))
-        except Exception:
-            efficiency = None
-
-    last_night = {
-        "duration_hours": round((sleep_minutes or duration_min or 0) / 60.0, 1) if (sleep_minutes or duration_min) else None,
-        "deep_min": deep,
-        "rem_min": rem,
-        "light_min": light,
-        "awake_min": awake,
-        "efficiency_pct": efficiency,
-    }
-
-    avg_hours = None
-    if events_sorted:
-        total_hours = []
-        for ev in events_sorted:
-            stages_ev = ev.get("stages_min") or {}
-            deep_ev = stages_ev.get("deep")
-            rem_ev = stages_ev.get("rem")
-            light_ev = stages_ev.get("light")
-            total_sleep = None
-            if deep_ev is not None or rem_ev is not None or light_ev is not None:
-                total_sleep = sum(v for v in (deep_ev, rem_ev, light_ev) if v is not None)
-            if total_sleep is None:
-                total_sleep = ev.get("duration_min")
-            if total_sleep is None:
-                continue
-            try:
-                total_hours.append(float(total_sleep) / 60.0)
-            except Exception:
-                continue
-        if total_hours:
-            avg_hours = round(sum(total_hours) / len(total_hours), 1)
-
-    return last_night, avg_hours
-
 _DEBUG_TIMING_ENDPOINTS = {
     "/api/dashboard",
-    "/api/oura/status",
+    "/api/wearables/today",
     "/api/recommendation/smart",
-    "/api/oura/sleep-summary",
+    "/api/sleep/summary",
 }
 
 
@@ -7981,7 +7785,6 @@ def _open_wearables_status_source(status_payload=None):
 
 
 _OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS = {
-    "oura": {"oura"},
     "apple_health": {"apple", "apple_health", "healthkit"},
 }
 
@@ -8143,8 +7946,6 @@ def _open_wearables_row_replacement_sources(row):
     replacement_sources = set()
     provider = _open_wearables_row_provider(row)
     device = _open_wearables_row_device(row)
-    if provider == "oura":
-        replacement_sources.add("oura")
     if provider in {"apple", "apple_health", "healthkit"} or device.startswith(("iphone", "ipad", "watch", "apple_watch")):
         # Apple Health is a health-store bridge; records often preserve
         # the originating app as source.provider and the Apple device
@@ -8223,14 +8024,7 @@ def open_wearables_status_api():
 
 @app.route('/api/open-wearables/workouts')
 def open_wearables_workouts_api():
-    try:
-        workouts = _load_open_wearables_workouts()
-    except ConnectionError:
-        return api_error(
-            "Open Wearables workouts are temporarily unavailable.",
-            503,
-            "open_wearables_workouts_unavailable",
-        )
+    workouts = _stored_open_wearables_workouts()
     return jsonify({"workouts": workouts, "total": len(workouts)})
 
 
@@ -8607,79 +8401,9 @@ def wearable_facts_api():
     })
 
 
-def _cross_source_workout_fingerprints(workout):
-    start = _workout_start_dt(workout)
-    if start is None:
-        return set()
-    if workout.get("source") == "open_wearables":
-        labels = (
-            workout.get("session_type") or workout.get("type"),
-            workout.get("activity_type") or workout.get("canonical_category"),
-        )
-    else:
-        labels = (_workout_activity_for_dedupe(workout),)
-    second = int(start.timestamp())
-    def canonical_activity(label):
-        training_category = canonical_training_category(label)
-        if training_category == "strength_training":
-            return training_category
-        return _canonical_cardio_fatigue_type(label)
-    return {
-        (second, activity)
-        for activity in (canonical_activity(label) for label in labels)
-        if activity
-    }
-
-
-def _merge_open_wearables_history_rows(base_rows, open_wearables_rows):
-    base = [dict(row) for row in (base_rows or [])]
-    open_wearables = [dict(row) for row in (open_wearables_rows or [])]
-    base_by_fingerprint = {}
-    open_wearables_by_fingerprint = {}
-    for index, row in enumerate(base):
-        for fingerprint in _cross_source_workout_fingerprints(row):
-            base_by_fingerprint.setdefault(fingerprint, set()).add(index)
-    for index, row in enumerate(open_wearables):
-        for fingerprint in _cross_source_workout_fingerprints(row):
-            open_wearables_by_fingerprint.setdefault(fingerprint, set()).add(index)
-
-    matched_open_wearables = set()
-    for base_index, base_row in enumerate(base):
-        open_wearables_candidates = set()
-        for fingerprint in _cross_source_workout_fingerprints(base_row):
-            open_wearables_candidates.update(open_wearables_by_fingerprint.get(fingerprint, set()))
-        if len(open_wearables_candidates) != 1:
-            continue
-        open_wearables_index = next(iter(open_wearables_candidates))
-        base_candidates = set()
-        for fingerprint in _cross_source_workout_fingerprints(open_wearables[open_wearables_index]):
-            base_candidates.update(base_by_fingerprint.get(fingerprint, set()))
-        if base_candidates != {base_index}:
-            continue
-        open_wearables_row = open_wearables[open_wearables_index]
-        for field in ("calories_burned", "avg_heart_rate", "max_heart_rate"):
-            if base_row.get(field) is None and open_wearables_row.get(field) is not None:
-                base_row[field] = open_wearables_row[field]
-        matched_open_wearables.add(open_wearables_index)
-
-    return base + [
-        row for index, row in enumerate(open_wearables)
-        if index not in matched_open_wearables
-    ]
-
-
 def _wearable_sources_payload(freshness):
     open_wearables_source = _open_wearables_status_source()
     direct_sources = [
-        {
-            "source": "oura",
-            "status": (freshness.get("oura") or {}).get("status"),
-            "last_data_point": (freshness.get("oura") or {}).get("last_data_point"),
-            "last_sync_attempt": (freshness.get("oura") or {}).get("last_sync_attempt"),
-            "score_state": "SCORED" if (freshness.get("oura") or {}).get("last_data_point") else None,
-            "connected": True,
-            "used_for_recommendation": True,
-        },
         {
             "source": "apple_health",
             "status": (freshness.get("apple_health") or {}).get("status"),
@@ -8697,301 +8421,91 @@ def _wearable_sources_payload(freshness):
     ] + [open_wearables_source]
 
 
-@app.route('/api/oura/status')
-def oura_status():
-    """Return today's Oura readiness, HRV, and sleep score.
+def _latest_fact_value(facts, metric):
+    return next((facts[day][metric] for day in sorted(facts, reverse=True) if metric in facts[day]), None)
 
-    Persists into SQLite for historical tracking.
-    Use ?refresh=true to force re-fetch from Oura API.
-    """
-    today = datetime.now().strftime("%Y-%m-%d")
-    force_refresh = request.args.get('refresh', '').lower() == 'true'
 
-    def _best_effort_steps_activity(steps, activity_score):
-        """Oura daily_activity can lag behind readiness/sleep. If today's DB row doesn't
-        have steps/activity yet, fall back to the most recent day that does."""
-        activity_day = today
-        if steps is None or activity_score is None:
-            try:
-                start = (datetime.now().date() - timedelta(days=14)).strftime("%Y-%m-%d")
-                rows = get_oura_daily_range(OURA_DB_FILE, start, today)
-                for r in reversed(rows):
-                    if r.get("steps") is not None or r.get("activity_score") is not None:
-                        if steps is None:
-                            steps = r.get("steps")
-                        if activity_score is None:
-                            activity_score = r.get("activity_score")
-                        activity_day = r.get("day") or activity_day
-                        break
-            except Exception:
-                pass
-        return steps, activity_score, activity_day
-
-    # Prefer DB cached values (unless force refresh)
-    if not force_refresh:
-        cached = get_oura_daily(OURA_DB_FILE, today)
-        if cached:
-            steps, activity_score, activity_day = _best_effort_steps_activity(
-                cached.get("steps"),
-                cached.get("activity_score"),
-            )
-            return jsonify({
-                "date": today,
-                "readiness": cached.get("readiness_score"),
-                "sleep_score": cached.get("sleep_score"),
-                "hrv": cached.get("hrv"),
-                "steps": steps,
-                "activity_score": activity_score,
-                "activity_day": activity_day,
-                "resting_hr": cached.get("resting_hr"),
-                "temperature_deviation": cached.get("temperature_deviation"),
-                "sleep_duration_min": cached.get("sleep_duration_min"),
-                "sleep_breakdown_min": {
-                    "deep": cached.get("sleep_deep_min"),
-                    "rem": cached.get("sleep_rem_min"),
-                    "light": cached.get("sleep_light_min"),
-                    "awake": cached.get("sleep_awake_min"),
-                },
-                "source": "db"
-            })
-
-    # Fetch from API (best-effort). If API/token fails, fall back to cached DB if present.
-    try:
-        client = OuraClient()
-    except Exception as e:
-        cached = get_oura_daily(OURA_DB_FILE, today)
-        if cached:
-            steps, activity_score, activity_day = _best_effort_steps_activity(
-                cached.get("steps"),
-                cached.get("activity_score"),
-            )
-            return jsonify({
-                "date": today,
-                "readiness": cached.get("readiness_score"),
-                "sleep_score": cached.get("sleep_score"),
-                "hrv": cached.get("hrv"),
-                "steps": steps,
-                "activity_score": activity_score,
-                "activity_day": activity_day,
-                "resting_hr": cached.get("resting_hr"),
-                "temperature_deviation": cached.get("temperature_deviation"),
-                "sleep_duration_min": cached.get("sleep_duration_min"),
-                "sleep_breakdown_min": {
-                    "deep": cached.get("sleep_deep_min"),
-                    "rem": cached.get("sleep_rem_min"),
-                    "light": cached.get("sleep_light_min"),
-                    "awake": cached.get("sleep_awake_min"),
-                },
-                "source": "db",
-                "warning": f"Oura unavailable: {str(e)}"
-            })
-        return jsonify({"available": False, "error": str(e)}), 503
-
-    try:
-        readiness_score, sleep_score, hrv, metrics, raw = client.get_today_metrics(today)
-
-        # Oura daily_activity can lag by a day; keep readiness/sleep on "today", but
-        # store activity metrics against their actual day when possible.
-        activity_day = metrics.get("activity_day") or today
-
-        upsert_oura_daily(
-            OURA_DB_FILE,
-            day=today,
-            readiness_score=readiness_score,
-            sleep_score=sleep_score,
-            hrv=hrv,
-            raw_json=raw,
-            steps=metrics.get("steps") if activity_day == today else None,
-            activity_score=metrics.get("activity_score") if activity_day == today else None,
-            resting_hr=metrics.get("resting_hr"),
-            temperature_deviation=metrics.get("temperature_deviation"),
-            sleep_type=metrics.get("sleep_type"),
-            sleep_duration_min=metrics.get("sleep_duration_min"),
-            sleep_deep_min=metrics.get("sleep_deep_min"),
-            sleep_rem_min=metrics.get("sleep_rem_min"),
-            sleep_light_min=metrics.get("sleep_light_min"),
-            sleep_awake_min=metrics.get("sleep_awake_min"),
-            active_calories=metrics.get("active_calories") if activity_day == today else None,
+def _domain_sources(facts):
+    """Provider, date and freshness behind each domain's newest preferred fact (source proof)."""
+    keys = {"sleep": ("sleep_duration",), "recovery": ("recovery_score",) + _HRV_METRICS + ("resting_heart_rate",),
+            "activity": ("active_minutes", "steps", "active_calories")}
+    sources = {}
+    for domain, metrics in keys.items():
+        newest = max(
+            (f for metric in metrics if (f := _latest_fact_value(facts, metric))),
+            key=lambda f: f["date"],
+            default=None,
         )
-
-        if activity_day and activity_day != today:
-            upsert_oura_daily(
-                OURA_DB_FILE,
-                day=activity_day,
-                readiness_score=None,
-                sleep_score=None,
-                hrv=None,
-                raw_json=None,
-                steps=metrics.get("steps"),
-                activity_score=metrics.get("activity_score"),
-                active_calories=metrics.get("active_calories"),
-            )
-        steps = metrics.get("steps")
-        activity_score = metrics.get("activity_score")
-        if steps is None and activity_score is None:
-            steps, activity_score, activity_day = _best_effort_steps_activity(steps, activity_score)
-
-        return jsonify({
-            "date": today,
-            "readiness": readiness_score,
-            "sleep_score": sleep_score,
-            "hrv": hrv,
-            "steps": steps,
-            "activity_score": activity_score,
-            "active_calories": metrics.get("active_calories"),
-            "activity_day": activity_day,
-            "resting_hr": metrics.get("resting_hr"),
-            "temperature_deviation": metrics.get("temperature_deviation"),
-            "sleep_duration_min": metrics.get("sleep_duration_min"),
-            "sleep_breakdown_min": {
-                "deep": metrics.get("sleep_deep_min"),
-                "rem": metrics.get("sleep_rem_min"),
-                "light": metrics.get("sleep_light_min"),
-                "awake": metrics.get("sleep_awake_min"),
-            },
-            "source": "api"
-        })
-    except Exception as e:
-        cached = get_oura_daily(OURA_DB_FILE, today)
-        if cached:
-            return jsonify({
-                "date": today,
-                "readiness": cached.get("readiness_score"),
-                "sleep_score": cached.get("sleep_score"),
-                "hrv": cached.get("hrv"),
-                "steps": cached.get("steps"),
-                "activity_score": cached.get("activity_score"),
-                "active_calories": cached.get("active_calories"),
-                "resting_hr": cached.get("resting_hr"),
-                "temperature_deviation": cached.get("temperature_deviation"),
-                "sleep_duration_min": cached.get("sleep_duration_min"),
-                "sleep_breakdown_min": {
-                    "deep": cached.get("sleep_deep_min"),
-                    "rem": cached.get("sleep_rem_min"),
-                    "light": cached.get("sleep_light_min"),
-                    "awake": cached.get("sleep_awake_min"),
-                },
-                "source": "db",
-                "warning": f"Oura API error: {str(e)}"
-            })
-        return jsonify({"available": False, "error": str(e)}), 502
+        if newest:
+            sources[domain] = {k: newest[k] for k in ("provider", "via", "date", "freshness", "conflict_state")}
+    return sources
 
 
-@app.route('/api/oura/trends')
-def oura_trends():
-    """Return 7-day HRV trend (and the series) for readiness guidance."""
-    end = datetime.now().date()
-    start = end - timedelta(days=6)
-    start_s = start.strftime("%Y-%m-%d")
-    end_s = end.strftime("%Y-%m-%d")
+@app.route('/api/wearables/today')
+def wearables_today():
+    """Today's readiness, HRV, resting HR, sleep and activity from stored wearable facts.
 
-    def public_rows(items):
-        cleaned = []
-        for row in items or []:
-            public = dict(row)
-            public.pop("raw_json", None)
-            public["nightly_sleep"] = _is_valid_nightly_sleep_row(row)
-            cleaned.append(public)
-        return cleaned
-
-    rows = get_oura_daily_range(OURA_DB_FILE, start_s, end_s)
-
-    # If we don't have enough cached days, fetch and upsert from API.
-    if len(rows) < 3:
-        try:
-            client = OuraClient()
-            daily = client.get_daily_range(start_s, end_s)
-            for d in daily:
-                upsert_oura_daily(
-                    OURA_DB_FILE,
-                    day=d.get("day"),
-                    readiness_score=d.get("readiness_score"),
-                    sleep_score=d.get("sleep_score"),
-                    hrv=d.get("hrv"),
-                    raw_json=d.get("raw_json"),
-                    steps=d.get("steps"),
-                    activity_score=d.get("activity_score"),
-                    active_calories=d.get("active_calories"),
-                    resting_hr=d.get("resting_hr"),
-                    temperature_deviation=d.get("temperature_deviation"),
-                    sleep_type=d.get("sleep_type"),
-                    sleep_duration_min=d.get("sleep_duration_min"),
-                    sleep_deep_min=d.get("sleep_deep_min"),
-                    sleep_rem_min=d.get("sleep_rem_min"),
-                    sleep_light_min=d.get("sleep_light_min"),
-                    sleep_awake_min=d.get("sleep_awake_min"),
-                )
-            rows = get_oura_daily_range(OURA_DB_FILE, start_s, end_s)
-        except Exception as e:
-            # Still return whatever we have
-            return jsonify({
-                "start_date": start_s,
-                "end_date": end_s,
-                "hrv_trend": "unknown",
-                "series": public_rows(rows),
-                "error": str(e)
-            }), 200
-
-    trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    ``?refresh=true`` forces a live Open Wearables fetch first; an outage serves stored facts.
+    """
+    _refresh_wearable_facts(force=request.args.get('refresh', '').lower() == 'true')
+    facts = _preferred_facts(
+        {"resting_heart_rate", "steps", "active_calories", "active_minutes", "temperature_deviation",
+         "sleep_duration", "recovery_score"} | set(_HRV_METRICS),
+        days=7,
+    )
+    value_of = lambda metric: (_latest_fact_value(facts, metric) or {}).get("value")
+    hrv_metric = next((m for m in _HRV_METRICS if _latest_fact_value(facts, m)), None)
+    sleep_rows = [row for row in _sleep_rows_from_facts(days=7) if _is_valid_nightly_sleep_row(row)]
+    night = sleep_rows[0] if sleep_rows else None
+    steps = _latest_fact_value(facts, "steps")
     return jsonify({
-        "start_date": start_s,
-        "end_date": end_s,
-        "hrv_trend": trend,
-        "series": public_rows(rows)
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "available": bool(facts or night),
+        "readiness": _get_oura_readiness_today(include_open_wearables=False),
+        "sleep_score": None,
+        "hrv": value_of(hrv_metric) if hrv_metric else None,
+        "steps": value_of("steps"),
+        "active_minutes": value_of("active_minutes"),
+        "active_calories": value_of("active_calories"),
+        "activity_day": steps["date"] if steps else None,
+        "resting_hr": value_of("resting_heart_rate"),
+        "temperature_deviation": value_of("temperature_deviation"),
+        "sleep_duration_min": night["sleep_duration_min"] if night else None,
+        "sleep_breakdown_min": {
+            "deep": night["sleep_deep_min"], "rem": night["sleep_rem_min"],
+            "light": night["sleep_light_min"], "awake": night["sleep_awake_min"],
+        } if night else {"deep": None, "rem": None, "light": None, "awake": None},
+        "source": "open_wearables",
+        "sources": _domain_sources(facts),
     })
 
 
-@app.route('/api/oura/sync-sleep', methods=['POST'])
-def sync_oura_sleep():
-    """Sync latest sleep data from Oura API."""
-    global LAST_WORKOUT_RECOMMENDATION
-    from oura_sleep_sync import create_sleep_table, sync_sleep_data, get_latest_sleep
-
-    data, err = get_json_body(required=False)
-    if err:
-        return err
-    days_back, err = _coerce_int(data.get("days_back", 30), "days_back", min_v=1, max_v=365)
-    if err:
-        return err
-
-    try:
-        sync_date = datetime.now().date()
-        start_date = (sync_date - timedelta(days=days_back)).strftime("%Y-%m-%d")
-
-        # Ensure table exists
-        create_sleep_table(OURA_DB_FILE)
-
-        # Get API token
-        api_token = os.environ.get("OURA_API_TOKEN", "").strip()
-        if not api_token:
-            return api_error(
-                "Oura API token is not configured on this server. Set OURA_API_TOKEN and restart the app.",
-                503,
-                code="missing_oura_token",
-            )
-
-        # Sync data
-        sync_sleep_data(OURA_DB_FILE, api_token, start_date=start_date)
-
-        # Return a summary only; raw wearable rows stay server-side.
-        latest = get_latest_sleep(OURA_DB_FILE, days=7)
-        latest_days = [r.get("day") for r in latest if r.get("day")]
-        LAST_WORKOUT_RECOMMENDATION = None
-        delete_current_workout_plan(_current_data_user_id())
-
-        return jsonify({
-            "status": "success",
-            "synced_from": start_date,
-            "synced_through": sync_date.strftime("%Y-%m-%d"),
-            "latest_records": len(latest),
-            "latest_days": latest_days,
+@app.route('/api/wearables/trends')
+def wearables_trends():
+    """Last 7 days of HRV, steps and sleep from stored facts, plus the HRV trend label."""
+    end = datetime.now().date()
+    facts = _preferred_facts({"steps", "active_minutes", "resting_heart_rate"} | set(_HRV_METRICS), days=7)
+    sleep_by_day = {row["day"]: row for row in _sleep_rows_from_facts(days=7)}
+    hrv_metric = next((m for m in _HRV_METRICS if _latest_fact_value(facts, m)), None)
+    series = []
+    for day in sorted(set(facts) | set(sleep_by_day)):
+        sleep = sleep_by_day.get(day)
+        value_of = lambda metric: (facts.get(day, {}).get(metric) or {}).get("value")
+        series.append({
+            "day": day,
+            "hrv": value_of(hrv_metric) if hrv_metric else None,
+            "steps": value_of("steps"),
+            "resting_hr": value_of("resting_heart_rate"),
+            "active_minutes": value_of("active_minutes"),
+            "sleep_duration_min": sleep["sleep_duration_min"] if sleep else None,
+            "nightly_sleep": _is_valid_nightly_sleep_row(sleep) if sleep else False,
         })
-    except urllib.error.HTTPError as e:
-        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
-    except urllib.error.URLError:
-        return api_error("Oura API request failed.", 502, code="oura_api_error")
-    except Exception:
-        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
+    return jsonify({
+        "start_date": (end - timedelta(days=6)).strftime("%Y-%m-%d"),
+        "end_date": end.strftime("%Y-%m-%d"),
+        "hrv_trend": get_recent_hrv_trend() if hrv_metric else "unknown",
+        "series": series,
+    })
 
 
 def _sleep_row_inconsistency_reason(row):
@@ -9048,164 +8562,63 @@ def _sleep_summary_data_quality(last_night, week_data=None):
         return {
             "status": "inconsistent",
             "reason": reason,
-            "source": "oura",
+            "source": last_night.get("provider"),
             "observed_at": last_night.get("day"),
             "excluded_dates": sorted(excluded_dates),
-            "message": "Sleep data is inconsistent. Check Oura sync.",
+            "message": "Sleep data is inconsistent. Check the wearable sync.",
         }
     if excluded_dates:
         excluded_dates = sorted(excluded_dates)
         return {
             "status": "partial",
             "reason": "historical_inconsistency",
-            "source": "oura",
+            "source": next((r.get("provider") for r in week_data or [] if r.get("provider")), None),
             "observed_at": excluded_dates[-1],
             "excluded_dates": excluded_dates,
-            "message": "Some sleep history is inconsistent. Check Oura sync.",
+            "message": "Some sleep history is inconsistent. Check the wearable sync.",
         }
     return {"status": "ok"}
 
 
 def _bedtime_variance_from_rows(rows):
-    """Circular bedtime SD (FIT-337) over rows that carry real sleep data."""
-    from oura_sleep_sync import calculate_bedtime_variance
-
-    rows = [
-        row for row in rows or []
-        if not (row.get("total_sleep_min", 0) is None and row.get("sleep_score") is None)
-    ]
-    return calculate_bedtime_variance(OURA_DB_FILE, rows=rows)
-
-
-@app.route('/api/oura/sleep-summary')
-def oura_sleep_summary():
-    """Get sleep summary for dashboard (last night + 7-day trends)."""
-    from oura_sleep_sync import get_latest_sleep, get_sleep_range
-
-    try:
-        # Get last night's sleep
-        latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
-        last_night = next(
-            (row for row in (latest or []) if not _sleep_row_is_non_nightly(row)),
-            None,
-        )
-
-        # Get 7-day data
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        week_data = get_sleep_range(
-            OURA_DB_FILE,
-            start.strftime("%Y-%m-%d"),
-            end.strftime("%Y-%m-%d"),
-            long_sleep_only=True
-        )
-
-        # Days where the sleep table holds a valid full night. A disagreeing
-        # oura_daily cache row is still flagged below but must not hide them.
-        valid_sleep_days = {
-            row.get("day") for row in (week_data or [])
-            if row.get("total_sleep_min") is not None and _is_valid_nightly_sleep_row(row)
-        }
-
-        # Prefer oura_daily (today's cached daily sleep fields) when it's newer or fuller
-        # than the oura_sleep row. The oura_sleep table can go stale; oura_daily is
-        # refreshed by /api/oura/status on every dashboard load.
-        today_s = end.strftime("%Y-%m-%d")
-        daily_today = get_oura_daily(OURA_DB_FILE, today_s)
-        def _daily_to_row(d):
-            if not d:
-                return None
-            dur = d.get("sleep_duration_min")
-            if dur is None and d.get("sleep_score") is None:
-                return None
-            return {
-                "day": d.get("day"),
-                "sleep_type": d.get("sleep_type"),
-                "total_sleep_min": dur,
-                "deep_sleep_min": d.get("sleep_deep_min"),
-                "rem_sleep_min": d.get("sleep_rem_min"),
-                "light_sleep_min": d.get("sleep_light_min"),
-                "awake_time_min": d.get("sleep_awake_min"),
-                "sleep_score": d.get("sleep_score"),
-                "avg_heart_rate": None,
-                "efficiency": None,
-            }
-
-        daily_row = _daily_to_row(daily_today)
-        ln_day = (last_night or {}).get("day")
-        daily_row_is_non_nightly = _sleep_row_is_non_nightly(daily_row)
-        daily_row_loses_to_valid_night = (
-            daily_row
-            and last_night
-            and ln_day == daily_row["day"]
-            and _is_valid_nightly_sleep_row(last_night)
-            and not _is_valid_nightly_sleep_row(daily_row)
-        )
-        if daily_row and not daily_row_is_non_nightly and not daily_row_loses_to_valid_night and (
-            not last_night or (ln_day or "") < daily_row["day"]
-            or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))
-        ):
-            last_night = daily_row
-
-        # Augment week_data from oura_daily range where a day is missing.
-        # oura_sleep can lag behind oura_daily, so we fall back to the daily
-        # cache to keep the 7-day averages meaningful.
-        daily_quality_rows = []
+    """Circular population SD of bedtime minutes (FIT-337) over rows that carry a bedtime."""
+    bedtimes = []
+    for row in rows or []:
+        if row.get("total_sleep_min", 0) is None and row.get("sleep_score") is None:
+            continue  # a row with no sleep data says nothing about bedtime
         try:
-            if week_data is None:
-                week_data = []
-            daily_range = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), today_s) or []
-            existing_days = {r.get("day") for r in week_data}
-            for d in daily_range:
-                row = _daily_to_row(d)
-                if row:
-                    daily_quality_rows.append(row)
-                if row and row["day"] not in existing_days:
-                    week_data.append(row)
-                    existing_days.add(row["day"])
-        except Exception:
-            pass
+            when = datetime.fromisoformat(str(row.get("bedtime_start")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        bedtimes.append(when.hour * 60 + when.minute)
+    if len(bedtimes) < 2:
+        return None
+    angles = [minutes * math.tau / (24 * 60) for minutes in bedtimes]
+    resultant = math.hypot(
+        sum(math.cos(a) for a in angles) / len(angles), sum(math.sin(a) for a in angles) / len(angles)
+    )
+    if resultant < 1e-12:  # opposite times: no defined mean
+        return None
+    return int(round(math.sqrt(-2 * math.log(min(resultant, 1.0))) * (24 * 60) / math.tau))
 
-        quality_rows = list(week_data) + list(latest or []) + daily_quality_rows
-        if daily_row:
-            quality_rows.append(daily_row)
-        quality_current = (
-            daily_row
-            if not daily_row_is_non_nightly and _sleep_row_inconsistency_reason(daily_row)
-            else last_night
-        )
-        data_quality = _sleep_summary_data_quality(quality_current, quality_rows)
+
+@app.route('/api/sleep/summary')
+def sleep_summary():
+    """Sleep summary for the dashboard: last night and 7-day trends from stored facts."""
+    try:
+        rows = _sleep_rows_from_facts(days=7)
+        last_night = rows[0] if rows else None
+        data_quality = _sleep_summary_data_quality(last_night or {}, rows)
         excluded_dates = set(data_quality.get("excluded_dates") or [])
-        week_data = [
-            row for row in week_data
-            if (row.get("day") not in excluded_dates or row.get("day") in valid_sleep_days)
-            and _is_valid_nightly_sleep_row(row)
-        ]
+        week_data = [r for r in rows if r["day"] not in excluded_dates and _is_valid_nightly_sleep_row(r)]
 
-        # Calculate 7-day averages
-        avg_duration = None
-        avg_score = None
-        avg_deep = None
-        avg_rem = None
-        avg_hr = 0
+        def average(key, digits=0):
+            values = [r[key] for r in week_data if r.get(key) is not None]
+            return round(sum(values) / len(values), digits) if values else None
 
-        if week_data:
-            durations = [r.get("total_sleep_min") for r in week_data if r.get("total_sleep_min") is not None]
-            scores = [r.get("sleep_score") or 0 for r in week_data if r.get("sleep_score")]
-            deeps = [r.get("deep_sleep_min") for r in week_data if r.get("deep_sleep_min") is not None]
-            rems = [r.get("rem_sleep_min") for r in week_data if r.get("rem_sleep_min") is not None]
-            hrs = [r.get("avg_heart_rate") or 0 for r in week_data if r.get("avg_heart_rate")]
-
-            avg_duration = int(sum(durations) / len(durations)) if durations else None
-            avg_score = int(sum(scores) / len(scores)) if scores else None
-            avg_deep = int(sum(deeps) / len(deeps)) if deeps else None
-            avg_rem = int(sum(rems) / len(rems)) if rems else None
-            avg_hr = round(sum(hrs) / len(hrs), 1) if hrs else 0
-
-        # Bedtime consistency
+        avg_duration = average("total_sleep_min")
+        avg_hr = average("avg_heart_rate", 1)
         bedtime_variance = _bedtime_variance_from_rows(week_data)
-
-        # Consistency status
         if bedtime_variance is None:
             consistency_status = "unknown"
         elif bedtime_variance < 30:
@@ -9216,25 +8629,26 @@ def oura_sleep_summary():
             consistency_status = "fair"
         else:
             consistency_status = "poor"
-
+        night = last_night or {}
         return jsonify({
             "last_night": {
-                "date": last_night.get("day") if last_night else None,
-                "total_sleep_min": last_night.get("total_sleep_min") if last_night else None,
-                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else None,
-                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else None,
-                "light_sleep_min": last_night.get("light_sleep_min") if last_night else None,
-                "awake_time_min": last_night.get("awake_time_min") if last_night else None,
-                "sleep_score": last_night.get("sleep_score") if last_night else None,
-                "avg_heart_rate": last_night.get("avg_heart_rate") if last_night else 0,
-                "efficiency": last_night.get("efficiency") if last_night else 0,
+                "date": night.get("day"),
+                "total_sleep_min": night.get("total_sleep_min"),
+                "deep_sleep_min": night.get("deep_sleep_min"),
+                "rem_sleep_min": night.get("rem_sleep_min"),
+                "light_sleep_min": night.get("light_sleep_min"),
+                "awake_time_min": night.get("awake_time_min"),
+                "sleep_score": None,
+                "avg_heart_rate": night.get("avg_heart_rate") or 0,
+                "efficiency": night.get("efficiency") or 0,
+                "source": night.get("provider"),
             },
             "week_average": {
-                "duration_min": avg_duration,
-                "score": avg_score,
-                "deep_min": avg_deep,
-                "rem_min": avg_rem,
-                "avg_heart_rate": avg_hr,
+                "duration_min": int(avg_duration) if avg_duration is not None else None,
+                "score": None,
+                "deep_min": int(average("deep_sleep_min")) if average("deep_sleep_min") is not None else None,
+                "rem_min": int(average("rem_sleep_min")) if average("rem_sleep_min") is not None else None,
+                "avg_heart_rate": avg_hr or 0,
             },
             "consistency": {
                 "bedtime_circular_std_dev_min": bedtime_variance,
@@ -9244,19 +8658,15 @@ def oura_sleep_summary():
             },
             "data_quality": data_quality,
             "trend_data": [
-                {
-                    "date": r.get("day"),
-                    "duration_min": r.get("total_sleep_min"),
-                    "score": r.get("sleep_score"),
-                }
-                for r in week_data
-            ]
+                {"date": r["day"], "duration_min": r["total_sleep_min"], "score": None}
+                for r in sorted(week_data, key=lambda r: r["day"])
+            ],
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-# ==================== DATA FRESHNESS (Oura / Apple Health) ====================
+# ==================== DATA FRESHNESS (wearable facts / Apple Health) ====================
 #
 # Stale buckets (server-side; the client never does "Nh ago" math):
 #   fresh:   last data point within 24h
@@ -9290,24 +8700,26 @@ def _classify_freshness(last_data_point_dt, now=None):
     return "stale"
 
 
-def _latest_oura_freshness(now=None):
+def _latest_wearable_fact_freshness(now=None):
+    """Freshness of the newest stored sleep/recovery/activity fact (any provider)."""
     try:
-        conn = sqlite3.connect(OURA_DB_FILE)
-        try:
-            row = conn.execute(
-                "SELECT day, created_at FROM oura_daily ORDER BY day DESC LIMIT 1"
+        with closing(sqlite3.connect(WEARABLE_FACTS_DB_FILE)) as conn:
+            data_row = conn.execute(
+                "SELECT MAX(date) FROM wearable_daily_facts WHERE profile_key = ? "
+                "AND metric_domain IN ('sleep', 'recovery', 'activity') AND date <= date('now', '+1 day')",
+                (_open_wearables_profile_key(),),
             ).fetchone()
-        finally:
-            conn.close()
+            sync_row = conn.execute(
+                "SELECT last_sync_attempt FROM wearable_sources WHERE profile_key = ? AND provider_id = 'open_wearables'",
+                (_open_wearables_profile_key(),),
+            ).fetchone()
     except Exception:
         return ("missing", None, None)
-    if not row:
-        return ("missing", None, None)
-    day_str, created_at = row
-    # last_data_point uses oura_daily.day (the data-point date); last_sync_attempt
-    # uses created_at (when we upserted). A row upserted today with day=N days ago
-    # means Oura hasn't returned new data even though we "synced."
-    return (_classify_freshness(_parse_iso_date_or_datetime(day_str), now=now), day_str, created_at)
+    last_data = (data_row or (None,))[0]
+    last_sync = (sync_row or (None,))[0]
+    if not last_data:
+        return ("missing", None, last_sync)
+    return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
 
 
 def _latest_apple_health_freshness(now=None):
@@ -9327,22 +8739,6 @@ def _latest_apple_health_freshness(now=None):
     return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
 
 
-def _oura_source_label(last_sync_attempt_iso, now=None):
-    """Map last_sync_attempt to a cached/live label.
-
-    The freshness chip is always rendering locally-cached data; "live" here means
-    the last upsert happened recently enough that the cache is effectively current.
-    """
-    if not last_sync_attempt_iso:
-        return "cached"
-    dt = _parse_iso_date_or_datetime(last_sync_attempt_iso)
-    if dt is None:
-        return "cached"
-    now = now or datetime.now()
-    age_h = (now - dt).total_seconds() / 3600.0
-    return "live" if age_h < 1.0 else "cached"
-
-
 @app.route('/api/freshness')
 def freshness_only():
     """FIT-16: side-effect-free freshness block for the Settings panel.
@@ -9358,16 +8754,17 @@ def freshness_only():
 
 
 def _compute_data_freshness(now=None):
-    """Per-source freshness for Oura and Apple Health.
+    """Per-source freshness: the stored wearable facts, Open Wearables and Apple Health.
 
     Returns:
         {
-          "oura":         {status, last_data_point, last_sync_attempt, source: "live|cached"},
-          "apple_health": {status, last_data_point, last_sync_attempt},
+          "wearable_facts": {status, last_data_point, last_sync_attempt},
+          "apple_health":   {status, last_data_point, last_sync_attempt},
+          "open_wearables": hub connectivity,
         }
     """
     now = now or datetime.now()
-    oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
+    facts_status, facts_last_data, facts_last_sync = _latest_wearable_fact_freshness(now)
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
     open_wearables_providers, open_wearables_error = _fetch_open_wearables_provider_statuses()
     open_wearables_status = _open_wearables_public_status(
@@ -9390,11 +8787,11 @@ def _compute_data_freshness(now=None):
             "replacement_sources": open_wearables_status.get("replacement_sources") or [],
             "replacement_source_dates": open_wearables_status.get("replacement_source_dates") or {},
         },
-        "oura": {
-            "status": oura_status,
-            "last_data_point": oura_last_data,
-            "last_sync_attempt": oura_last_sync,
-            "source": _oura_source_label(oura_last_sync, now=now),
+        "wearable_facts": {
+            "status": facts_status,
+            "last_data_point": facts_last_data,
+            "last_sync_attempt": facts_last_sync,
+            "source": "open_wearables",
         },
         "apple_health": {
             "status": apple_status,
@@ -9409,7 +8806,7 @@ def _open_wearables_adjusted_freshness(freshness):
     safe = dict(freshness or {})
     open_wearables_source = safe.get("open_wearables") or {}
     replacement_source_dates = open_wearables_source.get("replacement_source_dates") or {}
-    for source_key in ("oura", "apple_health"):
+    for source_key in ("apple_health",):
         if not _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
             continue
         node = dict(safe.get(source_key) or {})
@@ -9430,7 +8827,7 @@ def _push_alert_preview(now=None):
     freshness = _compute_data_freshness(now=now)
     open_wearables_source = freshness.get("open_wearables") or {}
     alerts = []
-    for source_key, label in (("oura", "Oura"), ("apple_health", "Apple Health")):
+    for source_key, label in (("wearable_facts", "Wearable"), ("apple_health", "Apple Health")):
         source = freshness.get(source_key) or {}
         if _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
             continue
@@ -9650,7 +9047,7 @@ def _confidence_level_from(effective_readiness, freshness):
     recommendation when the underlying signal is gone.
     """
     wearable_states = [
-        (freshness.get("oura") or {}).get("status"),
+        (freshness.get("wearable_facts") or {}).get("status"),
         (freshness.get("apple_health") or {}).get("status"),
     ]
     wearable_states = [state for state in wearable_states if state is not None]
@@ -9744,8 +9141,8 @@ def _training_recommendation_from_factors(
     return recommendation, effective_readiness
 
 
-def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
-    """Whether an Oura-owned rule changed the category at its application step."""
+def _wearable_factor_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
+    """Whether a wearable-owned rule changed the category at its application step."""
     effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
     recommendation = "moderate"
     if effective_readiness is not None:
@@ -9773,33 +9170,17 @@ def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt
 
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
-    """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
+    """Smart recommendation factoring wearable readiness + HRV trend + recent soreness."""
     today = datetime.now().strftime("%Y-%m-%d")
+    _refresh_wearable_facts()
 
-    # Oura metrics (best-effort)
-    readiness = None
+    # Wearable metrics from stored facts (owner's source rule)
+    readiness, readiness_basis = _readiness_with_basis()
     sleep_score = None
-    hrv = None
-    try:
-        cached = get_oura_daily(OURA_DB_FILE, today)
-        if cached:
-            readiness = cached.get("readiness_score")
-            sleep_score = cached.get("sleep_score")
-            hrv = cached.get("hrv")
-    except Exception:
-        pass
-
-    # HRV trend (best-effort)
-    hrv_sample_count = 0
+    hrv_values = _hrv_series(7)
+    hrv = hrv_values[-1] if hrv_values else None
     hrv_trend = get_recent_hrv_trend()
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
-        hrv_sample_count = len(hrv_values)
-    except Exception:
-        pass
+    hrv_sample_count = len(hrv_values)
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -9824,17 +9205,8 @@ def smart_recommendation_api():
 
     # Readiness factors (ACWR / sleep debt / recovery bonus)
     acwr_data = calculate_acwr(WORKOUTS)
-    sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
+    sleep_debt = calculate_sleep_debt(days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    # FIT-271 is provenance-only: preserve the established deterministic
-    # consumption of cached Oura factors and report their direct freshness.
-    oura_usable = any((
-        readiness is not None,
-        (
-            hrv_sample_count >= 4 or hrv_trend == "declining"
-        ) and hrv_trend and hrv_trend != "unknown",
-        (sleep_debt.get("sample_count") or 0) > 0,
-    ))
     recommendation_readiness = readiness
     recommendation_hrv_trend = hrv_trend
     recommendation_sleep_debt = sleep_debt
@@ -10001,27 +9373,19 @@ def smart_recommendation_api():
         last_hours_ago=last_hours_ago,
         weather=weather,
     )
-    oura_fields = [
-        field
-        for field, value in (
-            ("readiness_score", recommendation_readiness),
-            (
-                "hrv_trend",
-                recommendation_hrv_trend
-                if (
-                    hrv_sample_count >= 4 or recommendation_hrv_trend == "declining"
-                ) and recommendation_hrv_trend != "unknown"
-                else None,
-            ),
-            (
-                "sleep_debt_minutes",
-                recommendation_sleep_debt.get("debt_minutes")
-                if oura_usable and (recommendation_sleep_debt.get("sample_count") or 0) > 0
-                else None,
-            ),
-        )
-        if value is not None
-    ]
+    hrv_used = (hrv_sample_count >= 4 or recommendation_hrv_trend == "declining") and recommendation_hrv_trend != "unknown"
+    domain_fields = {
+        "recovery": (
+            (["readiness_score"] if readiness_basis == "recovery_score" else [])
+            + (["hrv_trend"] if hrv_used else [])
+        ),
+        "sleep": (
+            (["readiness_estimate"] if readiness_basis == "sleep_estimate" else [])
+            + (["sleep_debt_minutes"] if (recommendation_sleep_debt.get("sample_count") or 0) > 0 else [])
+        ),
+        "activity": ["active_minutes"] if any(f.get("metric") == "active_minutes" for f in consumed_facts(open_wearables_facts)) else [],
+    }
+    domain_sources = _domain_sources(_preferred_facts(_PROOF_FACT_METRICS, days=7))
     apple_health_fields = []
     try:
         recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)
@@ -10059,10 +9423,9 @@ def smart_recommendation_api():
                 weather_fields.append("humidity_pct")
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
-        "oura_fields": oura_fields,
-        "oura_status": (freshness.get("oura") or {}).get("status"),
-        "oura_used_override": bool(oura_fields),
-        "oura_modifier_applied": _oura_modifier_rule_applied(
+        "domain_sources": domain_sources,
+        "domain_fields": domain_fields,
+        "wearable_modifier_applied": _wearable_factor_rule_applied(
             recommendation_readiness,
             recovery_bonus,
             recommendation_hrv_trend,
@@ -10098,7 +9461,7 @@ def smart_recommendation_api():
         "weather": weather,
         "time_of_day": time_of_day,
         "history_context": history_context,
-        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
+        "reasoning": "; ".join(reason_bits) if reason_bits else "No wearable/soreness data available",
         "freshness": freshness,
         "wearable_sources": _wearable_sources_payload(freshness),
         "recommendation_sources": {
@@ -10597,9 +9960,8 @@ def complete_workout():
             # Score adherence against the wearable-adjusted view the user
             # actually saw (FIT-256 finding 2 follow-up): the canonical plan
             # is the base plan, but /api/next-workout and /gym-now render the
-            # deload/caution-clamped sets. Comparing completed sets against
-            # the un-clamped base would falsely flag a deload-compliant user
-            # for "missed sets". Display-only; nothing is persisted here.
+            # recovery-capped RPE (sets are not clamped), so score against the
+            # displayed view. Display-only; nothing is persisted here.
             recommendation = _wearable_display_adjusted_plan(current_plan)
 
     # Calculate adherence: default `followed: True` only when no plan was
@@ -11594,33 +10956,30 @@ def sleep_import():
         save_json(SLEEP_FILE, SLEEP_DATA)
     return jsonify({'status':'success','imported':len(entries)})
 
+_SLEEP_HISTORY_DAYS = 800
+
+
 @app.route('/api/sleep/analytics')
 def sleep_analytics():
-    # Merge Oura and manual sleep per date; Oura wins only on overlapping dates.
-    oura_rows = []
-    try:
-        import sqlite3 as _sq
-        with closing(_sq.connect(OURA_DB_FILE)) as _db:
-            _db.row_factory = _sq.Row
-            _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
-            for r in _cur.fetchall():
-                oura_rows.append({
-                    'date': r['day'],
-                    'sleep_start': r['bedtime_start'],
-                    'sleep_end': r['bedtime_end'],
-                    'sleep_duration_min': r['total_sleep_min'],
-                    'deep_sleep_min': r['deep_sleep_min'],
-                    'rem_sleep_min': r['rem_sleep_min'],
-                    'light_sleep_min': r['light_sleep_min'],
-                    'awake_min': r['awake_time_min'],
-                    'sleep_score': r['sleep_score'],
-                    'efficiency': r['efficiency'],
-                    'avg_heart_rate': r['avg_heart_rate'],
-                    'avg_hrv': r['avg_hrv'],
-                    'source': 'oura',
-                })
-    except Exception:
-        app.logger.warning("Oura sleep analytics SQLite read failed", exc_info=True)
+    # Merge wearable and manual sleep per date; the wearable wins only on overlapping dates.
+    wearable_rows = [
+        {
+            'date': r['day'],
+            'sleep_start': r['bedtime_start'],
+            'sleep_end': r['sleep_end'],
+            'sleep_duration_min': r['sleep_duration_min'],
+            'deep_sleep_min': r['deep_sleep_min'],
+            'rem_sleep_min': r['rem_sleep_min'],
+            'light_sleep_min': r['light_sleep_min'],
+            'awake_min': r['awake_time_min'],
+            'sleep_score': None,
+            'efficiency': r['efficiency'],
+            'avg_heart_rate': r['avg_heart_rate'],
+            'source': r['provider'],
+            'via': r['via'],
+        }
+        for r in _sleep_rows_from_facts(days=_SLEEP_HISTORY_DAYS)
+    ]
     dedup = {}
     for manual_row in SLEEP_DATA:
         row = dict(manual_row)
@@ -11633,7 +10992,7 @@ def sleep_analytics():
         row['date'] = date
         if date not in dedup or row.get('source') == 'apple_watch':
             dedup[date] = row
-    for row in oura_rows:
+    for row in wearable_rows:
         date = row.get('date')
         try:
             date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
@@ -11715,7 +11074,7 @@ def analytics_advanced():
         hrv_label, "unknown"
     )
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
-    sleep=calculate_sleep_debt(OURA_DB_FILE,7)
+    sleep=calculate_sleep_debt(7)
     sleep_pen=min(20,max(0,(sleep.get('debt_minutes') or 0)/30))
     vol_load=0
     for w in WORKOUTS[-12:]:
@@ -11771,59 +11130,6 @@ def manifest():
 def service_worker():
     """Service worker for offline support."""
     return app.send_static_file('js/sw.js'), 200, {'Content-Type': 'application/javascript'}
-
-
-@app.route('/test-chart')
-def test_chart():
-    """Standalone chart test page - no service worker, no caching."""
-    return '''<!DOCTYPE html>
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head><body style="background:#1a1a2e;padding:20px;margin:0;">
-<h2 style="color:white;font-family:sans-serif;">Sleep Chart Test</h2>
-<div style="background:#16213e;border-radius:12px;padding:16px;position:relative;height:250px;width:100%;">
-<canvas id="testChart"></canvas>
-</div>
-<pre id="log" style="color:lime;font-size:12px;"></pre>
-<script>
-const log = document.getElementById('log');
-fetch('/api/oura/sleep-summary')
-  .then(r => r.json())
-  .then(data => {
-    log.textContent = 'Data: ' + JSON.stringify(data.trend_data);
-    const ctx = document.getElementById('testChart').getContext('2d');
-    new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: data.trend_data.map(d => d.date.slice(5)),
-        datasets: [{
-          label: 'Duration (hrs)',
-          data: data.trend_data.map(d => (d.duration_min/60).toFixed(1)),
-          borderColor: '#4361ee',
-          backgroundColor: 'rgba(67,97,238,0.1)',
-          tension: 0.3, fill: true
-        },{
-          label: 'Score',
-          data: data.trend_data.map(d => d.score),
-          borderColor: '#e040fb',
-          tension: 0.3
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { title: { display: true, text: '7-Day Sleep', color: '#fff' },
-                   legend: { labels: { color: '#ccc' } } },
-        scales: {
-          x: { ticks: { color: '#999' } },
-          y: { min: 0, max: 100, ticks: { color: '#999' } }
-        }
-      }
-    });
-    log.textContent += '\\n\\nChart rendered!';
-  })
-  .catch(e => { log.textContent = 'ERROR: ' + e; });
-</script></body></html>''', 200, {'Cache-Control': 'no-store'}
 
 
 def get_local_ip():

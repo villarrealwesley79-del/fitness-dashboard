@@ -217,17 +217,17 @@ def test_open_wearables_replacement_hides_direct_sources_only_when_connected():
         ["applyOpenWearablesDirectSourceVisibility"],
         _open_wearables_node_script()
         + """
-['settings-row-oura', 'oura-detail', 'settings-row-apple', 'apple-detail'].forEach((id) => { sandbox.elements[id] = owNode(); });
+['settings-row-apple', 'apple-detail'].forEach((id) => { sandbox.elements[id] = owNode(); });
 const connected = { status: 'connected', providers: [{ id: 'oura' }, { id: 'apple_health' }], replacement_sources: ['oura', 'apple_health'] };
 e.applyOpenWearablesDirectSourceVisibility(connected);
-const replaced = ['settings-row-oura', 'oura-detail', 'settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
+const replaced = ['settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
 const disconnected = { status: 'blocked', providers: [{ id: 'oura' }, { id: 'apple_health' }], replacement_sources: ['oura', 'apple_health'] };
 e.applyOpenWearablesDirectSourceVisibility(disconnected);
-const fallback = ['settings-row-oura', 'oura-detail', 'settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
+const fallback = ['settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
 process.stdout.write(JSON.stringify({ replaced, fallback }));
 """,
     )
-    assert output == {"replaced": [True, True, True, True], "fallback": [False, False, False, False]}
+    assert output == {"replaced": [True, True], "fallback": [False, False]}
 
 
 def test_open_wearables_event_wiring_connects_setup_portal_pair_and_sync_controls():

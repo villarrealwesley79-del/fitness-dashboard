@@ -623,6 +623,18 @@ def upsert_daily_facts(
         payload["imported_at"] = payload.get("imported_at") or payload.get("updated_at") or now
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
+        # The replace_* deletes below would drop the first-seen time of rows that are
+        # written again, so read it before any delete.
+        first_imported = {}
+        for row in rows:
+            key = (row["profile_key"], row["date"], row["provider_id"], row["source_system"], row["metric"], row["source_id"])
+            found = conn.execute(
+                "SELECT imported_at FROM wearable_daily_facts WHERE profile_key = ? AND date = ? "
+                "AND provider_id = ? AND source_system = ? AND metric = ? AND source_id = ?",
+                key,
+            ).fetchone()
+            if found and found[0]:
+                first_imported[key] = found[0]
         for source_system, source_id, start_date, end_date in replace_source_id_date_windows or set():
             conn.execute(
                 "DELETE FROM wearable_daily_facts "
@@ -662,6 +674,10 @@ def upsert_daily_facts(
                     (scoped_profile, source_system, source_id),
                 )
         for row in rows:
+            row["imported_at"] = first_imported.get(
+                (row["profile_key"], row["date"], row["provider_id"], row["source_system"], row["metric"], row["source_id"]),
+                row["imported_at"],
+            )
             conn.execute(
                 """
                 INSERT INTO wearable_daily_facts (
@@ -933,6 +949,148 @@ def list_recommendation_facts(
             "updated_at": row["updated_at"],
         })
     return facts
+
+
+# The owner's source rule, in one place: which provider wins per domain.
+# Providers not listed rank after the listed ones.
+SOURCE_PREFERENCE = {
+    "sleep": ["oura", "whoop", "apple"],
+    "recovery": ["oura", "whoop", "apple"],
+    "activity": ["whoop", "oura", "apple"],
+}
+# Two providers that disagree on hours slept by more than the tolerance are a
+# conflict; the lower value is used so a conflict never raises demands. Recovery
+# scores are different models, not the same quantity, so they are never merged
+# (the WHOOP recovery guard covers a red WHOOP score on its own).
+CONFLICT_TOLERANCE = {"sleep_duration": 60.0}
+_KIND_RANK = {"summary": 0, "event": 1}
+
+
+def fact_provider(provider_id: object, source_provider: object) -> str:
+    """The wearable that measured a fact; Open Wearables is only the hub."""
+    provider = str(source_provider or "").strip().lower()
+    if provider:
+        return provider
+    return str(provider_id or "").strip().lower() or "open_wearables"
+
+
+def fact_age_freshness(date_s: str, today: str | None = None) -> str:
+    """fresh <= 1 day old, aging at 2 days, stale after (dates carry no time of day)."""
+    today_s = today or datetime.now().date().isoformat()
+    try:
+        age = (datetime.fromisoformat(today_s).date() - datetime.fromisoformat(str(date_s)[:10]).date()).days
+    except ValueError:
+        return "unknown"
+    return "fresh" if age <= 1 else "aging" if age == 2 else "stale"
+
+
+def _plain_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) else None
+
+
+def preferred_daily_facts(
+    db_path: str,
+    metrics: set[str] | list[str] | tuple[str, ...],
+    start: str,
+    end: str,
+    profile_key: str | int | None = None,
+    today: str | None = None,
+) -> dict[str, dict[str, dict]]:
+    """One fact per date and metric: {date: {metric: fact}}.
+
+    Order: the domain's provider preference, then a live (non-archive) fact over an
+    archive one, then summary over event, then the newest write. Every reader of
+    sleep, recovery or activity goes through here.
+    """
+    metric_list = sorted({str(m) for m in metrics})
+    if not metric_list:
+        return {}
+    init_wearable_fact_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM wearable_daily_facts WHERE profile_key = ? AND date >= ? AND date <= ? "
+            f"AND metric IN ({','.join('?' for _ in metric_list)})",
+            (_normalize_profile_key(profile_key), start, end, *metric_list),
+        ).fetchall()
+    grouped: dict[tuple[str, str], list] = {}
+    for row in rows:
+        value = _plain_number(json.loads(row["value_json"]) if row["value_json"] else None)
+        if value is None:
+            continue
+        provider = fact_provider(row["provider_id"], row["source_provider"])
+        preference = SOURCE_PREFERENCE.get(_default_metric_domain(row["metric"]), [])
+        rank = (
+            preference.index(provider) if provider in preference else len(preference),
+            1 if row["source_system"] == "archive" else 0,
+            _KIND_RANK.get(row["source_record_kind"], 2),
+        )
+        grouped.setdefault((row["date"], row["metric"]), []).append((rank, value, provider, row))
+    result: dict[str, dict[str, dict]] = {}
+    for (date_s, metric), candidates in grouped.items():
+        candidates.sort(key=lambda c: c[3]["source_id"] or "")
+        candidates.sort(key=lambda c: c[3]["updated_at"] or "", reverse=True)
+        candidates.sort(key=lambda c: c[0])
+        rank, value, provider, row = candidates[0]
+        conflict = row["conflict_state"]
+        tolerance = CONFLICT_TOLERANCE.get(metric)
+        if tolerance is not None:
+            by_provider = {}
+            for _rank, other_value, other_provider, _row in candidates:
+                by_provider.setdefault(other_provider, other_value)
+            if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
+                conflict = "conservative_value_used"
+                value = min(by_provider.values())
+        result.setdefault(date_s, {})[metric] = {
+            "date": date_s,
+            "metric": metric,
+            "value": value,
+            "provider": provider,
+            "via": "archive" if row["source_system"] == "archive" else "open_wearables",
+            "source_label": row["source_label"],
+            "original_label": row["original_label"],
+            "observed_at": row["observed_at"],
+            "imported_at": row["imported_at"],
+            "freshness": fact_age_freshness(date_s, today),
+            "conflict_state": conflict,
+        }
+    return result
+
+
+def list_workout_events(
+    db_path: str, profile_key: str | int | None = None, start: str | None = None,
+) -> list[dict]:
+    """Stored workouts (live and archive), one dict per event with its workout_* metrics."""
+    init_wearable_fact_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM wearable_daily_facts WHERE profile_key = ? AND metric LIKE 'workout\\_%' ESCAPE '\\' "
+            "AND (? IS NULL OR date >= ?)",
+            (_normalize_profile_key(profile_key), start, start),
+        ).fetchall()
+    events: dict[tuple, dict] = {}
+    for row in rows:
+        value = _plain_number(json.loads(row["value_json"]) if row["value_json"] else None)
+        if value is None:
+            continue
+        provider = fact_provider(row["provider_id"], row["source_provider"])
+        key = (row["source_system"], provider, row["source_id"], row["date"])
+        event = events.setdefault(key, {
+            "provider": provider,
+            "via": "archive" if row["source_system"] == "archive" else "open_wearables",
+            "source_id": row["source_id"],
+            "date": row["date"],
+            "observed_at": row["observed_at"],
+            "original_label": row["original_label"],
+            "category": row["category"],
+            "imported_at": row["imported_at"],
+            "metrics": {},
+        })
+        event["metrics"][row["metric"]] = value
+    return sorted(events.values(), key=lambda e: (e["date"], e["observed_at"] or ""), reverse=True)
 
 
 def delete_provider_data(db_path: str, provider_id: str, profile_key: str | int | None = None) -> None:

@@ -1,74 +1,30 @@
-import importlib
-import sqlite3
+from datetime import date
+
+from wearable_fact_store import WearableDailyFact, upsert_daily_facts
 
 
-def _fitness_app(monkeypatch, tmp_path, manual_rows):
-    module = importlib.import_module("app")
-    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
-    db_path = tmp_path / "oura.sqlite3"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE oura_sleep (
-                day TEXT,
-                type TEXT,
-                bedtime_start TEXT,
-                bedtime_end TEXT,
-                total_sleep_min INTEGER,
-                deep_sleep_min INTEGER,
-                rem_sleep_min INTEGER,
-                light_sleep_min INTEGER,
-                awake_time_min INTEGER,
-                sleep_score INTEGER,
-                efficiency INTEGER,
-                avg_heart_rate REAL,
-                avg_hrv REAL
-            )
-            """
+def _night(module, day, provider, minutes, wake):
+    upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
+        WearableDailyFact(
+            date=day, provider_id=provider, source_label=provider, metric="sleep_duration", value=float(minutes),
+            source_provider=provider, source_system="open_wearables", source_id="sleep-summary", observed_at=wake,
         )
-        conn.execute(
-            """
-            INSERT INTO oura_sleep VALUES (
-                '2026-07-12', 'long_sleep',
-                '2026-07-11T22:30:00', '2026-07-12T06:30:00',
-                450, 80, 100, 270, 30, 88, 94, 52, 41
-            )
-            """
-        )
-    monkeypatch.setattr(module, "OURA_DB_FILE", str(db_path))
-    monkeypatch.setattr(module, "SLEEP_DATA", manual_rows)
-    monkeypatch.setattr(module, "WORKOUTS", [])
-    return module.app
+    ])
 
 
-def test_sleep_analytics_prefers_oura_per_date_and_fills_manual_gaps(monkeypatch, tmp_path):
-    app = _fitness_app(
-        monkeypatch,
-        tmp_path,
-        [
-            {
-                "date": "2026-07-11",
-                "sleep_start": "2026-07-10T23:00:00",
-                "sleep_duration_min": 420,
-            },
-            {
-                "date": "2026-07-12",
-                "source": "apple_watch",
-                "sleep_start": "2026-07-11T23:15:00",
-                "sleep_duration_min": 390,
-            },
-            {
-                "date": "not-a-date",
-                "sleep_duration_min": 400,
-            },
-            {
-                "date": "2026-7-1",
-                "sleep_duration_min": 380,
-            },
-        ],
-    )
+def test_sleep_analytics_prefers_oura_per_date_and_fills_manual_gaps(isolated_app, monkeypatch):
+    manual = [
+        {"date": "2026-07-11", "sleep_start": "2026-07-10T23:00:00", "sleep_duration_min": 420},
+        {"date": "2026-07-12", "source": "apple_watch", "sleep_start": "2026-07-11T23:15:00", "sleep_duration_min": 390},
+        {"date": "not-a-date", "sleep_duration_min": 400},
+        {"date": "2026-7-1", "sleep_duration_min": 380},
+    ]
+    monkeypatch.setattr(isolated_app, "SLEEP_DATA", manual)
+    monkeypatch.setattr(isolated_app, "WORKOUTS", [])
+    _night(isolated_app, "2026-07-12", "whoop", 440, "2026-07-12T06:30:00Z")
+    _night(isolated_app, "2026-07-12", "oura", 450, "2026-07-12T06:30:00Z")
 
-    response = app.test_client().get("/api/sleep/analytics")
+    response = isolated_app.app.test_client().get("/api/sleep/analytics")
 
     assert response.status_code == 200
     history = response.get_json()["history"]

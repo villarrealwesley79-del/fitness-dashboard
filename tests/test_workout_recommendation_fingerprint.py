@@ -19,9 +19,11 @@ def _payload_kwargs(tmp_path, **overrides):
         "apple_health_freshness": ("missing", None, None),
         "apple_health_sync_db_file": str(tmp_path / "apple-health.sqlite3"),
         "apple_health_workout_files": [],
-        "cached_oura": {"day": "2026-06-27", "readiness_score": 72},
-        "oura_rows": [{"day": "2026-06-27", "readiness_score": 72, "created_at": "2026-06-27T06:00:00"}],
-        "oura_db_file": str(tmp_path / "oura.sqlite3"),
+        "wearable_facts": [{
+            "date": "2026-06-27", "metric": "recovery_score", "provider": "oura", "value": 72,
+            "freshness": "fresh", "conflict_state": None, "imported_at": "ignored",
+        }],
+        "readiness": 72,
     }
     base.update(overrides)
     return base
@@ -37,15 +39,11 @@ def test_build_payload_keeps_source_shapes_and_file_markers(tmp_path):
     }
     assert payload["workouts_latest"] == "2026-06-26T10:00:00"
     assert payload["apple_health"]["sync_db"]["missing"] is True
-    assert payload["oura"]["last_7_days"] == [{
-        "day": "2026-06-27",
-        "readiness_score": 72,
-        "sleep_score": None,
-        "hrv": None,
-        "sleep_duration_min": None,
-        "resting_hr": None,
-        "created_at": "2026-06-27T06:00:00",
+    assert payload["wearable_facts"] == [{
+        "date": "2026-06-27", "metric": "recovery_score", "provider": "oura", "value": 72,
+        "freshness": "fresh", "conflict_state": None,
     }]
+    assert payload["readiness"] == 72
     assert "whoop" not in payload
     assert payload["open_wearables"] == {
         "configured": False,
@@ -82,3 +80,13 @@ def test_fingerprint_includes_auth_scope(tmp_path):
     user_two = fingerprint.build_fingerprint(**_payload_kwargs(tmp_path, auth_scope="user:2"))
 
     assert user_one != user_two
+
+
+def test_fingerprint_changes_when_a_new_night_or_readiness_arrives(tmp_path):
+    baseline = fingerprint.build_fingerprint(**_payload_kwargs(tmp_path))
+    new_fact = {"date": "2026-06-27", "metric": "sleep_duration", "provider": "oura", "value": 410,
+                "freshness": "fresh", "conflict_state": None}
+    facts = _payload_kwargs(tmp_path)["wearable_facts"] + [new_fact]
+
+    assert fingerprint.build_fingerprint(**_payload_kwargs(tmp_path, wearable_facts=facts)) != baseline
+    assert fingerprint.build_fingerprint(**_payload_kwargs(tmp_path, readiness=40)) != baseline

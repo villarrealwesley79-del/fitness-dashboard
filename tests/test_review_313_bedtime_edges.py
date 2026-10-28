@@ -23,22 +23,26 @@ def _rows(*times):
     ],
 )
 def test_circular_sd_is_shift_invariant(monkeypatch, times, expected):
-    module = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(module, "get_sleep_range", lambda *_a, **_kw: _rows(*times))
-    assert module.calculate_bedtime_variance("unused.sqlite3") == expected
+    module = importlib.import_module("app")
+    assert module._bedtime_variance_from_rows(_rows(*times)) == expected
 
 
-def test_sleep_summary_rates_midnight_straddling_bedtimes_excellent(monkeypatch, tmp_path):
-    fitness_app = importlib.import_module("app")
-    fitness_app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
-    monkeypatch.setattr(fitness_app, "OURA_DB_FILE", str(tmp_path / "oura.sqlite3"))
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_a, **_kw: None)
-    monkeypatch.setattr(fitness_app, "get_oura_daily_range", lambda *_a, **_kw: [])
-    sleep_sync = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [])
-    rows = _rows("2026-07-10T23:50:00-05:00", "2026-07-12T00:10:00-05:00")
-    monkeypatch.setattr(sleep_sync, "get_sleep_range", lambda *_a, **_kw: rows)
+def test_sleep_summary_rates_midnight_straddling_bedtimes_excellent(isolated_app, monkeypatch):
+    from datetime import date, timedelta
+    from wearable_fact_store import WearableDailyFact, upsert_daily_facts
 
-    consistency = fitness_app.app.test_client().get("/api/oura/sleep-summary").get_json()["consistency"]
+    # Bedtime is estimated as wake time minus time in bed: 23:50 and 00:10 bedtimes.
+    facts = []
+    for offset, wake in ((1, "07:50:00"), (0, "08:10:00")):
+        day = (date.today() - timedelta(days=offset)).isoformat()
+        for metric in ("sleep_duration", "sleep_time_in_bed"):
+            facts.append(WearableDailyFact(
+                date=day, provider_id="oura", source_label="Oura", metric=metric, value=480.0,
+                source_provider="oura", source_system="open_wearables", source_id="sleep-summary",
+                observed_at=f"{day}T{wake}Z",
+            ))
+    upsert_daily_facts(isolated_app.WEARABLE_FACTS_DB_FILE, facts)
+
+    consistency = isolated_app.app.test_client().get("/api/sleep/summary").get_json()["consistency"]
 
     assert consistency["status"] == "excellent"

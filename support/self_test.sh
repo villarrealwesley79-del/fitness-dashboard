@@ -102,11 +102,11 @@ elif path == "/api/history":
 elif path == "/api/history-all":
     summary["workouts"] = len(body.get("workouts", []))
     summary["cardio"] = len(body.get("cardio", []))
-elif path == "/api/oura/status":
+elif path == "/api/wearables/today":
     summary["source"] = body.get("source")
     summary["date"] = body.get("date")
     summary["readiness"] = body.get("readiness")
-elif path == "/api/oura/trends":
+elif path == "/api/wearables/trends":
     summary["series_days"] = len(body.get("series", []))
     summary["hrv_trend"] = body.get("hrv_trend")
 elif path == "/api/apple-health/sync/status":
@@ -158,8 +158,8 @@ hit "/api/dashboard"
 hit "/api/settings"
 hit "/api/history"
 hit "/api/history-all"
-hit "/api/oura/status"
-hit "/api/oura/trends"
+hit "/api/wearables/today"
+hit "/api/wearables/trends"
 hit "/api/apple-health/sync/status"
 hit "/api/weather"
 hit "/api/recommendation/smart"

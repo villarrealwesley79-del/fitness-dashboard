@@ -65,7 +65,7 @@
                     <button id="btn-adjust-plan" class="btn btn-ghost" type="button">Adjust Plan</button>
                 </div>
                 <div class="reco-freshness" id="reco-freshness">
-                    <span class="state-chip" id="reco-fresh-oura" data-source="oura" title="Oura freshness">Oura —</span>
+                    <span class="state-chip" id="reco-fresh-wearables" data-source="wearable_facts" title="Wearable data freshness">Wearables —</span>
                     <span class="state-chip" id="reco-fresh-apple" data-source="apple_health" title="Apple Health freshness">Apple —</span>
                 </div>
                 <div class="reco-source-strip" id="reco-source-strip">
@@ -686,37 +686,6 @@
                     <div class="integration-detail-row integration-detail-warn" id="open-wearables-detail-attention-row" hidden>
                         <span class="detail-label">Attention</span>
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
-                    </div>
-                </div>
-                <div class="settings-row" id="settings-row-oura">
-                    <div class="settings-row-label">
-                        <span class="int-dot int-dot-on"></span>
-                        Oura Ring
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="oura-connect-state" class="state-chip">—</span>
-                        <button id="btn-sync-oura" class="btn btn-ghost btn-sm" type="button">Sync</button>
-                    </div>
-                </div>
-                <!-- FIT-16: Oura freshness evidence — latest daily/sleep rows
-                     and cached/live source. Lets the owner inspect real sync
-                     state without poking SQLite. -->
-                <div class="integration-detail" id="oura-detail">
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Latest daily</span>
-                        <span class="detail-value" id="oura-detail-daily">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Latest sleep</span>
-                        <span class="detail-value" id="oura-detail-sleep">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Source</span>
-                        <span class="detail-value" id="oura-detail-source">—</span>
-                    </div>
-                    <div class="integration-detail-row" id="oura-detail-sync-row" hidden>
-                        <span class="detail-label">Last sync</span>
-                        <span class="detail-value" id="oura-detail-sync-result">—</span>
                     </div>
                 </div>
                 <div class="settings-row" id="settings-row-apple">

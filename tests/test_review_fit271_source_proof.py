@@ -4,7 +4,9 @@ import pytest
 
 from recommendation_sources import build_recommendation_source_proof
 
-SOURCES = {"open_wearables", "oura", "apple_health", "weather"}
+SOURCES = {"open_wearables", "sleep", "recovery", "activity", "apple_health", "weather"}
+DOMAINS = {"sleep", "recovery", "activity"}
+DOMAIN_KEYS = {"provider", "via", "date", "freshness", "conflict_state"}
 NODE_KEYS = {"used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"}
 
 
@@ -16,13 +18,13 @@ def _proof(freshness, ow_used=False, **inputs):
     )
 
 
-def test_unstubbed_smart_endpoint_on_empty_data_exposes_four_honest_sources(isolated_client):
+def test_unstubbed_smart_endpoint_on_empty_data_exposes_honest_sources(isolated_client):
     resp = isolated_client.get("/api/recommendation/smart")
     assert resp.status_code == 200, resp.get_data(as_text=True)[:500]
     proof = resp.get_json()["recommendation_sources"]["source_proof"]
     assert set(proof) == SOURCES
     for name, node in proof.items():
-        assert set(node) == NODE_KEYS, name
+        assert set(node) == (NODE_KEYS | DOMAIN_KEYS if name in DOMAINS else NODE_KEYS), name
         # Nothing exists in a fresh DATA_DIR, so nothing may claim influence.
         assert node["used_for_recommendation"] is False, (name, node)
         assert node["fields_used"] == [], (name, node)
@@ -30,20 +32,20 @@ def test_unstubbed_smart_endpoint_on_empty_data_exposes_four_honest_sources(isol
         assert node["ignored_reason"], (name, node)
 
 
-def test_smart_endpoint_probes_oura_freshness_once_per_request(isolated_app, monkeypatch):
+def test_smart_endpoint_probes_wearable_freshness_once_per_request(isolated_app, monkeypatch):
     # PER-1254: "Compute the complete freshness snapshot once per
     # smart-recommendation request and reuse it."
-    real = isolated_app._latest_oura_freshness
+    real = isolated_app._latest_wearable_fact_freshness
     calls = []
 
     def counting(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(isolated_app, "_latest_oura_freshness", counting)
+    monkeypatch.setattr(isolated_app, "_latest_wearable_fact_freshness", counting)
     resp = isolated_app.app.test_client().get("/api/recommendation/smart")
     assert resp.status_code == 200
-    assert len(calls) == 1, f"_latest_oura_freshness ran {len(calls)} times in one request"
+    assert len(calls) == 1, f"_latest_wearable_fact_freshness ran {len(calls)} times in one request"
 
 
 def test_superseded_source_reports_superseded_reason():

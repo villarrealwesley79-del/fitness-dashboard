@@ -82,7 +82,7 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: None)
     monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
     monkeypatch.setattr(module, "_apply_open_wearables_recommendation_guard", lambda rec, _facts: (rec, None))
-    monkeypatch.setattr(module, "get_oura_daily", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "_readiness_with_basis", lambda: (None, None))
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {"open_wearables": {}})
     monkeypatch.setattr(module, "build_open_wearables_recommendation_source", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "_wearable_sources_payload", lambda _freshness: {})

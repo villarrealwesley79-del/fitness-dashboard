@@ -126,7 +126,7 @@ Navy body-fat calculation: a client posts tape measurements to `/api/body/navy-c
 
 Manual sleep import: a client posts either `entries[]` or `csv` text to `/api/sleep/import`. Rows without a `date` or `day` are skipped. Rows are normalized into one record per date and merged by date over existing `SLEEP_DATA`; later imported rows replace earlier rows for the same date. The API writes `data_sleep.json` and returns the number of parsed/imported entries, including entries that may replace existing dates.
 
-Sleep analytics: `/api/sleep/analytics` reads Oura `long_sleep` rows from `oura_daily.sqlite3` table `oura_sleep` and merges them with manual `SLEEP_DATA` by date. Manual duplicates prefer `apple_watch`; an Oura row replaces a manual row only for the same date, while manual-only dates remain visible. Every returned row includes source provenance. The route calculates bedtime consistency when at least four parseable sleep-start times exist and next-day sleep-duration to average-e1RM correlation when at least three paired sleep/workout data points exist.
+Sleep analytics: `/api/sleep/analytics` reads the preferred provider's sleep facts from `wearable_facts.sqlite3` (Oura first; live over archive) and merges them with manual `SLEEP_DATA` by date. Manual duplicates prefer `apple_watch`; a wearable row replaces a manual row only for the same date, while manual-only dates remain visible. Every returned row includes source provenance. The route calculates bedtime consistency when at least four parseable sleep-start times exist and next-day sleep-duration to average-e1RM correlation when at least three paired sleep/workout data points exist.
 
 Stats render: opening Stats loads `/api/history-all` and Apple Health workouts for the chosen range, merges strength history sources client-side, computes visible totals and deltas client-side, then calls `/api/muscle-fatigue` and `/api/insights`. Muscle recovery cells are clickable; clicking toggles a details row with recovery label, readiness, weekly sets, last trained, soreness note, and recommendation.
 
@@ -166,7 +166,7 @@ No route-level rate limits were found for these endpoints. Idempotency is not gu
 
 ## 6. Data Model & Persistence
 
-Runtime files live under `DATA_DIR`, defaulting to the app directory when `DATA_DIR` is unset. This feature directly uses `data_body.json`, `data_sleep.json`, `data_workouts.json`, `data_soreness.json`, `data_cardio.json`, `data_recovery.json`, `data_settings.json`, `oura_daily.sqlite3`, `whoop.sqlite3`, and Open Wearables best-effort data.
+Runtime files live under `DATA_DIR`, defaulting to the app directory when `DATA_DIR` is unset. This feature directly uses `data_body.json`, `data_sleep.json`, `data_workouts.json`, `data_soreness.json`, `data_cardio.json`, `data_recovery.json`, `data_settings.json`, `wearable_facts.sqlite3`, and Open Wearables best-effort data.
 
 `BODY_DATA` is an in-memory list loaded from `data_body.json`. Rows are dictionaries with at least date, weight, optional body-fat, optional tape fields, notes, and `created_at`. The add route appends and saves with `save_json`. There is no edit/delete/dedupe route in this feature.
 
@@ -174,7 +174,7 @@ Runtime files live under `DATA_DIR`, defaulting to the app directory when `DATA_
 
 Workout analytics read `WORKOUTS` from `data_workouts.json`. Legacy workouts are backfilled with stable IDs at import time. Apple Health-derived workouts can be folded into analytics through helper functions, especially for ACWR, muscle volume, and cardio fatigue. `history_normalization.py` provides canonical categories and source labels for History/Stats presentation, especially `strength_training`, `Strength - Logged`, and `Strength - Watch`.
 
-Oura sleep analytics reads `oura_sleep` rows from `OURA_DB_FILE`; advanced analytics reads `oura_daily` sleep duration and HRV trend helpers. Vitals source precedence is Open Wearables first, then Oura daily cache, then WHOOP for missing heart-rate/sleep score fields.
+Sleep analytics, advanced analytics (sleep debt, HRV trend) and Vitals all read stored wearable facts through the source rule in 10-open-wearables-integration.md.
 
 The Markdown export is generated on demand from current in-memory `WORKOUTS`; it is not persisted unless the user downloads it.
 

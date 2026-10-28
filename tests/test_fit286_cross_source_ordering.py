@@ -13,7 +13,7 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     _stub_smart_recommendation_dependencies(
         monkeypatch,
         module,
-        oura_row={"readiness_score": 88, "sleep_score": 82, "hrv": 44},
+        readiness=88,
     )
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {
         **_freshness_payload(),

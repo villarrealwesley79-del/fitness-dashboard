@@ -112,10 +112,9 @@ Auth values used below:
 
 | Method(s) | Path | Auth | Purpose | Owning PRD |
 | --- | --- | --- | --- | --- |
-| GET | `/api/oura/status` | session/owner | Return Oura daily readiness/activity status, cached/live source, and latest day. | [../07-oura-integration.md](../07-oura-integration.md) |
-| GET | `/api/oura/trends` | session/owner | Return Oura trend windows. | [../07-oura-integration.md](../07-oura-integration.md) |
-| POST | `/api/oura/sync-sleep` | session/owner | Sync Oura sleep into local SQLite cache. | [../07-oura-integration.md](../07-oura-integration.md) |
-| GET | `/api/oura/sleep-summary` | session/owner | Return latest Oura sleep summary and bedtime variance. | [../07-oura-integration.md](../07-oura-integration.md) |
+| GET | `/api/wearables/today` | session/owner | Return today's readiness, HRV, resting HR, sleep and activity from stored wearable facts (`?refresh=true` forces a live fetch). | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
+| GET | `/api/wearables/trends` | session/owner | Return the 7-day HRV, steps, active-minute and sleep series from stored facts. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
+| GET | `/api/sleep/summary` | session/owner | Return last night, 7-day averages, bedtime spread and data quality from stored facts. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 
 ## Apple Health And Legacy HealthKit
 

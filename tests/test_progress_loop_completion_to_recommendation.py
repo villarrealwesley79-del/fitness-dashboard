@@ -48,9 +48,8 @@ def fitness_app(monkeypatch, tmp_path):
 
     # Neutralize external side-effects on /api/recommendation/smart so we
     # exercise only the post-workout linkage under test.
-    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: None)
-    monkeypatch.setattr(module, "upsert_oura_daily", lambda *_a, **_kw: None)
-    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [])
+    monkeypatch.setattr(module, "_readiness_with_basis", lambda: (None, None))
+    monkeypatch.setattr(module, "_hrv_series", lambda *_a, **_k: [])
     monkeypatch.setattr(module, "compute_hrv_trend", lambda *_a, **_kw: "unknown")
     monkeypatch.setattr(module, "calculate_acwr", lambda *_a, **_kw: {"acwr": 1.0, "chronic_load": 0, "risk": "low"})
     monkeypatch.setattr(module, "calculate_sleep_debt", lambda *_a, **_kw: {"debt_minutes": 0, "status": "ok"})
@@ -63,13 +62,6 @@ def fitness_app(monkeypatch, tmp_path):
         "mesocycle": {"rpe_base": 7},
     })
     monkeypatch.setattr(module, "_compute_data_freshness", lambda *_a, **_kw: {})
-
-    # OuraClient.get_today_metrics would otherwise raise; the route catches it,
-    # but stubbing avoids the noisy traceback path.
-    class _StubOura:
-        def get_today_metrics(self, _today):
-            return None, None, None, {}, {}
-    monkeypatch.setattr(module, "OuraClient", lambda *_a, **_kw: _StubOura())
 
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
@@ -240,7 +232,7 @@ def test_smart_recommendation_downgrades_intensity_when_recent_fatigue_high(fitn
     """AC2/AC5: post-workout fatigue ≥8 within 18h dampens the next session
     by one notch. Bake in a high-readiness Oura day so the base recommendation
     starts at 'intensity', then check the downgrade pulls it back."""
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_a, **_kw: {"readiness_score": 90})
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (90, "recovery_score"))
     client = fitness_app.app.test_client()
     res = client.post(
         "/api/complete-workout",
