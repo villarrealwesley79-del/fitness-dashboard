@@ -255,6 +255,47 @@ def test_a_window_is_a_fit_only_when_the_plan_built_for_it_fits(feed, goal, minu
         assert fit["reason"] == "Calendar: no free window today; next window tomorrow 6:00 AM"
 
 
+def test_a_later_window_that_holds_the_plan_is_used(feed):
+    """Free 10:00-10:30 and 12:00-12:40: the 34-minute hypertrophy plan does not fit the first, but fits the second."""
+    module, client, set_feed = feed
+    set_feed(ics(((0, 10, 30), (0, 12, 0)), ((0, 12, 40), (0, 21, 0))))
+    module.USER_SETTINGS.update(available_time_minutes=75, training_goal="hypertrophy")
+    connect(client)
+    body = client.get("/api/next-workout").get_json()
+    fit, plan = body["schedule_fit"], body["next_workout"]
+    assert fit["fits"] is True and (fit["window_start"], fit["window_end"]) == (iso(at(0, 12)), iso(at(0, 12, 40)))
+    assert plan["estimated_minutes"] <= 40 and plan["available_time"] == fit["minutes"] == fit["plan_minutes"]
+    assert fit["reason"].startswith("Calendar: 30 min fits 12:00 PM to 12:40 PM")
+
+
+def test_readers_never_get_another_days_cache_while_a_refresh_runs(feed):
+    """After midnight the cache holds yesterday and today only: tomorrow would read as free."""
+    module, client, set_feed = feed
+    set_feed(ics())
+    connect(client)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(url, **kwargs):
+        started.set()
+        release.wait(10)
+        return ics()
+
+    module.calendar_feed.fetch_ics = slow  # restored by the feed fixture's monkeypatch
+    module._calendar_now = lambda: NOW + timedelta(days=1)
+    refresher = threading.Thread(target=lambda: module.app.test_client().get("/api/dashboard"), daemon=True)
+    refresher.start()
+    assert started.wait(10)
+    windows = client.get("/api/calendar/windows?day=tomorrow").get_json()
+    status = client.get("/api/calendar/ical").get_json()
+    fit = module._schedule_fit()
+    release.set()
+    refresher.join(10)
+    assert windows == {"status": "refreshing", "day": "tomorrow", "windows": [], "busy": []}
+    assert status["configured"] is True and status["status"] == "refreshing"
+    assert fit == {"status": "refreshing", "plan_minutes": None}
+    assert client.get("/api/calendar/windows?day=tomorrow").get_json()["status"] == "ok"
+
+
 def test_readers_do_not_wait_for_a_calendar_fetch(feed):
     """/gym-now (no calendar of its own) and the dashboard serve the last state while a refresh runs."""
     module, client, set_feed = feed

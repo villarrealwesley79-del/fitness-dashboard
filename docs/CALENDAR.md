@@ -28,12 +28,12 @@ Only timed events. All-day events, cancelled events and events marked "Free" do 
 
 ## What it changes
 
-- **Today's session length** is the smaller of your preferred duration and the longest free window left today (inside your training hours, from now on), rounded down to a duration option (20, 30, 45, 60, 75 or 90 minutes). The dashboard shows a chip with the window, and "Why this plan?" says when the session budget was cut. The plan generator never builds fewer than two exercises (34 to 60 minutes, by training goal), so the window counts as a fit only when the plan built for it is no longer than the window; otherwise the dashboard says there is no window today and shows your normal plan.
+- **Today's session length** is the smaller of your preferred duration and the longest free window left today (inside your training hours, from now on), rounded down to a duration option (20, 30, 45, 60, 75 or 90 minutes). The dashboard shows a chip with the window, and "Why this plan?" says when the session budget was cut. The plan generator never builds fewer than two exercises (about 22 to 60 minutes, by training goal), so the window counts as a fit only when the plan built for it is no longer than the window; otherwise the dashboard says there is no window today and shows your normal plan.
 - **Under 20 free minutes** means "no window today": the plan stays as it was and the chip names the first window tomorrow.
 - **Outage, bad address or no address:** the normal plan, with no calendar chip. Nothing breaks.
 
 ## Using it from your assistant
 
-The MCP server's `get_open_windows(day="today" | "tomorrow")` returns `{status, day, windows: [{start, end, minutes}], busy: [{start, end}]}` from `GET /api/calendar/windows`. `status` is `ok`, `unconfigured` or `error`. Times are ISO 8601 with your local offset, and `windows` are free gaps of at least 20 minutes inside your training hours (today starts from now).
+The MCP server's `get_open_windows(day="today" | "tomorrow")` returns `{status, day, windows: [{start, end, minutes}], busy: [{start, end}]}` from `GET /api/calendar/windows`. `status` is `ok`, `unconfigured`, `error` or `refreshing` (a fetch is running and no current data is ready; treat it as unknown and ask again in a moment). Times are ISO 8601 with your local offset, and `windows` are free gaps of at least 20 minutes inside your training hours (today starts from now).
 
 Ask your assistant something like "find me a 45 minute window today and block it as Workout". It reads the free windows through this server and creates the calendar event with its own Google Calendar connector. This server only reads; see `docs/MCP.md`.

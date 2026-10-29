@@ -4130,7 +4130,10 @@ def _calendar_state(now, force=False):
     """
     # Readers never wait on a fetch: while one runs they get the last state. Only a connect waits (force).
     if not _CALENDAR_LOCK.acquire(blocking=force):
-        return dict(_CALENDAR) or {"status": "unconfigured", "events": [], "last_fetch": None}
+        cached = dict(_CALENDAR)
+        if cached.get("day") == now.date() and cached.get("key") == _calendar_secret_args()[1]["fallback_path"]:
+            return cached
+        return {"status": "refreshing", "events": [], "last_fetch": None}  # old-day or other-address data would show a booked day as free
     try:
         args, kwargs = _calendar_secret_args()
         cached = _CALENDAR
@@ -4185,13 +4188,15 @@ def _schedule_fit():
     if state["status"] != "ok":
         return {"status": state["status"], "plan_minutes": None}
     wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
-    fit = calendar_feed.fit_session(_calendar_day(state["events"], now, 0)[1], wanted, [o["value"] for o in TIME_OPTIONS])
+    windows = _calendar_day(state["events"], now, 0)[1]
+    fit = calendar_feed.fit_session(windows, wanted, [o["value"] for o in TIME_OPTIONS])
     if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
         built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
                                       consume_cardio_rotation=False, include_open_wearables_readiness=False)
-        room = (fit["window_end"] - fit["window_start"]).total_seconds() / 60
-        if built["estimated_minutes"] > room:
-            fit = {**fit, "fits": False, "minutes": 0, "shortened": False}
+        span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
+        if built["estimated_minutes"] > span((fit["window_start"], fit["window_end"])):
+            later = next((w for w in windows if span(w) >= built["estimated_minutes"]), None)  # earliest that holds the plan
+            fit = {**fit, "window_start": later[0], "window_end": later[1]} if later else {**fit, "fits": False, "minutes": 0, "shortened": False}
     out = {
         "status": "ok", "fits": fit["fits"], "minutes": fit["minutes"] or None, "shortened": fit["shortened"],
         "plan_minutes": fit["minutes"] if fit["fits"] and fit["shortened"] else None,

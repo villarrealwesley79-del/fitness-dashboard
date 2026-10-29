@@ -159,7 +159,7 @@ def test_gitignore_excludes_protected_fallback_files() -> None:
     }
 
     assert ".open-wearables-password" in rules
-    assert ".google-calendar-ical-url*" in rules  # also the mkstemp temp file
+    assert ".google-calendar-ical-url*" in rules  # not the mkstemp temp file (..name.XXXX); that is removed in finally
     assert ".whoop-protected-material*" in rules
     assert ".mcp-*" in rules  # covers .mcp-read-token at any depth
 
