@@ -3488,7 +3488,7 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
 
     def add_minutes(d, minutes):
         if d and math.isfinite(minutes) and minutes > 0:
-            daily_minutes[d] = daily_minutes.get(d, 0.0) + minutes
+            daily_minutes[d] = min(1440.0, daily_minutes.get(d, 0.0) + minutes)  # a day has 1440 minutes; keeps window sums finite
 
     for w in workouts:
         d = in_window(w.get("date"))

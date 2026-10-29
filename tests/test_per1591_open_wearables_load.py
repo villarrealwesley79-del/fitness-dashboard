@@ -508,3 +508,20 @@ def test_a_non_finite_logged_duration_still_counts_its_watch_copy(app_module):
     app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": float("inf"), "intensity": 5}]
     store(app_module, 2, "Running", 30, hour=7)
     assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 30
+
+
+@pytest.mark.parametrize("twins", [False, True])
+def test_two_huge_imported_runs_keep_the_dashboard_up(app_module, twins):
+    """Import does not cap durations: two finite 1e308-minute runs must not sum to inf and 500 the main routes."""
+    app_module.WORKOUTS[:] = list(OWNER_LIFTS)
+    for n in ((1, 2) if twins else (5,)):
+        store(app_module, n, "Running" if twins else "Cycling", 30, hour=7)
+    cardio = [{"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 1e308, "intensity": 5} for n in (1, 2)]
+    client = app_module.app.test_client()
+    assert client.post("/api/import-backup", json={"data": {"cardio": cardio}}).status_code == 200
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        codes = {r: client.get(r).status_code for r in ("/api/dashboard", "/api/acwr", "/api/recommendation/smart", "/api/next-workout")}
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
+    assert set(codes.values()) == {200}, codes
