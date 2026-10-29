@@ -6,7 +6,6 @@ RECOVERY_NODE = {"provider": "oura", "via": "open_wearables", "date": "2026-10-2
 def _freshness(**overrides):
     base = {
         "open_wearables": {"status": "fresh"},
-        "apple_health": {"status": "fresh"},
     }
     base.update(overrides)
     return base
@@ -25,7 +24,6 @@ def _proof(*, freshness=None, source_inputs=None):
             "domain_sources": {"recovery": RECOVERY_NODE},
             "domain_fields": {"recovery": ["readiness_score"]},
             "domain_modifier_applied": {"sleep": True, "recovery": True, "activity": True},
-            "apple_health_fields": ["recent_workout_load"],
             "weather_fields": ["feelslike_f"],
             "weather_status": "fresh",
             "weather_modifier_applied": True,
@@ -37,13 +35,13 @@ def _proof(*, freshness=None, source_inputs=None):
 def test_source_proof_has_the_domain_contract():
     proof = _proof()
 
-    assert set(proof) == {"open_wearables", "sleep", "recovery", "activity", "apple_health", "weather"}
+    assert set(proof) == {"open_wearables", "sleep", "recovery", "activity", "weather"}
     for domain in ("sleep", "recovery", "activity"):
         assert set(proof[domain]) == {
             "provider", "via", "date", "freshness", "used_for_recommendation", "fields_used",
             "modifier_applied", "ignored_reason", "conflict_state",
         }
-    for source in ("open_wearables", "apple_health", "weather"):
+    for source in ("open_wearables", "weather"):
         assert set(proof[source]) == {
             "used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"
         }
@@ -91,20 +89,6 @@ def test_archive_sourced_domain_names_the_archive():
     proof = _proof(source_inputs={"domain_sources": {"recovery": {**RECOVERY_NODE, "via": "archive"}}})
 
     assert proof["recovery"]["via"] == "archive"
-
-
-def test_stale_apple_health_is_reported_used_when_legacy_load_logic_consumed_it():
-    proof = _proof(
-        freshness=_freshness(apple_health={"status": "stale"}),
-        source_inputs={
-            "apple_health_fields": ["recent_workout_load"],
-            "apple_health_used_override": True,
-        },
-    )
-
-    assert proof["apple_health"]["used_for_recommendation"] is True
-    assert proof["apple_health"]["fields_used"] == ["recent_workout_load"]
-    assert proof["apple_health"]["ignored_reason"] is None
 
 
 def test_whoop_recovery_is_named_only_as_an_open_wearables_field():
@@ -168,7 +152,7 @@ def test_payload_builder_exposes_source_proof_without_removing_existing_contract
 
     assert "open_wearables" in payload
     assert "whoop" not in payload
-    assert set(payload["source_proof"]) == {"open_wearables", "sleep", "recovery", "activity", "apple_health", "weather"}
+    assert set(payload["source_proof"]) == {"open_wearables", "sleep", "recovery", "activity", "weather"}
 
 
 def test_wearable_rule_tracks_rules_even_when_their_net_category_cancels():

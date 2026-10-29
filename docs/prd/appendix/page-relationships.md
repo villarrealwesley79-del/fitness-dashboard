@@ -50,13 +50,11 @@ flowchart TD
   MealReview --> Body
   MealReview --> AdaptBanner
 
-  Settings --> AppleSetup[Apple Health Setup Modal]
   Settings --> WhoopIntake[WHOOP Intake Modal]
   Settings --> OWSetup[Open Wearables Setup Modal]
   Settings --> PushSetup[Push Notification Controls]
   Settings --> Backup[Backup Export / Import]
 
-  AppleSetup --> Freshness[Freshness Chips]
   WhoopIntake --> Freshness
   OWSetup --> Freshness
   Freshness --> Dash
@@ -127,11 +125,9 @@ Downstream coupling:
 
 | Surface | Primary actions | API | Coupled surfaces |
 | --- | --- | --- | --- |
-| Apple Health setup modal | Show tokenized setup URL and sync evidence. | `/api/apple-health/sync/setup-url`, `/api/apple-health/sync/status` | Settings Apple row, freshness chips, Vitals/Activity, History workouts, recommendation load context. |
-| Health Auto Export webhook | External phone/shortcut posts health records. | `/api/apple-health/sync` | Apple sync DB, `/api/apple-health/*` reads, Dashboard/Vitals/History after refresh. |
 | WHOOP intake modal | Start OAuth, poll status, manual CSV import, disconnect/delete. | `/api/whoop/connect/start`, `/api/whoop/callback`, `/api/whoop/sync`, `/api/whoop/import-csv`, `/api/whoop/disconnect`, `/api/whoop/delete-data` | Settings WHOOP row, recommendation modifiers, source conflict drawer, freshness chips. |
 | Open Wearables setup modal | Bootstrap hub profile, save advanced values, pair provider, create phone invite, check connection. | `/api/open-wearables/setup*`, `/api/open-wearables/pair/<provider>`, `/api/open-wearables/mobile-invite/<provider>` | Settings Open Wearables row, provider list, wearable source list, source attribution, metadata-only sync. |
-| Open Wearables sync | Metadata-only sync/fact projection. | `/api/open-wearables/sync`, `/api/health/sync`, `/api/wearable-sources`, `/api/wearable-facts` | Dashboard source strip, AI fact context, recommendation source attribution. |
+| Open Wearables sync | Metadata-only sync/fact projection. | `/api/open-wearables/sync`, `/api/open-wearables/check-sync`, `/api/wearable-sources`, `/api/wearable-facts` | Dashboard source strip, AI fact context, recommendation source attribution. |
 
 Freshness coupling:
 
@@ -166,5 +162,3 @@ Freshness coupling:
 
 - `/gym-now` is a real auth-gated server-rendered standalone workout page for stale mobile/PWA caches; it regenerates and renders the current workout without the JS shell.
 - `/test-chart` is live in `app.py` but appears developer/test-only and is auth-gated.
-- `/api/health/sync` is an Open Wearables metadata sync route despite the `health` path name; Apple Health sync is `/api/apple-health/sync`.
-- Legacy read-only Apple Health fixture routes `/api/health/workouts`, `/api/health/sleep`, `/api/health/steps`, `/api/health/vitals`, and `/api/health/summary` are auth-gated and registered at boot, but uncalled by the frontend.

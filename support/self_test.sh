@@ -109,9 +109,6 @@ elif path == "/api/wearables/today":
 elif path == "/api/wearables/trends":
     summary["series_days"] = len(body.get("series", []))
     summary["hrv_trend"] = body.get("hrv_trend")
-elif path == "/api/apple-health/sync/status":
-    summary["last_sync"] = body.get("last_sync")
-    summary["last_record_date"] = body.get("last_record_date")
 elif path == "/api/weather":
     summary["source"] = body.get("source")
     summary["condition"] = body.get("condition")
@@ -160,7 +157,6 @@ hit "/api/history"
 hit "/api/history-all"
 hit "/api/wearables/today"
 hit "/api/wearables/trends"
-hit "/api/apple-health/sync/status"
 hit "/api/weather"
 hit "/api/recommendation/smart"
 

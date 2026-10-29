@@ -5,8 +5,8 @@ Linear: FIT-19
 ## Scope
 
 This runbook covers the current Flask/PWA deployment path for the local-first
-Fitness Dashboard. It does not delete runtime data and does not replace the
-token-gated Health Auto Export bridge.
+Fitness Dashboard. It does not delete runtime data. WHOOP, Oura and Apple Health
+reach the app only through Open Wearables.
 
 ## Release Checklist
 
@@ -41,9 +41,8 @@ Before release, run the dependency-free shell syntax gate:
 scripts/check-shell-scripts.sh
 ```
 
-The gate runs `bash -n` over the launchd installer, Apple Health staleness
-checker, worktree guard and installer, pre-push and post-checkout hooks, and the
-live self-test. It intentionally does not treat ShellCheck's semantic or style
+The gate runs `bash -n` over the launchd installer, worktree guard and
+installer, pre-push and post-checkout hooks, and the live self-test. It intentionally does not treat ShellCheck's semantic or style
 warnings as release failures because ShellCheck is not a repository dependency
 or a standard macOS tool. No `bash -n` syntax diagnostics are ignored.
 
@@ -69,7 +68,7 @@ The root route should redirect to login when no session is present.
 
 ## Launchd Install / Migration
 
-For a new Mac or a repaired checkout, install both user launchd agents with the
+For a new Mac or a repaired checkout, install the user launchd agent with the
 repo script:
 
 ```bash
@@ -77,16 +76,22 @@ bash scripts/install-launchd-agents.sh --dry-run
 bash scripts/install-launchd-agents.sh install
 ```
 
-The script writes `~/Library/LaunchAgents/com.fitness-dashboard.plist` and
-`~/Library/LaunchAgents/com.fitness-dashboard.staleness.plist`, then bootstraps
-and kickstarts them. It is idempotent; rerunning `install` only rewrites plist
-files when their generated content changes. Use `reinstall` after moving the repo
-path or changing Python environments, and use `uninstall` to remove both agents.
-`--dry-run` prints the generated plists without writing files or calling
-`launchctl`. The dashboard agent pins launchd to `HOST=127.0.0.1`, `PORT=5050`,
+The script writes `~/Library/LaunchAgents/com.fitness-dashboard.plist`, then
+bootstraps and kickstarts it. It is idempotent; rerunning `install` only
+rewrites the plist when its generated content changes. Use `reinstall` after
+moving the repo path or changing Python environments, and use `uninstall` to
+remove the agent. `--dry-run` prints the generated plist without writing files
+or calling `launchctl`. The agent pins launchd to `HOST=127.0.0.1`, `PORT=5050`,
 and `FLASK_DEBUG=0` so local development `.env` values do not leak into the
-background service. The staleness agent is pointed at the selected repo's
-`apple_health_sync.db`, so migrated checkouts do not keep monitoring an old path.
+background service.
+
+The Apple Health staleness agent (`com.fitness-dashboard.staleness`) no longer
+exists. A machine that still has it loads it until it is removed by hand:
+
+```bash
+launchctl bootout gui/$(id -u)/com.fitness-dashboard.staleness 2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.fitness-dashboard.staleness.plist
+```
 
 ## Cache Bust
 
@@ -96,55 +101,46 @@ asset URL instead of a cached previous bundle.
 
 For backend-only or docs-only releases, no asset version change is required.
 
-## Rollback
+## Deploy By Commit And Roll Back
 
-1. Identify the last known-good commit or merged pull request.
-2. Create a new rollback branch from `origin/main`.
-3. Revert the bad commit with `git revert <commit>` rather than resetting shared
-   history.
-4. Do not delete runtime SQLite databases or JSON data files as part of rollback.
-5. Restart the service and rerun the same checks used for the original change.
-6. If Apple Health sync was affected, verify:
-   - `/api/apple-health/sync` rejects missing or invalid tokens.
-   - `/api/apple-health/sync/status` remains auth-gated.
-   - `/api/apple-health/sync/setup-url` still emits the configured public base
-     URL only through the owner-auth setup route.
-7. If WHOOP or Open Wearables sync was affected, verify:
-   - WHOOP OAuth start reports `missing_whoop_config` when local client config
-     is absent.
-   - WHOOP sync/import/delete/disconnect routes are auth and browser-mutation
-     gated.
-   - WHOOP backup export contains normalized `whoop_daily_facts` only, not token
-     material or raw provider payloads.
-   - `/api/health/sync` returns redacted Open Wearables metadata only and does
-     not expose upstream payloads or exception text.
+Deploy a recorded commit that was tested first, never "whatever main is now".
+
+1. Run the checks above on `<sha>`.
+2. On the host: `git fetch origin`, confirm `git status --porcelain` is clean (data
+   files are ignored), then `git checkout --detach <sha>`. Print `git rev-parse
+   HEAD` into the deploy log and keep the previous SHA.
+3. Refresh dependencies: `pip install -r requirements.txt`.
+4. Restart: `launchctl kickstart -k gui/$(id -u)/com.fitness-dashboard`.
+5. Verify the Open Wearables path:
+   - the app log shows the startup banner and no `Traceback`;
+   - `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5050/login` returns 200;
+   - after signing in, the dashboard shows the `Sources:` line naming the
+     providers, History lists workouts, and `/api/freshness` reports
+     `open_wearables` as `fresh` and `wearable_facts` with a recent
+     `last_data_point`;
+   - `POST /api/open-wearables/check-sync` returns redacted metadata only and does
+     not expose upstream payloads or exception text;
+   - `POST /api/apple-health/sync` is rejected (it no longer exists);
    - Open Wearables provider pairing refuses cloud providers whose connector
-     credentials are missing or placeholder values.
+     credentials are missing or placeholder values;
    - Open Wearables phone health sources create invitation codes through
      `/api/open-wearables/mobile-invite/<provider>` and return a phone-usable
      hub URL without exposing the hub secret.
 
-## Apple Health Bridge
+Rollback: `git checkout --detach <previous sha>`, restart, and rerun the same
+checks. Do not reset shared history and do not delete runtime SQLite databases
+or JSON data files; no release changes a schema or deletes rows, and data written
+after the deploy is kept.
 
-Apple Health remains a Health Auto Export or Shortcuts-style bridge into the
-backend. The public URL comes from:
+## Wearable Data Sources
 
-```bash
-FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
-```
-
-Use `APPLE_HEALTH_WEBHOOK_URL` only for an intentionally different public sync
-endpoint. Do not hardcode a personal Tailscale host in committed docs or config.
-The setup route appends the configured `HEALTH_SYNC_TOKEN` to the endpoint.
-
-## WHOOP And Open Wearables
-
-WHOOP is the durable local-first source for WHOOP recovery-aware behavior. Keep
-the client ID in a local `.whoop-client-id` file or `WHOOP_CLIENT_ID_FILE`, keep
-the client secret in macOS Keychain service
-`fitness-dashboard-whoop-client-secret`, and keep access/refresh material in the
-protected material store. Do not place those values in the repo, docs, logs,
-screenshots, PR text, or Linear comments.
+WHOOP, Oura and Apple Health arrive only through the Open Wearables hub and are
+stored as normalized facts in `wearable_facts.sqlite3`. The old direct files
+(`oura_daily.sqlite3`, `whoop.sqlite3`, `apple_health_sync.db`, `.whoop-*`,
+`.health-sync-token`, `.apple-health-first-sync`) are no longer read; archive
+them outside Git before removing them. The WHOOP client secret stays in the
+Open Wearables sidecar env, never in this repo, docs, logs, screenshots, PR text
+or Linear comments.
 
 Open Wearables setup is app-first. The Settings flow should prepare the local
 hub profile through `/api/open-wearables/setup/bootstrap` when the local sidecar
@@ -155,10 +151,8 @@ env is available. The default sidecar env path is:
 ```
 
 Use `OW_SIDECAR_ENV_PATH` only when the Open Wearables checkout stores that file
-elsewhere. The web app may copy local WHOOP connector credentials into the
-Open Wearables sidecar env when they are available and the Open Wearables env
-still has placeholder values. If that changes the sidecar env, restart the Open
-Wearables hub before testing provider sign-in.
+elsewhere. If the sidecar env changes, restart the Open Wearables hub before
+testing provider sign-in.
 
 Cloud providers such as Oura, Garmin, Strava, Fitbit, Polar, Suunto, and
 Ultrahuman must stay in owner-setup state until their Open Wearables connector
@@ -167,7 +161,7 @@ acceptable setup screen. Apple Health, Samsung Health, and Google Health Connect
 are phone health-source flows; verify that they create an Open Wearables
 invitation code instead of opening a provider website.
 
-Open Wearables remains a best-effort local bridge. Its `/api/health/sync`
+Open Wearables remains a best-effort local bridge. Its `/api/open-wearables/check-sync`
 and `/api/open-wearables/sync` responses are intentionally metadata-only. Treat
 any change that returns raw Open Wearables data, hub secrets, token names, or raw
 exception text as a privacy regression unless a future issue explicitly changes

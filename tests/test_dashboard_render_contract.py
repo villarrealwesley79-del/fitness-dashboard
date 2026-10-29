@@ -152,7 +152,7 @@ function element() { return { textContent: '', innerHTML: '', appendChild() {} }
 sandbox.elements['insights-list'] = element();
 let insightCall = 0;
 sandbox.__fitSet.getHistory(async () => ({ workouts: [] }));
-sandbox.__fitSet.getAppleHealthWorkouts(async () => []);
+sandbox.__fitSet.getOpenWearablesWorkouts(async () => []);
 sandbox.__fitSet.renderMuscleRecovery(async () => {});
 sandbox.__fitSet.donutChart(() => {});
 sandbox.__fitSet.getInsights(async () => (++insightCall === 1 ? { insights: [] } : { insights: { malformed: true } }));
@@ -164,7 +164,7 @@ await e.renderStats();
 const malformed = sandbox.elements['insights-list'].innerHTML;
 process.stdout.write(JSON.stringify({ empty, malformed }));
 """,
-        mocks=["getHistory", "getAppleHealthWorkouts", "renderMuscleRecovery", "donutChart", "getInsights"],
+        mocks=["getHistory", "getOpenWearablesWorkouts", "renderMuscleRecovery", "donutChart", "getInsights"],
     )
     assert output == {
         "empty": '<div class="empty">Log a few workouts to start tracking progress.</div>',
@@ -187,7 +187,7 @@ const missing = { status: 'missing' };
 const paint = (openWearablesUsed) => {
   e.state.oura = null; e.state.ouraSleep = null;
   e.state.dashboard = {
-    freshness: { wearable_facts: missing, apple_health: missing },
+    freshness: { wearable_facts: missing },
     recommendation_sources: { open_wearables: { used_for_recommendation: openWearablesUsed } },
   };
   e.state.reco = { recommendation: 'strength', reasoning: 'WHOOP recovery 80' };

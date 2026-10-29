@@ -20,7 +20,6 @@ def fitness_app(monkeypatch):
     original_workouts = list(module.WORKOUTS)
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     module.WORKOUTS.clear()
-    monkeypatch.setattr(module, "_load_apple_health_recommendation_workouts", lambda **_kwargs: [])
     yield module
     module.WORKOUTS[:] = original_workouts
     module.app.config.update(LOGIN_DISABLED=False)
@@ -64,23 +63,6 @@ def _normalized_workout(*, max_hr=176):
         "avg_heart_rate": 148,
         "max_heart_rate": max_hr,
         "notes": "Steady aerobic run",
-    }
-
-
-def _apple_health_workout(*, start="2026-07-12T07:00:00-05:00", avg_hr=None):
-    return {
-        "id": "apple-health:synthetic-id",
-        "date": "2026-07-12",
-        "created_at": start,
-        "session_type": "Running",
-        "duration_minutes": 42,
-        "avg_heart_rate": avg_hr,
-        "unrelated": "preserve-me",
-        "source": "apple_health",
-        "apple_health": {
-            "activity_type": "Running",
-            "start": start,
-        },
     }
 
 

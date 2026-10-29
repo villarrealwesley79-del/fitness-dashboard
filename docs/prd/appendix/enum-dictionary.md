@@ -231,20 +231,6 @@ Wearable fact store:
 | `freshness` default | `unknown` | Default freshness on wearable daily fact. | `wearable_fact_store.py:27` |
 | `profile_key` default | `1` | Single-owner profile partition used in wearable fact tables. | `wearable_fact_store.py:84` |
 
-## Apple Health And HealthKit
-
-| Value | Meaning | Provenance |
-| --- | --- | --- |
-| `HEALTH_DIR` | `~/Documents/Health` | Legacy Apple Health export directory. | `apple_health_parser.py:25`, `health_ingest.py:20` |
-| `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | Public URL source for Apple setup URL and origin checks. | `apple_health_parser.py:26`, `runtime_config.py:12`, `auth.py:385` |
-| `APPLE_HEALTH_WEBHOOK_URL` | Optional explicit Apple sync endpoint override. | `apple_health_parser.py:27` |
-| `APPLE_HEALTH_SYNC_DB` | Optional sync DB path override; default `apple_health_sync.db`. | `apple_health_parser.py:28` |
-| `HEALTH_SYNC_TOKEN` | Required shared token for `/api/apple-health/sync`; auto-provisioned to `.health-sync-token` if absent. | `apple_health_parser.py:608` |
-| HAE metric map | `step_count/steps -> steps`, `active_energy/active_energy_burned -> active_energy`, `resting_heart_rate/heart_rate -> heart_rate`, `heart_rate_variability -> hrv`, `sleep_analysis/sleep -> sleep` | `apple_health_parser.py:634` |
-| Sync record types | `workouts`, `heart_rate`, `hrv`, `sleep`, `steps`, `active_energy` | `apple_health_parser.py:815` |
-| Sync source | `health_auto_export` | Stored source for webhook rows/events. | `apple_health_parser.py:817` |
-| Activity map examples | `Walking`, `Running`, `Cycling`, `Hiking`, `Traditional Strength Training`, `Swimming`, `Yoga`, `Elliptical`, `Stair Climbing`, `Core Training`, `Functional Strength Training` | `apple_health_parser.py:30`, `health_ingest.py:45` |
-
 ## AI Coach, LM Studio, Vision
 
 | Value | Meaning | Provenance |
@@ -284,9 +270,8 @@ Wearable fact store:
 | CSRF header | `X-Requested-With: XMLHttpRequest` | Required for mutating browser API calls unless same-origin/form token path applies. | `auth.py:55` |
 | CSRF form field | `csrf_token` | Form-based CSRF token name. | `auth.py:57` |
 | CSRF mutating methods | `POST`, `PUT`, `PATCH`, `DELETE` | Methods checked by CSRF guard. | `auth.py:59` |
-| CSRF exempt paths | `/api/apple-health/sync` | External token-authenticated path. | `auth.py:60` |
 | Password hash method | `scrypt:32768:8:1` | Current password hash method; legacy SHA-256 hashes are upgraded after successful login. | `auth.py:66` |
-| Public prefixes | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/api/apple-health/sync` | Paths exempt from login guard. | `auth.py:342` |
+| Public prefixes | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml` | Paths exempt from login guard. | `auth.py:342` |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Defaults true; when true, only owner user id can access protected routes. | `auth.py:228` |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | Optional explicit owner id. | `auth.py:238` |
 | `FITNESS_DASHBOARD_LOCAL_QA_ENABLED` | Exact `true` opts into one shared agent QA login for local testing only; unset/false removes the designated QA account on restart. Never production. | `auth.py` |

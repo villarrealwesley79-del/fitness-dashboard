@@ -6,7 +6,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS=(
     "scripts/install-launchd-agents.sh"
-    "scripts/check-apple-health-staleness.sh"
     "scripts/worktree-server-guard.sh"
     "scripts/install-worktree-guard.sh"
     ".githooks/pre-push"

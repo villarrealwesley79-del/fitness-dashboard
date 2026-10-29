@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from typing import Iterable
 
 
@@ -27,14 +26,6 @@ SETTINGS_FIELDS = [
     "excluded_exercises",
     "volume_landmarks",
 ]
-
-
-def file_marker(path: str) -> dict:
-    try:
-        stat = os.stat(path)
-        return {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
-    except OSError:
-        return {"path": path, "missing": True}
 
 
 def latest_marker(rows: Iterable[dict] | None) -> str:
@@ -58,15 +49,9 @@ def build_payload(
     open_wearables_configured: bool,
     open_wearables_user_id,
     open_wearables_marker: dict,
-    apple_health_enabled: bool,
-    apple_health_hr_intensity_enabled: bool,
-    apple_health_freshness: tuple,
-    apple_health_sync_db_file: str,
-    apple_health_workout_files: list[str],
     wearable_facts: list[dict] | None,
     readiness: int | None = None,
 ) -> dict:
-    apple_status, apple_last_data, apple_last_sync = apple_health_freshness
     return {
         "auth_scope": auth_scope,
         "day": day,
@@ -89,17 +74,6 @@ def build_payload(
             "configured": open_wearables_configured,
             "user_id": open_wearables_user_id,
             "marker": open_wearables_marker,
-        },
-        "apple_health": {
-            "enabled": apple_health_enabled,
-            "hr_intensity_enabled": apple_health_hr_intensity_enabled,
-            "freshness": {
-                "status": apple_status,
-                "last_data": apple_last_data,
-                "last_sync": apple_last_sync,
-            },
-            "sync_db": file_marker(apple_health_sync_db_file),
-            "workout_files": [file_marker(path) for path in apple_health_workout_files[-3:]],
         },
         # Preferred sleep/recovery/activity facts: a new night or a changed value re-plans.
         "readiness": readiness,

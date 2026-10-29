@@ -53,21 +53,20 @@ backup/restore note because these files may contain the owner's live history.
 
 ## Stale Docs Rule
 
-Docs should describe the current Apple Health architecture as token-gated Health
-Auto Export or Shortcuts-style webhook sync. Any older instruction that implies
-a public untokened webhook, a hardcoded personal Tailscale hostname, or browser
-direct HealthKit access should be updated rather than copied forward.
-
-Native HealthKit work stays behind `docs/APPLE_HEALTH_HELPER_SLA.md`; do not add
-Swift, HealthKit permissions, or native targets unless that trigger is met and
-approved.
+Docs should describe Apple Health data as reaching the app only through Open
+Wearables. The Health Auto Export webhook, its token and the direct Apple Health
+parser were removed; the legacy `apple_health_sync.db`, `.health-sync-token` and
+`.apple-health-first-sync` above may still exist on disk and stay ignored. Any
+older instruction that implies a public webhook, a hardcoded personal Tailscale
+hostname, or browser direct HealthKit access should be updated rather than
+copied forward.
 
 Docs should describe WHOOP data as reaching the app only through Open Wearables
 (facts labelled `provider: whoop, via: open_wearables`). The direct WHOOP
 OAuth/API, CSV import and token store were removed; the legacy `.whoop-*` files
 and `whoop.sqlite3` above may still exist on disk and stay ignored.
 
-Open Wearables docs should describe `/api/health/sync` as a metadata-only local
+Open Wearables docs should describe `/api/open-wearables/check-sync` as a metadata-only local
 bridge response. Do not document it as a raw health export endpoint.
 
 Open Wearables setup docs should describe the web app as the non-technical

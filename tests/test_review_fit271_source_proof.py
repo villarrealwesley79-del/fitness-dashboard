@@ -4,7 +4,7 @@ import pytest
 
 from recommendation_sources import build_recommendation_source_proof
 
-SOURCES = {"open_wearables", "sleep", "recovery", "activity", "apple_health", "weather"}
+SOURCES = {"open_wearables", "sleep", "recovery", "activity", "weather"}
 DOMAINS = {"sleep", "recovery", "activity"}
 DOMAIN_KEYS = {"provider", "via", "date", "freshness", "conflict_state"}
 NODE_KEYS = {"used_for_recommendation", "fields_used", "modifier_applied", "ignored_reason"}
@@ -46,12 +46,6 @@ def test_smart_endpoint_probes_wearable_freshness_once_per_request(isolated_app,
     resp = isolated_app.app.test_client().get("/api/recommendation/smart")
     assert resp.status_code == 200
     assert len(calls) == 1, f"_latest_wearable_fact_freshness ran {len(calls)} times in one request"
-
-
-def test_superseded_source_reports_superseded_reason():
-    proof = _proof({"apple_health": {"status": "fresh", "superseded_by": "whoop"}})
-    assert proof["apple_health"]["used_for_recommendation"] is False
-    assert proof["apple_health"]["ignored_reason"] == "superseded_by_whoop"
 
 
 @pytest.mark.parametrize("status,reason", [("stale", "stale_source"), ("missing", "missing_data")])

@@ -212,24 +212,6 @@ process.stdout.write(JSON.stringify({ requests, opened, pairInFlight: e.state.op
     }
 
 
-def test_open_wearables_replacement_hides_direct_sources_only_when_connected():
-    output = run_app_js(
-        ["applyOpenWearablesDirectSourceVisibility"],
-        _open_wearables_node_script()
-        + """
-['settings-row-apple', 'apple-detail'].forEach((id) => { sandbox.elements[id] = owNode(); });
-const connected = { status: 'connected', providers: [{ id: 'oura' }, { id: 'apple_health' }], replacement_sources: ['oura', 'apple_health'] };
-e.applyOpenWearablesDirectSourceVisibility(connected);
-const replaced = ['settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
-const disconnected = { status: 'blocked', providers: [{ id: 'oura' }, { id: 'apple_health' }], replacement_sources: ['oura', 'apple_health'] };
-e.applyOpenWearablesDirectSourceVisibility(disconnected);
-const fallback = ['settings-row-apple', 'apple-detail'].map((id) => sandbox.elements[id].hidden);
-process.stdout.write(JSON.stringify({ replaced, fallback }));
-""",
-    )
-    assert output == {"replaced": [True, True], "fallback": [False, False]}
-
-
 def test_open_wearables_event_wiring_connects_setup_portal_pair_and_sync_controls():
     output = run_app_js(
         ["wireEvents"],
@@ -263,7 +245,7 @@ def test_history_merges_same_day_strength_sources_once():
         ["mergeStrengthHistorySources"],
         """
 const lifts = [{ date: '2026-07-16', source: 'lifted', canonical_category: 'strength_training', total_sets: 3 }];
-const watch = [{ date: '2026-07-16', source: 'apple_health', canonical_category: 'strength_training', total_sets: 3 }, { date: '2026-07-15', source: 'apple_health', canonical_category: 'strength_training', total_sets: 2 }];
+const watch = [{ date: '2026-07-16', source: 'watch', canonical_category: 'strength_training', total_sets: 3 }, { date: '2026-07-15', source: 'watch', canonical_category: 'strength_training', total_sets: 2 }];
 process.stdout.write(JSON.stringify(e.mergeStrengthHistorySources(lifts, watch)));
 """,
     )

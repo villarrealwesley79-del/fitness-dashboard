@@ -85,7 +85,7 @@ def test_ingest_drops_out_of_range_recovery_scores(tmp_path):
             {"date": (today - timedelta(days=1)).isoformat(), "recovery_score": 55, "source": {"provider": "whoop"}},
         ]}},
         db_file=db_file, profile_key="p", activity_extractor=lambda _p: [],
-        sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        sleep_extractor=lambda _p: None,
     )
     assert count == 1
     facts = hub.recommendation_facts(db_file, "p")
@@ -116,7 +116,7 @@ def test_ingest_drops_boolean_recovery_scores(tmp_path):
             {"date": datetime.now().date().isoformat(), "recovery_score": True, "source": {"provider": "whoop"}},
         ]}},
         db_file=db_file, profile_key="p", activity_extractor=lambda _p: [],
-        sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        sleep_extractor=lambda _p: None,
     )
     assert count == 0
     assert hub.recommendation_facts(db_file, "p") == []

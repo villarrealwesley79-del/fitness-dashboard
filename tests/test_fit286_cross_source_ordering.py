@@ -6,7 +6,6 @@ from test_freshness import _freshness_payload, _stub_smart_recommendation_depend
 
 def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit286-test-secret")
-    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit286-health-token")
     module = importlib.import_module("app")
     monkeypatch.setitem(module.app.config, "TESTING", True)
     monkeypatch.setitem(module.app.config, "LOGIN_DISABLED", True)
@@ -20,7 +19,6 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
         "open_wearables": {"status": "fresh"},
     })
     monkeypatch.setattr(module, "_cached_wttr", lambda *_args, **_kwargs: {"available": False})
-    monkeypatch.setattr(module, "_apple_health_hr_intensity_summary", lambda **_kwargs: {})
     monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
     monkeypatch.setattr(module, "get_current_workout_plan", lambda _user_id: None)
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fit286-fingerprint")
@@ -121,8 +119,6 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     assert reasoning.count(open_wearables_detail) == 1
     assert reasoning.index("Readiness 88") < reasoning.index(open_wearables_detail)
     assert list(payload["recommendation_sources"]) == [
-        "load_source",
-        "load_source_summary_hidden",
         "open_wearables",
         "source_proof",
         "wearable_sources",

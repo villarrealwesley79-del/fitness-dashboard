@@ -20,7 +20,6 @@ import os
 import socket
 import sqlite3
 import hashlib
-import glob
 import html
 import math
 import urllib.request
@@ -98,19 +97,6 @@ from auth import (
     remember_trusted_no_login_oauth_state,
 )
 init_auth(app)
-
-# ── Health route registration (Apple Health + HealthKit ingest) ──
-try:
-    from health_ingest import register_health_routes
-    register_health_routes(app)
-except Exception as _e:
-    print(f"WARN: health_ingest routes not registered: {_e}")
-
-try:
-    from apple_health_parser import register_apple_health_routes
-    register_apple_health_routes(app)
-except Exception as _e:
-    print(f"WARN: apple_health_parser routes not registered: {_e}")
 
 # ==================== DATA PERSISTENCE ====================
 # Store runtime data under DATA_DIR when configured, otherwise next to the app.
@@ -1213,234 +1199,6 @@ def _fit95_number(value, default=0.0):
         return default
 
 
-def _apple_health_recommendation_enabled():
-    # Tests should not read the owner's real Apple Health DB unless the test
-    # explicitly points APPLE_HEALTH_SYNC_DB at an isolated fixture.
-    if app.config.get("TESTING") and not os.environ.get("APPLE_HEALTH_SYNC_DB"):
-        return False
-    return True
-
-
-APPLE_HEALTH_WORKOUT_HR_INTENSITY_ENV = "APPLE_HEALTH_WORKOUT_HR_INTENSITY"
-APPLE_HEALTH_WORKOUT_HR_MIN = 30
-APPLE_HEALTH_WORKOUT_HR_MAX = 230
-
-
-def _apple_health_hr_intensity_enabled():
-    value = os.environ.get(APPLE_HEALTH_WORKOUT_HR_INTENSITY_ENV, "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _apple_health_avg_heart_rate(row):
-    if not isinstance(row, dict):
-        return None
-    value = row.get("avg_heart_rate")
-    if value is None:
-        value = row.get("avgHeartRate")
-    if isinstance(value, dict):
-        value = (
-            value.get("avg")
-            or value.get("average")
-            or value.get("qty")
-            or value.get("value")
-        )
-    avg_hr = _fit95_number(value)
-    if avg_hr < APPLE_HEALTH_WORKOUT_HR_MIN or avg_hr > APPLE_HEALTH_WORKOUT_HR_MAX:
-        return None
-    return avg_hr
-
-
-def _apple_health_intensity_from_avg_hr(avg_hr):
-    if avg_hr is None:
-        return None
-    if avg_hr >= 170:
-        return 8
-    if avg_hr >= 150:
-        return 7
-    if avg_hr >= 120:
-        return 6
-    return 5
-
-
-def _apple_health_duration_minutes(row):
-    for key in ("duration_minutes", "duration_min"):
-        value = row.get(key)
-        if value is not None:
-            return _fit95_number(value)
-    duration_sec = row.get("duration_sec")
-    if duration_sec is not None:
-        return round(_fit95_number(duration_sec) / 60, 1)
-    duration = row.get("duration")
-    if duration is not None:
-        return round(_fit95_number(duration) / 60, 1)
-    return 0.0
-
-
-def _apple_health_activity(row):
-    activity = (
-        row.get("activity_type")
-        or row.get("activity")
-        or row.get("type")
-        or row.get("workoutActivityType")
-        or row.get("name")
-        or "Other"
-    )
-    try:
-        from apple_health_parser import ACTIVITY_MAP
-        return ACTIVITY_MAP.get(int(activity), str(activity).strip())
-    except (ImportError, TypeError, ValueError):
-        return str(activity).strip()
-
-
-def _ignore_apple_health_workout(row):
-    return _apple_health_activity(row).strip().lower() == "other"
-
-
-def _apple_health_start_iso(row):
-    return (
-        row.get("startDate")
-        or row.get("start")
-        or row.get("start_time")
-        or row.get("created_at")
-        or ""
-    )
-
-
-def _normalise_apple_health_muscle_groups(row):
-    groups = row.get("muscle_groups") or row.get("muscles") or []
-    if isinstance(groups, dict):
-        groups = [
-            {"muscle": muscle, **(data if isinstance(data, dict) else {})}
-            for muscle, data in groups.items()
-        ]
-    exercises = []
-    for group in groups if isinstance(groups, list) else []:
-        if not isinstance(group, dict):
-            continue
-        muscle = (group.get("muscle") or group.get("muscle_group") or group.get("name") or "").strip().lower()
-        if not muscle:
-            continue
-        sets_count = max(1, int(round(_fit95_number(group.get("sets") or group.get("set_count"), 1))))
-        volume_load = _fit95_number(group.get("volume_load") or group.get("volume") or group.get("load"))
-        weight = volume_load / sets_count if volume_load > 0 else 0
-        exercises.append({
-            "machine": "Apple Health Strength",
-            "muscle_group": muscle,
-            "sets": [
-                {"set_number": idx + 1, "weight_lbs": weight, "reps": 1}
-                for idx in range(sets_count)
-            ],
-        })
-    return exercises
-
-
-def _apple_health_exercise_volume_load(exercises):
-    volume_load = 0.0
-    for exercise in exercises:
-        for set_row in exercise.get("sets") or []:
-            volume_load += _fit95_number(set_row.get("weight_lbs")) * _fit95_number(set_row.get("reps"))
-    return volume_load
-
-
-def _apple_health_recommendation_load(row, exercises, duration_minutes):
-    volume_load = _apple_health_exercise_volume_load(exercises)
-    if volume_load > 0:
-        return volume_load
-    intensity = _fit95_number(row.get("intensity"), 1.0)
-    if intensity > 10:
-        intensity = intensity / 10
-    hr_intensity = _apple_health_intensity_from_avg_hr(_apple_health_avg_heart_rate(row))
-    if _apple_health_hr_intensity_enabled() and hr_intensity is not None:
-        intensity = max(intensity, hr_intensity)
-    intensity = min(10.0, intensity)
-    return duration_minutes * max(1.0, intensity)
-
-
-def _apple_health_base_intensity(row):
-    intensity = _fit95_number(row.get("intensity"), 1.0)
-    if intensity > 10:
-        intensity = intensity / 10
-    return min(10.0, intensity)
-
-
-def _normalise_apple_health_workout(row):
-    if not isinstance(row, dict):
-        return None
-    if _ignore_apple_health_workout(row):
-        return None
-    start_iso = _apple_health_start_iso(row)
-    date_s = _local_date_from_iso(start_iso) or row.get("date")
-    if not date_s:
-        return None
-    duration_minutes = _apple_health_duration_minutes(row)
-    activity = _apple_health_activity(row)
-    exercises = _normalise_apple_health_muscle_groups(row)
-    volume_load = _apple_health_exercise_volume_load(exercises)
-    avg_hr = _apple_health_avg_heart_rate(row)
-    hr_intensity = _apple_health_intensity_from_avg_hr(avg_hr)
-    hr_intensity_applied = (
-        _apple_health_hr_intensity_enabled()
-        and hr_intensity is not None
-        and hr_intensity > max(1.0, _apple_health_base_intensity(row))
-        and volume_load <= 0
-    )
-    load = _apple_health_recommendation_load(row, exercises, duration_minutes)
-    return normalize_history_item({
-        "id": f"apple-health:{start_iso or date_s}:{activity}:{duration_minutes}",
-        "date": date_s,
-        "created_at": _local_iso_from_iso(start_iso) or start_iso,
-        "session_type": activity,
-        "duration_minutes": duration_minutes,
-        "exercises": exercises,
-        "avg_heart_rate": avg_hr,
-        "recommendation_load": load,
-        "source": "apple_health",
-        "apple_health": {
-            "activity_type": activity,
-            "start": start_iso,
-            "duration_minutes": duration_minutes,
-            "avg_heart_rate": avg_hr,
-            "hr_intensity": hr_intensity,
-            "hr_intensity_applied": hr_intensity_applied,
-        },
-    }, source="apple_health")
-
-
-def _load_apple_health_recommendation_workouts(days=28):
-    if not _apple_health_recommendation_enabled():
-        return []
-    try:
-        from apple_health_parser import _get_sync_records, parse_workouts as _parse_ah_file_workouts
-    except Exception:
-        return []
-    rows = []
-    try:
-        rows.extend(_parse_ah_file_workouts() or [])
-    except Exception:
-        pass
-    try:
-        rows.extend(_get_sync_records("workouts", days) or [])
-    except Exception:
-        pass
-    normalised = []
-    for row in rows:
-        workout = _normalise_apple_health_workout(row)
-        if workout:
-            normalised.append(workout)
-    return normalised
-
-
-def _workout_start_dt(workout):
-    for key in ("startDate", "start", "start_time", "created_at"):
-        dt = _parse_iso_to_local_datetime(str(workout.get(key) or ""))
-        if dt is not None:
-            return dt
-    apple_health = workout.get("apple_health") if isinstance(workout, dict) else None
-    if isinstance(apple_health, dict):
-        return _parse_iso_to_local_datetime(str(apple_health.get("start") or ""))
-    return None
-
-
 def _workout_duration_minutes(workout):
     duration = _fit95_number(workout.get("duration_minutes") or workout.get("duration_min"))
     if duration:
@@ -1449,144 +1207,6 @@ def _workout_duration_minutes(workout):
     if isinstance(cardio, dict):
         return _fit95_number(cardio.get("duration_minutes") or cardio.get("duration_min"))
     return 0.0
-
-
-def _workout_activity_for_dedupe(workout):
-    if not isinstance(workout, dict):
-        return ""
-    cardio = workout.get("cardio")
-    if isinstance(cardio, dict):
-        value = cardio.get("activity_type") or cardio.get("type")
-        if value:
-            return _canonical_cardio_fatigue_type(value)
-    apple_health = workout.get("apple_health")
-    if isinstance(apple_health, dict):
-        value = apple_health.get("activity_type")
-        if value:
-            return _canonical_cardio_fatigue_type(value)
-    value = workout.get("activity_type") or workout.get("type") or workout.get("session_type")
-    return _canonical_cardio_fatigue_type(value)
-
-
-def _workout_has_explicit_start(workout):
-    if not isinstance(workout, dict):
-        return False
-    if any(workout.get(key) for key in ("startDate", "start", "start_time")):
-        return True
-    apple_health = workout.get("apple_health")
-    return isinstance(apple_health, dict) and bool(apple_health.get("start"))
-
-
-def _same_date_activity_for_recommendation_dedupe(left, right):
-    if not isinstance(left, dict) or not isinstance(right, dict):
-        return False
-    left_activity = _workout_activity_for_dedupe(left)
-    right_activity = _workout_activity_for_dedupe(right)
-    return (
-        left.get("date") == right.get("date")
-        and bool(left_activity)
-        and left_activity == right_activity
-    )
-
-
-def _is_same_workout_for_recommendations(left, right):
-    left_start = _workout_start_dt(left)
-    right_start = _workout_start_dt(right)
-    duration_delta = abs(_workout_duration_minutes(left) - _workout_duration_minutes(right))
-    if duration_delta > 5:
-        return False
-    left_activity = _workout_activity_for_dedupe(left)
-    right_activity = _workout_activity_for_dedupe(right)
-    if left_activity and right_activity and left_activity != right_activity:
-        return False
-    if left_start is None or right_start is None:
-        return _same_date_activity_for_recommendation_dedupe(left, right)
-    start_delta = abs((left_start - right_start).total_seconds())
-    if start_delta <= 5 * 60:
-        return True
-    if not (_workout_has_explicit_start(left) and _workout_has_explicit_start(right)):
-        return _same_date_activity_for_recommendation_dedupe(left, right)
-    return False
-
-
-def _recommendation_workouts_with_apple_health(workouts, days=28):
-    merged = list(workouts or [])
-    for apple_workout in _load_apple_health_recommendation_workouts(days=days):
-        if not any(_is_same_workout_for_recommendations(existing, apple_workout) for existing in merged):
-            merged.append(apple_workout)
-    return merged
-
-
-def _cardio_data_with_apple_health(cardio_data, workouts=None):
-    merged = list(cardio_data or [])
-
-    def same_date_cardio(existing, apple_workout):
-        if not isinstance(existing, dict):
-            return False
-        if _workout_start_dt(existing) is not None:
-            return False
-        if existing.get("date") != apple_workout.get("date"):
-            return False
-        existing_activity = _canonical_cardio_fatigue_type(existing.get("activity_type") or existing.get("type"))
-        apple_activity = _canonical_cardio_fatigue_type((apple_workout.get("apple_health") or {}).get("activity_type") or apple_workout.get("session_type"))
-        if existing_activity != apple_activity:
-            return False
-        return abs(_workout_duration_minutes(existing) - _workout_duration_minutes(apple_workout)) <= 5
-
-    for workout in _recommendation_workouts_with_apple_health(workouts if workouts is not None else WORKOUTS):
-        if workout.get("source") != "apple_health":
-            continue
-        activity = ((workout.get("apple_health") or {}).get("activity_type") or workout.get("session_type") or "").strip()
-        if not activity:
-            continue
-        if any(
-            _is_same_workout_for_recommendations(existing, workout) or same_date_cardio(existing, workout)
-            for existing in merged
-            if isinstance(existing, dict)
-        ):
-            continue
-        apple_health = workout.get("apple_health") or {}
-        hr_intensity = apple_health.get("hr_intensity") if isinstance(apple_health, dict) else None
-        intensity = 5
-        if (
-            _apple_health_hr_intensity_enabled()
-            and isinstance(apple_health, dict)
-            and apple_health.get("hr_intensity_applied")
-            and hr_intensity is not None
-        ):
-            intensity = max(intensity, min(10, _fit95_number(hr_intensity, 5)))
-        merged.append({
-            "date": workout.get("date"),
-            "activity_type": activity,
-            "duration_minutes": workout.get("duration_minutes") or 0,
-            "intensity": intensity,
-            "avg_heart_rate": workout.get("avg_heart_rate"),
-            "source": "apple_health",
-            "created_at": workout.get("created_at"),
-        })
-    return merged
-
-
-def _apple_health_hr_intensity_summary(days=7):
-    if not _apple_health_hr_intensity_enabled():
-        return {"applied_count": 0}
-    applied = []
-    for workout in _load_apple_health_recommendation_workouts(days=days):
-        apple_health = workout.get("apple_health") or {}
-        if not isinstance(apple_health, dict) or not apple_health.get("hr_intensity_applied"):
-            continue
-        applied.append({
-            "avg_heart_rate": workout.get("avg_heart_rate"),
-            "hr_intensity": apple_health.get("hr_intensity"),
-        })
-    if not applied:
-        return {"applied_count": 0}
-    max_item = max(applied, key=lambda item: _fit95_number(item.get("avg_heart_rate")))
-    return {
-        "applied_count": len(applied),
-        "max_avg_heart_rate": max_item.get("avg_heart_rate"),
-        "max_hr_intensity": max_item.get("hr_intensity"),
-    }
 
 
 def _current_data_user_id():
@@ -1796,7 +1416,6 @@ def calculate_progression_status(workouts):
 
 def calculate_volume(workouts, weeks=4):
     """Calculate volume load per muscle group over recent weeks."""
-    workouts = _recommendation_workouts_with_apple_health(workouts, days=weeks * 7)
     cutoff = datetime.now() - timedelta(days=weeks * 7)
     muscle_volume = {}
 
@@ -2198,7 +1817,6 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     """
     if cardio_data is None:
         cardio_data = []
-    cardio_data = _cardio_data_with_apple_health(cardio_data, workouts)
 
     recent_soreness = filter_recent_soreness(soreness_data, hours=24)
     muscle_soreness = [s for s in recent_soreness if s.get("muscle") == muscle]
@@ -3714,17 +3332,15 @@ def _parse_iso_date_or_datetime(s: str | None):
             return None
 
 
-def calculate_acwr(workouts: list, *, include_apple_health: bool = True) -> dict:
+def calculate_acwr(workouts: list) -> dict:
     """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
 
     Load definition: sum over all sets of (1 * reps * weight), plus
-    duration-derived load for cardio-style app and Apple Health workouts.
+    duration-derived load for cardio-style app workouts.
     Acute: sum of last 7 days.
     Chronic: average 7-day load over the last 28 days (uses available days if < 28).
     """
     today = datetime.now().date()
-    if include_apple_health:
-        workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
     if not workouts:
         return {
             "acwr": 0.0,
@@ -4485,11 +4101,6 @@ def _workout_recommendation_fingerprint():
         for _metric, fact in sorted(by_metric.items())
     ] + _hrv_facts()
 
-    health_workout_files = sorted(
-        glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
-    )
-    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness()
-
     return workout_recommendation_fingerprint.build_fingerprint(
         auth_scope=_current_auth_scope(),
         day=today_s,
@@ -4502,11 +4113,6 @@ def _workout_recommendation_fingerprint():
         open_wearables_configured=_open_wearables_workout_inputs_live(),
         open_wearables_user_id=_open_wearables_user_id(),
         open_wearables_marker=_open_wearables_recommendation_marker(),
-        apple_health_enabled=_apple_health_recommendation_enabled(),
-        apple_health_hr_intensity_enabled=_apple_health_hr_intensity_enabled(),
-        apple_health_freshness=(apple_status, apple_last_data, apple_last_sync),
-        apple_health_sync_db_file=_apple_health_sync_db_file(),
-        apple_health_workout_files=health_workout_files,
         wearable_facts=wearable_facts,
         readiness=_readiness_with_basis()[0],
     )
@@ -7728,14 +7334,11 @@ def add_cors_headers(response):
     return response
 
 
-@app.route('/api/health/sync', methods=['POST'])
 @app.route('/api/open-wearables/check-sync', methods=['POST'])
 def health_sync():
     """Fetch redacted Open Wearables metadata without writing wearable facts.
 
-    ``/api/health/sync`` is retained for compatibility. New metadata-check
-    callers should use ``/api/open-wearables/check-sync``; durable sync callers
-    must use ``/api/open-wearables/sync``. This is not an Apple Health webhook.
+    Durable sync callers must use ``/api/open-wearables/sync``.
     """
     try:
         data = fetch_open_wearables_data()
@@ -7761,11 +7364,6 @@ def _open_wearables_public_status(providers=None, error_code=None, provider_acti
         providers=providers or [],
         error_code=error_code,
     ).public_dict()
-    replacement_source_dates = _open_wearables_replacement_source_dates()
-    replacement_sources = sorted(replacement_source_dates)
-    payload["facts_ready"] = bool(replacement_sources)
-    payload["replacement_sources"] = replacement_sources
-    payload["replacement_source_dates"] = replacement_source_dates
     if (
         payload.get("auth_configured")
         and payload.get("user_mapped")
@@ -7821,176 +7419,6 @@ def _open_wearables_status_source(status_payload=None):
     return open_wearables_hub.status_source(status_payload)
 
 
-_OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS = {
-    "apple_health": {"apple", "apple_health", "healthkit"},
-}
-
-
-def _normalize_open_wearables_provider_id(value):
-    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
-
-
-def _open_wearables_active_provider_ids(open_wearables_source):
-    if not isinstance(open_wearables_source, dict):
-        return set()
-    connected = bool(open_wearables_source.get("connected")) or open_wearables_source.get("hub_status") == "connected"
-    if not connected:
-        return set()
-    providers = open_wearables_source.get("providers")
-    if not isinstance(providers, list):
-        return set()
-    active_states = {"active", "connected", "enabled", "ok", "ready"}
-    provider_ids = set()
-    for provider in providers:
-        if not isinstance(provider, dict):
-            continue
-        if provider.get("stale") or provider.get("error_code"):
-            continue
-        state = _normalize_open_wearables_provider_id(provider.get("state") or provider.get("status") or "connected")
-        if state not in active_states:
-            continue
-        provider_ids.add(_normalize_open_wearables_provider_id(
-            provider.get("provider_id")
-            or provider.get("provider")
-            or provider.get("id")
-            or provider.get("name")
-        ))
-    return {provider_id for provider_id in provider_ids if provider_id}
-
-
-def _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
-    replacement_sources = set((open_wearables_source or {}).get("replacement_sources") or [])
-    if source_key not in replacement_sources:
-        return False
-    provider_ids = _open_wearables_active_provider_ids(open_wearables_source)
-    return bool(provider_ids & _OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS.get(source_key, set()))
-
-
-def _open_wearables_replacement_source_dates(now=None):
-    try:
-        stored_sources = list_wearable_sources(
-            WEARABLE_FACTS_DB_FILE,
-            profile_key=_open_wearables_profile_key(),
-        )
-    except Exception:
-        return {}
-    now_dt = now or datetime.now()
-    if now_dt.tzinfo is None:
-        now_dt = now_dt.astimezone()
-    local_now_date = now_dt.date()
-    now_dt = now_dt.astimezone(timezone.utc)
-    for source in stored_sources:
-        if source.get("provider_id") != "open_wearables":
-            continue
-        if source.get("status") not in {"fresh", "aging"}:
-            return {}
-        sync_dt = _parse_iso_date_or_datetime(source.get("last_sync_attempt"))
-        if not sync_dt:
-            return {}
-        if sync_dt.tzinfo is None:
-            sync_dt = sync_dt.astimezone()
-        sync_dt = sync_dt.astimezone(timezone.utc)
-        age_days = (now_dt - sync_dt).total_seconds() / 86400.0
-        if age_days < 0 or age_days > 2:
-            return {}
-        capabilities = source.get("capabilities") if isinstance(source.get("capabilities"), dict) else {}
-        stored_replacement_dates = capabilities.get("replacement_source_dates")
-        if not isinstance(stored_replacement_dates, dict):
-            return {}
-        valid_sources = set(_OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS)
-        replacement_source_dates = {}
-        for source_key, date_value in stored_replacement_dates.items():
-            source_key = str(source_key or "").strip()
-            if source_key not in valid_sources:
-                continue
-            data_dt = _parse_iso_date_or_datetime(str(date_value or ""))
-            if not data_dt:
-                continue
-            data_age_days = (local_now_date - data_dt.date()).days
-            if 0 <= data_age_days <= 2:
-                replacement_source_dates[source_key] = data_dt.date().isoformat()
-        return replacement_source_dates
-    return {}
-
-
-def _open_wearables_replacement_sources(now=None):
-    return sorted(_open_wearables_replacement_source_dates(now=now))
-
-
-def _open_wearables_has_replacement_facts(now=None):
-    return bool(_open_wearables_replacement_sources(now=now))
-
-
-def _open_wearables_payload_rows(value):
-    if isinstance(value, dict):
-        rows = (
-            value.get("data")
-            or value.get("events")
-            or value.get("summaries")
-            or value.get("days")
-            or value.get("records")
-            or value.get("samples")
-            or value.get("items")
-            or []
-        )
-        if not rows and value.get("event"):
-            rows = [value.get("event")]
-        if not rows and value.get("summary"):
-            rows = [value.get("summary")]
-    elif isinstance(value, list):
-        rows = value
-    else:
-        rows = []
-    return rows if isinstance(rows, list) else []
-
-
-def _open_wearables_row_provider(row):
-    if not isinstance(row, dict):
-        return ""
-    source = row.get("source") if isinstance(row.get("source"), dict) else {}
-    return _normalize_open_wearables_provider_id(
-        source.get("provider")
-        or row.get("provider")
-        or row.get("provider_id")
-    )
-
-
-def _open_wearables_row_device(row):
-    if not isinstance(row, dict):
-        return ""
-    source = row.get("source") if isinstance(row.get("source"), dict) else {}
-    return _normalize_open_wearables_provider_id(source.get("device") or row.get("device"))
-
-
-def _open_wearables_row_date(row):
-    if not isinstance(row, dict):
-        return None
-    for key in ("date", "local_date", "day", "summary_date", "end_time", "endTime", "end", "start_time", "startTime", "start", "timestamp", "created_at"):
-        value = row.get(key)
-        if not value:
-            continue
-        dt = _parse_iso_date_or_datetime(str(value))
-        if dt:
-            return dt.date()
-        try:
-            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
-        except Exception:
-            continue
-    return None
-
-
-def _open_wearables_row_replacement_sources(row):
-    replacement_sources = set()
-    provider = _open_wearables_row_provider(row)
-    device = _open_wearables_row_device(row)
-    if provider in {"apple", "apple_health", "healthkit"} or device.startswith(("iphone", "ipad", "watch", "apple_watch")):
-        # Apple Health is a health-store bridge; records often preserve
-        # the originating app as source.provider and the Apple device
-        # as source.device.
-        replacement_sources.add("apple_health")
-    return sorted(replacement_sources)
-
-
 def _store_wearable_facts_from_open_wearables(data):
     return open_wearables_hub.store_wearable_facts(
         data,
@@ -7998,7 +7426,6 @@ def _store_wearable_facts_from_open_wearables(data):
         profile_key=_open_wearables_profile_key(),
         activity_extractor=_extract_open_wearables_activity_summaries,
         sleep_extractor=_extract_open_wearables_main_sleeps,
-        row_replacement_sources=_open_wearables_row_replacement_sources,
     )
 
 
@@ -8025,11 +7452,7 @@ def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearab
         facts=open_wearables_facts,
         modifier=open_wearables_modifier,
     )
-    load_source = "apple_health"  # shortcut: constant until the Apple direct path is removed (PER-1584 W4c)
-    payload = {
-        "open_wearables": open_wearables_source,
-        "load_source": load_source,
-    }
+    payload = {"open_wearables": open_wearables_source}
     if source_inputs is not None:
         payload["source_proof"] = build_recommendation_source_proof(
             freshness=freshness,
@@ -8040,13 +7463,6 @@ def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearab
                 **(source_inputs or {}),
             },
         )
-    apple_status = (freshness.get("apple_health") or {}).get("status")
-    if (
-        load_source == "apple_health"
-        and open_wearables_source.get("used_for_recommendation")
-        and apple_status in {"missing", "stale", "error", "blocked"}
-    ):
-        payload["load_source_summary_hidden"] = True
     return payload
 
 
@@ -8439,23 +7855,7 @@ def wearable_facts_api():
 
 
 def _wearable_sources_payload(freshness):
-    open_wearables_source = _open_wearables_status_source()
-    direct_sources = [
-        {
-            "source": "apple_health",
-            "status": (freshness.get("apple_health") or {}).get("status"),
-            "last_data_point": (freshness.get("apple_health") or {}).get("last_data_point"),
-            "last_sync_attempt": (freshness.get("apple_health") or {}).get("last_sync_attempt"),
-            "score_state": None,
-            "connected": True,
-            "used_for_recommendation": True,
-        },
-    ]
-    return [
-        source
-        for source in direct_sources
-        if not _open_wearables_supersedes_direct_source(source.get("source"), open_wearables_source)
-    ] + [open_wearables_source]
+    return [_open_wearables_status_source()]
 
 
 def _latest_fact_value(facts, metric):
@@ -8703,7 +8103,7 @@ def sleep_summary():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-# ==================== DATA FRESHNESS (wearable facts / Apple Health) ====================
+# ==================== DATA FRESHNESS (wearable facts / Open Wearables) ====================
 #
 # Stale buckets (server-side; the client never does "Nh ago" math):
 #   fresh:   last data point within 24h
@@ -8713,13 +8113,6 @@ def sleep_summary():
 #
 # "Connected" never means "current" — the freshness object is what the dashboard
 # uses to drop confidence and swap the brief to lower-confidence copy.
-
-def _apple_health_sync_db_file():
-    return (
-        os.environ.get("APPLE_HEALTH_SYNC_DB")
-        or data_path("apple_health_sync.db")
-    )
-
 
 _FRESHNESS_AGING_HOURS = 24
 _FRESHNESS_STALE_HOURS = 48
@@ -8759,23 +8152,6 @@ def _latest_wearable_fact_freshness(now=None):
     return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
 
 
-def _latest_apple_health_freshness(now=None):
-    try:
-        conn = sqlite3.connect(_apple_health_sync_db_file())
-        try:
-            data_row = conn.execute("SELECT MAX(record_date) FROM ah_sync_log").fetchone()
-            sync_row = conn.execute("SELECT MAX(created_at) FROM ah_sync_events").fetchone()
-        finally:
-            conn.close()
-    except Exception:
-        return ("missing", None, None)
-    last_data = (data_row or (None,))[0]
-    last_sync = (sync_row or (None,))[0]
-    if not last_data:
-        return ("missing", None, last_sync)
-    return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
-
-
 @app.route('/api/freshness')
 def freshness_only():
     """FIT-16: side-effect-free freshness block for the Settings panel.
@@ -8791,18 +8167,16 @@ def freshness_only():
 
 
 def _compute_data_freshness(now=None):
-    """Per-source freshness: the stored wearable facts, Open Wearables and Apple Health.
+    """Per-source freshness: the stored wearable facts and Open Wearables.
 
     Returns:
         {
           "wearable_facts": {status, last_data_point, last_sync_attempt},
-          "apple_health":   {status, last_data_point, last_sync_attempt},
           "open_wearables": hub connectivity,
         }
     """
     now = now or datetime.now()
     facts_status, facts_last_data, facts_last_sync = _latest_wearable_fact_freshness(now)
-    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
     open_wearables_providers, open_wearables_error = _fetch_open_wearables_provider_statuses()
     open_wearables_status = _open_wearables_public_status(
         providers=open_wearables_providers,
@@ -8820,9 +8194,6 @@ def _compute_data_freshness(now=None):
             "source": "hub",
             "connected": open_wearables_status.get("status") == "connected",
             "providers": open_wearables_status.get("providers") or [],
-            "facts_ready": bool(open_wearables_status.get("facts_ready")),
-            "replacement_sources": open_wearables_status.get("replacement_sources") or [],
-            "replacement_source_dates": open_wearables_status.get("replacement_source_dates") or {},
         },
         "wearable_facts": {
             "status": facts_status,
@@ -8830,56 +8201,27 @@ def _compute_data_freshness(now=None):
             "last_sync_attempt": facts_last_sync,
             "source": "open_wearables",
         },
-        "apple_health": {
-            "status": apple_status,
-            "last_data_point": apple_last_data,
-            "last_sync_attempt": apple_last_sync,
-        },
     }
-    return _open_wearables_adjusted_freshness(freshness)
-
-
-def _open_wearables_adjusted_freshness(freshness):
-    safe = dict(freshness or {})
-    open_wearables_source = safe.get("open_wearables") or {}
-    replacement_source_dates = open_wearables_source.get("replacement_source_dates") or {}
-    for source_key in ("apple_health",):
-        if not _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
-            continue
-        node = dict(safe.get(source_key) or {})
-        node["status"] = "fresh"
-        node["source"] = "open_wearables"
-        node["superseded_by"] = "open_wearables"
-        node["superseded_source"] = source_key
-        if replacement_source_dates.get(source_key):
-            node["last_data_point"] = replacement_source_dates.get(source_key)
-        if open_wearables_source.get("last_sync_attempt"):
-            node["last_sync_attempt"] = open_wearables_source.get("last_sync_attempt")
-        safe[source_key] = node
-    return safe
+    return freshness
 
 
 def _push_alert_preview(now=None):
     """Deterministic, non-sending alert contract for FIT-39."""
     freshness = _compute_data_freshness(now=now)
-    open_wearables_source = freshness.get("open_wearables") or {}
     alerts = []
-    for source_key, label in (("wearable_facts", "Wearable"), ("apple_health", "Apple Health")):
-        source = freshness.get(source_key) or {}
-        if _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
-            continue
-        if source.get("status") in {"aging", "stale", "missing"}:
-            alerts.append({
-                "type": "stale_wearable_data",
-                "source": source_key,
-                "title": f"{label} data needs attention",
-                "body": "Open the app to refresh wearable data before trusting today's recommendation.",
-                "severity": "warning" if source.get("status") == "stale" else "info",
-                "status": source.get("status"),
-                "last_data_point": source.get("last_data_point"),
-                "last_sync_attempt": source.get("last_sync_attempt"),
-                "safety_critical": False,
-            })
+    source = freshness.get("wearable_facts") or {}
+    if source.get("status") in {"aging", "stale", "missing"}:
+        alerts.append({
+            "type": "stale_wearable_data",
+            "source": "wearable_facts",
+            "title": "Wearable data needs attention",
+            "body": "Open the app to refresh wearable data before trusting today's recommendation.",
+            "severity": "warning" if source.get("status") == "stale" else "info",
+            "status": source.get("status"),
+            "last_data_point": source.get("last_data_point"),
+            "last_sync_attempt": source.get("last_sync_attempt"),
+            "safety_critical": False,
+        })
     return {"generated_at": (now or datetime.now()).isoformat(timespec="seconds"), "alerts": alerts}
 
 
@@ -9083,11 +8425,8 @@ def _confidence_level_from(effective_readiness, freshness):
     A stale or fully-missing wearable forces 'low' — we can't claim a confident
     recommendation when the underlying signal is gone.
     """
-    wearable_states = [
-        (freshness.get("wearable_facts") or {}).get("status"),
-        (freshness.get("apple_health") or {}).get("status"),
-    ]
-    wearable_states = [state for state in wearable_states if state is not None]
+    wearable_state = (freshness.get("wearable_facts") or {}).get("status")
+    wearable_states = [wearable_state] if wearable_state is not None else []
     if "stale" in wearable_states:
         return "low"
     if wearable_states and all(s == "missing" for s in wearable_states):
@@ -9281,12 +8620,6 @@ def smart_recommendation_api():
         reason_bits.append(f"Sleep debt {recommendation_sleep_debt.get('debt_minutes')} min ({recommendation_sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
         reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
-    hr_intensity = _apple_health_hr_intensity_summary(days=7)
-    if hr_intensity.get("applied_count"):
-        reason_bits.append(
-            "Apple Health workout HR raised recent cardio load "
-            f"({round(hr_intensity.get('max_avg_heart_rate'))} bpm -> intensity {hr_intensity.get('max_hr_intensity')})"
-        )
     if recent:
         worst = max(recent, key=lambda s: s.get("soreness_level") or 0)
         ts = _parse_soreness_timestamp(worst)
@@ -9400,17 +8733,6 @@ def smart_recommendation_api():
         last_hours_ago=last_hours_ago,
         weather=None,
     )
-    acwr_without_apple_health = calculate_acwr(WORKOUTS, include_apple_health=False)
-    recommendation_without_apple_health, _ = _training_recommendation_from_factors(
-        recommendation_readiness,
-        recovery_bonus=recovery_bonus,
-        hrv_trend=recommendation_hrv_trend,
-        sleep_debt=recommendation_sleep_debt,
-        acwr_data=acwr_without_apple_health,
-        last_completed=last_completed,
-        last_hours_ago=last_hours_ago,
-        weather=weather,
-    )
     hrv_used = (hrv_sample_count >= 4 or recommendation_hrv_trend == "declining") and recommendation_hrv_trend != "unknown"
     domain_fields = {
         "recovery": ["hrv_trend"] if hrv_used else [],
@@ -9450,30 +8772,6 @@ def smart_recommendation_api():
                 domain_fields[domain].append(field)
             if slot.get("provider") != guard_provider:  # same provider: keep its conflict_state
                 domain_sources[domain] = node
-    apple_health_fields = []
-    try:
-        recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)
-    except Exception:
-        recommendation_workouts = list(WORKOUTS or [])
-    apple_health_workouts_used = [
-        workout
-        for workout in recommendation_workouts
-        if isinstance(workout, dict)
-        and workout.get("source") == "apple_health"
-        and (workout_date := _parse_iso_date_or_datetime(workout.get("date"))) is not None
-        and datetime.now().date() - timedelta(days=27)
-        <= workout_date.date()
-        <= datetime.now().date()
-    ]
-    if apple_health_workouts_used:
-        apple_health_fields.append("recent_workout_load")
-    apple_health_hr_used = any(
-        isinstance(workout.get("apple_health"), dict)
-        and workout["apple_health"].get("hr_intensity_applied")
-        for workout in apple_health_workouts_used
-    )
-    if apple_health_hr_used:
-        apple_health_fields.append("workout_avg_heart_rate")
     weather_fields = []
     if weather and weather.get("available"):
         temperature_field = "feelslike_f" if weather.get("feelslike_f") is not None else "temp_f"
@@ -9497,12 +8795,6 @@ def smart_recommendation_api():
             "recovery": wearable_rules["recovery"] or bool(guard_applied & {"recovery_caution", "recovery_deload"}),
             "activity": "activity_caution" in guard_applied,
         },
-        "apple_health_fields": apple_health_fields,
-        "apple_health_modifier_applied": (
-            apple_health_hr_used
-            or recommendation_without_apple_health != factor_recommendation
-        ),
-        "apple_health_used_override": bool(apple_health_fields),
         "weather_fields": weather_fields,
         "weather_status": "fresh" if weather_fields else "missing",
         "weather_modifier_applied": recommendation_without_weather != factor_recommendation,

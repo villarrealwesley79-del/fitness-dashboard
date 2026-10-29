@@ -280,7 +280,6 @@ Advanced analytics reads settings values from `data_settings.json`, especially `
 
 `tests/test_muscle_recovery_performance_debt.py` covers muscle fatigue/readiness effects from recent training debt, overall fatigue, soreness, missed reps, missed sets, incomplete set rows, planned target persistence, and recommendation fallback behavior.
 
-`tests/test_apple_health_recommendation_bridge.py` covers Apple Health contribution to ACWR, cardio fatigue, strength volume/readiness, duplicate app-vs-Apple walk handling, duration normalization, and optional HR-intensity load raising.
 
 `tests/test_vitals_hr_zone_guarded_on_missing_data.py` covers the Vitals UI contract that missing HR data must not render an invented HR-zone subtitle.
 

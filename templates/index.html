@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Fitness Dashboard</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260716-fit392-rpe">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261028-w4c-apple-via-ow">
     <link rel="stylesheet" href="/static/css/app.css?v=20260713-fit233-adaptation-polling">
 </head>
 <body>
@@ -66,7 +66,6 @@
                 </div>
                 <div class="reco-freshness" id="reco-freshness">
                     <span class="state-chip" id="reco-fresh-wearables" data-source="wearable_facts" title="Wearable data freshness">Wearables —</span>
-                    <span class="state-chip" id="reco-fresh-apple" data-source="apple_health" title="Apple Health freshness">Apple —</span>
                 </div>
                 <div class="reco-source-strip" id="reco-source-strip">
                     <div class="reco-source-copy">
@@ -688,53 +687,6 @@
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
                     </div>
                 </div>
-                <div class="settings-row" id="settings-row-apple">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">
-                            <span class="int-dot" id="apple-int-dot"></span>
-                            Apple Health
-                        </span>
-                        <span id="apple-last-export" class="settings-row-detail">—</span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="apple-connect-state" class="state-chip">—</span>
-                        <button id="btn-apple-setup" class="btn btn-ghost btn-sm" type="button">Setup</button>
-                    </div>
-                </div>
-                <!-- FIT-16: Apple Health freshness evidence — distinguishes
-                     last accepted (records actually inserted) from last
-                     attempt (raw HAE webhook hits), surfaces total record
-                     counts, and documents the expected daily cadence. -->
-                <div class="integration-detail" id="apple-detail">
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Last accepted</span>
-                        <span class="detail-value" id="apple-detail-last-sync">—</span>
-                    </div>
-                    <div class="integration-detail-row" id="apple-detail-attempt-row" hidden>
-                        <span class="detail-label">Last attempt</span>
-                        <span class="detail-value" id="apple-detail-last-attempt">—</span>
-                    </div>
-                    <!-- "Data through" is the most recent record_date the
-                         server has — distinct from "Last accepted" (insertion
-                         timestamp) so an HAE replay of an old export can't
-                         masquerade as fresh data. -->
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Data through</span>
-                        <span class="detail-value" id="apple-detail-data-through">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Records</span>
-                        <span class="detail-value" id="apple-detail-records">—</span>
-                    </div>
-                    <div class="integration-detail-row">
-                        <span class="detail-label">Expected</span>
-                        <span class="detail-value">Daily via Health Auto Export</span>
-                    </div>
-                    <div class="integration-detail-row integration-detail-warn" id="apple-detail-stale-row" hidden>
-                        <span class="detail-label">⚠ Stale</span>
-                        <span class="detail-value" id="apple-detail-stale-text">No accepted export in the last 48 hours.</span>
-                    </div>
-                </div>
                 <div class="settings-row">
                     <div class="settings-row-label">
                         <span class="int-dot int-dot-on"></span>
@@ -1079,39 +1031,6 @@
         </div>
     </div>
 
-    <div id="modal-apple" class="modal" role="dialog" aria-modal="true" aria-labelledby="apple-modal-title" hidden>
-        <div class="modal-sheet">
-            <div class="modal-head">
-                <h3 class="modal-title" id="apple-modal-title">Connect Apple Health</h3>
-                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
-            </div>
-            <div class="modal-body">
-                <p class="dim">Apple Health has to push data to this web app. Here's the one-time setup.</p>
-                <ol class="setup-steps">
-                    <li>On your iPhone, install <strong>Health Auto Export – JSON+CSV</strong> from the App Store.</li>
-                    <li>Open it, grant Health permissions, then create two automations under <em>Automations</em> → <em>New Automation</em>.</li>
-                    <li>Automation 1: choose the metrics data type with <strong>Steps, Active Energy, Resting Heart Rate, HRV, Sleep Analysis</strong>.</li>
-                    <li>Automation 2: choose <strong>Workouts</strong>.</li>
-                    <li>For each automation, set Frequency to <em>Daily</em>, Format to <em>JSON</em>, and Destination to <em>REST API</em> with URL:
-                        <code class="setup-url" id="apple-webhook-url">https://admins-mac-mini.tail6c6490.ts.net:5050/api/apple-health/sync</code>
-                    </li>
-                    <li id="apple-sync-header-step" hidden>Add this request header to each automation:
-                        <code class="setup-url" id="apple-sync-header">X-Sync-Token: —</code>
-                    </li>
-                    <li>Save each automation. To backfill or test, tap <em>Manual Export</em>, confirm the date range, then tap <em>Begin Export</em>.</li>
-                </ol>
-                <p class="dim">Once the first sync lands, this card will flip to "Synced today" automatically.</p>
-                <div id="apple-sync-state" class="setup-sync-state">
-                    <span class="setup-sync-label">Current backend state:</span>
-                    <span id="apple-sync-detail" class="setup-sync-detail">—</span>
-                </div>
-            </div>
-            <div class="modal-foot">
-                <button class="btn btn-ghost btn-block" data-close-modal type="button">Close</button>
-            </div>
-        </div>
-    </div>
-
     <div id="modal-active" class="modal" role="dialog" aria-modal="true" aria-labelledby="active-workout-title" hidden>
         <div class="modal-sheet modal-sheet-tall">
             <div class="modal-head">
@@ -1175,6 +1094,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260716-fit392-rpe"></script>
+    <script src="/static/js/app-loader.js?v=20261028-w4c-apple-via-ow"></script>
 </body>
 </html>

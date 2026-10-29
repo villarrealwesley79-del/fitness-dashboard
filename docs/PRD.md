@@ -96,7 +96,6 @@ The owner can tell whether Oura, Apple Health, WHOOP, and Open Wearables-backed 
 Acceptance criteria:
 
 - Oura status shows cached/live state and latest available day.
-- Apple Health status uses backend sync evidence, including last accepted attempt.
 - WHOOP status shows configured, connected, CSV-only, stale, error, reauth, no-data, and score-state conditions without exposing token material.
 - Open Wearables setup lets a non-technical user add a wearable from the web app, while advanced hub URL, secret, and user-id fields stay behind diagnostics.
 - Cloud wearable provider sign-in opens only when the local Open Wearables connector is ready; phone health sources show an Open Wearables mobile-app invitation code instead of a broken website sign-in.
@@ -168,7 +167,7 @@ Acceptance criteria:
 ### Integrations
 
 - Oura: sync sleep/readiness/activity into SQLite cache and expose status/trends.
-- Apple Health: accept Health Auto Export webhook posts through token-gated endpoint and support legacy file exports.
+- Apple Health: arrives only through Open Wearables (the Health Auto Export webhook was removed).
 - WHOOP: support official OAuth/API sync, manual CSV import, local SQLite persistence, normalized daily facts, freshness/status, disconnect/delete, and bounded recommendation modifiers.
 - Open Wearables: act as the wearable hub wrapper for provider breadth and setup state; prepare the local hub profile from the sidecar env where safe; start cloud provider sign-in only when connector credentials are ready; create phone-app invite codes for SDK-style health sources; keep sync responses redacted and metadata-only rather than exposing raw health payloads or replacing the durable WHOOP path.
 - LM Studio: support primary and fallback routes, health checks, metrics, strict schemas, and graceful fallback.
@@ -202,7 +201,7 @@ The current MVP is a Flask PWA with:
 
 - 8-tab mobile interface: dashboard, vitals, next workout, log, history, body, stats, settings.
 - Oura integration.
-- Apple Health Health Auto Export integration.
+- Apple Health via Open Wearables.
 - WHOOP OAuth/API sync, manual CSV import, local normalized facts, freshness/status, source conflict handling, and bounded recommendation modifiers.
 - Open Wearables setup wrapper, provider action list, cloud sign-in gates, phone health-source invite codes, and metadata-only sync responses.
 - Deterministic workout recommendation.
@@ -216,10 +215,9 @@ The current MVP is a Flask PWA with:
 Decision: use the hybrid shortcut/app flow, with the existing Flask PWA as the primary product surface.
 
 - Food camera capture stays PWA-first through mobile camera/file upload in the web app. Do not build native camera capture for the initial food logging milestone.
-- Apple Health sync stays bridged through Health Auto Export or Shortcuts-style token-gated webhook posts into the backend. Do not treat the browser/PWA as a direct HealthKit client.
+- Apple Health data arrives only through Open Wearables. Do not treat the browser/PWA as a direct HealthKit client.
 - Notifications should use Home Screen PWA Web Push for low-stakes reminders, stale-data warnings, and review-pending alerts. Do not treat Web Push as safety-critical infrastructure.
 - Offline workout logging should use a PWA local queue with stable client-generated workout IDs, idempotent backend sync, visible retry/reconcile states, and no silent double-save behavior.
-- Native iOS is deferred to a narrow HealthKit helper only if the Apple Health bridge fails the documented freshness SLA in `docs/APPLE_HEALTH_HELPER_SLA.md` after HAE/Shortcuts instrumentation has been improved.
 
 Tradeoff record:
 

@@ -74,11 +74,10 @@ Wearable and AI integrations should fail gracefully. If Oura, Apple Health, or L
 
 ## App Surface Direction
 
-The long-term surface is hybrid: the Flask PWA remains the main product, Health Auto Export or Shortcuts webhook sync remains the Apple Health bridge, and native iOS stays deferred.
+The long-term surface is hybrid: the Flask PWA remains the main product, Open Wearables is the only wearable bridge (WHOOP, Oura and Apple Health), and native iOS stays deferred.
 
-The PWA owns the daily brief, food capture, review flows, workout execution, history, and settings. The backend remains the canonical source of truth for workout, food, wearable, and audit data. The Apple Health bridge is measured by freshness evidence rather than assumed connectivity.
+The PWA owns the daily brief, food capture, review flows, workout execution, history, and settings. The backend remains the canonical source of truth for workout, food, wearable, and audit data. Wearable connectivity is measured by freshness evidence rather than assumed.
 
-Native iOS should not be started as a full app rewrite. It is only a future narrow HealthKit helper if the bridge fails the documented freshness SLA in `docs/APPLE_HEALTH_HELPER_SLA.md` despite normal phone usage and improved HAE/Shortcuts instrumentation.
 
 ## North Star Outcome
 
@@ -100,7 +99,7 @@ The owner can open the app before training or eating, trust the recommended plan
 - The app is for one owner. It has no billing, paid entitlement, public marketing, or multi-tenant product surface.
 - Mobile use is the primary workflow, especially during workouts.
 - The PWA is the primary product surface.
-- Health Auto Export or Shortcuts webhook sync is the Apple Health bridge.
+- Open Wearables is the single wearable data source (WHOOP, Oura, Apple Health).
 - Oura should remain the preferred sleep/recovery source, while Apple Health should remain the preferred workout/activity source when recent data is available.
 - The current dark analytical design direction is still desired.
 - Body recomposition, strength progression, and recovery-aware training are all core goals.
