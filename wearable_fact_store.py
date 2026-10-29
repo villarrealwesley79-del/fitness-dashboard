@@ -1016,7 +1016,9 @@ def preferred_daily_facts(
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM wearable_daily_facts WHERE profile_key = ? AND date >= ? AND date <= ? "
-            f"AND metric IN ({','.join('?' for _ in metric_list)})",
+            f"AND (metric IN ({','.join('?' for _ in metric_list)})"
+            # a night's representative record is judged on all its sleep metrics, whatever the caller asked for
+            + (" OR metric LIKE 'sleep\\_%' ESCAPE '\\')" if "sleep_duration" in metric_list else ")"),
             (_normalize_profile_key(profile_key), start, end, *metric_list),
         ).fetchall()
     grouped: dict[tuple[str, str], list] = {}
@@ -1073,12 +1075,16 @@ def preferred_daily_facts(
         if by_provider:
             fragments[date_s] = {(c[2], c[3]["source_id"]) for c in candidates if c[1] < MIN_NIGHT_SLEEP_MIN}
     for (date_s, metric), candidates in grouped.items():
+        if metric not in metric_list:
+            continue  # loaded only to rank the night's records
         forced = None
         if _default_metric_domain(metric) == "sleep":
             forced = conflicts.get(date_s) or gap_fills.get(date_s)
+            # The duration always comes from the record that justified the choice; other metrics stay free outside a forced night.
+            pin = forced or (metric in CONFLICT_TOLERANCE and next(iter(night_record.get(date_s, {})), None))
             candidates = [
                 c for c in candidates
-                if (not forced or (c[2] == forced and c[3]["source_id"] == night_record[date_s][forced]))
+                if (not pin or (c[2] == pin and c[3]["source_id"] == night_record[date_s][pin]))
                 and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
             ]
             if not candidates:
