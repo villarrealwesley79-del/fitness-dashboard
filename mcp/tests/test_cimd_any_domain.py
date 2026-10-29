@@ -4,14 +4,18 @@ Everything else stays: https, port 443, plain ASCII, FastMCP's SSRF layer, the r
 the owner-only login and the bot token.
 """
 import dataclasses
+import socket
 
+import httpx2
 import pytest
+from fastmcp.server.auth import ssrf
 from fastmcp.server.auth.cimd import CIMDDocument, CIMDFetcher
 from starlette.testclient import TestClient
 
 import server
 from server import VendorCIMDProxy
 from test_review_r4 import CLAUDE_CB, PUBLIC
+from test_review_r5 import RecordingHttpx
 from test_server import BOT_TOKEN, GH_OTHER, GH_OWNER, make, oauth_token, rpc, seen  # noqa: F401
 
 STRANGER = "https://agent.example.org/client.json"
@@ -65,24 +69,62 @@ def test_star_keeps_every_other_check(client_id):
     assert not proxy(("*",))._fetchable(client_id)
 
 
-@pytest.mark.parametrize("client_id", [
-    "https://127.0.0.1/c.json", "https://10.1.2.3/c.json", "https://[::1]/c.json", "https://localhost/c.json",
-    "https://169.254.169.254/c.json",
-])
-def test_star_still_refuses_private_addresses_through_fastmcp_ssrf_layer(any_domain, monkeypatch, client_id):
-    calls = []
-    real = CIMDFetcher.fetch
+HOST = "agent.example.org"
+PUBLIC_IP = "93.184.216.34"
+NON_GLOBAL = [
+    ["127.0.0.1"], ["10.0.0.5"], ["192.168.1.10"], ["169.254.169.254"], ["100.101.102.103"],  # Tailscale CGNAT
+    ["fd7a:115c:a1e0::1"], ["::1"], ["::ffff:127.0.0.1"], ["64:ff9b::a00:5"], ["224.0.0.1"], ["0.0.0.0"],
+    [PUBLIC_IP, "10.0.0.5"],  # one bad answer is enough
+]
 
-    async def spy(self, url):
-        calls.append(url)
-        return await real(self, url)  # the real fetcher: its SSRF check must be what refuses
 
-    monkeypatch.setattr(CIMDFetcher, "fetch", spy)
+def fake_dns_and_doc(monkeypatch, ips):
+    """Mock DNS only (the real SSRF check runs on these answers) and serve a valid CIMD document over a recording
+    transport: if the SSRF layer let the request through, /authorize would answer 302."""
+    def getaddrinfo(host, port, *args, **kwargs):
+        if host != HOST:
+            raise socket.gaierror(socket.EAI_NONAME, "no such name")
+        return [(socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port)) for ip in ips]
+
+    def handler(request):
+        return httpx2.Response(200, json={"client_id": STRANGER, "client_name": "Claude", "redirect_uris": [CLAUDE_CB],
+                                          "token_endpoint_auth_method": "none"})
+
+    fake, errors, real = RecordingHttpx(handler), [], ssrf.validate_url
+
+    async def spy(url, require_path=False):
+        try:
+            return await real(url, require_path=require_path)
+        except ssrf.SSRFError as e:
+            errors.append(str(e))
+            raise
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(ssrf, "httpx2", fake)
+    monkeypatch.setattr(ssrf, "validate_url", spy)
+    return fake, errors
+
+
+@pytest.mark.parametrize("ips", NON_GLOBAL, ids=[",".join(i) for i in NON_GLOBAL])
+def test_star_name_resolving_to_a_non_global_ip_is_refused_by_the_ssrf_layer_before_any_connection(
+        any_domain, monkeypatch, ips):
+    fake, errors = fake_dns_and_doc(monkeypatch, ips)
     with TestClient(any_domain(), base_url=PUBLIC, follow_redirects=False, raise_server_exceptions=False) as c:
-        codes = {authorize(c, client_id).status_code,
-                 c.post("/token", data={"grant_type": "authorization_code", "client_id": client_id, "code": "c",
-                                        "redirect_uri": CLAUDE_CB, "code_verifier": "v" * 43}).status_code}
-    assert calls and codes <= {400, 401}, (calls, codes)  # reached FastMCP, refused there, never a 500
+        a = authorize(c, STRANGER)
+        t = c.post("/token", data={"grant_type": "authorization_code", "client_id": STRANGER, "code": "c",
+                                   "redirect_uri": CLAUDE_CB, "code_verifier": "v" * 43})
+    assert fake.requests == []  # no connection attempted
+    assert errors and all("blocked IP" in e for e in errors), errors  # the SSRF layer is what refused
+    assert a.status_code == 400 and t.status_code in (400, 401), (a.status_code, t.status_code)  # never a 500
+
+
+def test_star_public_answer_is_fetched_pinned_to_the_ip_and_accepted(any_domain, monkeypatch):
+    """Positive control for the test above: same harness, a global address."""
+    fake, errors = fake_dns_and_doc(monkeypatch, [PUBLIC_IP])
+    with TestClient(any_domain(), base_url=PUBLIC, follow_redirects=False) as c:
+        r = authorize(c, STRANGER)
+    assert errors == [] and fake.requests == [(f"https://{PUBLIC_IP}/client.json", HOST)]
+    assert r.status_code == 302 and "/consent" in r.headers["location"]
 
 
 def test_unlisted_host_cannot_name_an_unlisted_redirect_uri(any_domain, monkeypatch):
