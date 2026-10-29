@@ -4371,8 +4371,10 @@ def _hrv_facts(days=7):
     series = {}
     for provider in [*preference, *sorted(seen - set(preference))]:  # each provider's whole series, not the dates it won
         for _day, by_metric in sorted(_preferred_facts(metrics, days=days, provider=provider).items()):
+            # a date whose only sleep is a sub-hour record (strap on briefly) has no night HRV
+            short = (by_metric.get("sleep_duration") or {}).get("value", MIN_NIGHT_SLEEP_MIN) < MIN_NIGHT_SLEEP_MIN
             for metric, fact in by_metric.items():
-                if metric in _HRV_METRICS:
+                if metric in _HRV_METRICS and not (short and metric.startswith("sleep_")):
                     series.setdefault((provider, metric), []).append(fact)
     ranked = sorted(series, key=lambda k: (preference.index(k[0]) if k[0] in preference else len(preference), _HRV_METRICS.index(k[1])))
     live = [k for k in ranked if series[k][-1]["freshness"] != "stale"]
