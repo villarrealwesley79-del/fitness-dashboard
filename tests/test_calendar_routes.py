@@ -456,3 +456,33 @@ def test_app_fingerprint_tracks_the_calendar(monkeypatch, tmp_path):
         {"status": "ok", "plan_minutes": 45},
     ]
     assert len({fp for fp, _ in prints[:3]}) == 3 and prints[1][0] == prints[3][0]
+
+
+def test_settings_row_shows_connected_while_a_refresh_runs():
+    from js_runtime import run_app_js
+
+    out = run_app_js(
+        ["renderCalendarRow"],
+        """
+const mk = () => ({ textContent: '', className: '', hidden: false, value: '' });
+for (const id of ['calendar-state', 'calendar-int-dot', 'calendar-detail', 'calendar-url',
+                  'btn-calendar-connect', 'btn-calendar-disconnect', 'calendar-form']) sandbox.elements[id] = mk();
+const el = sandbox.elements;
+const row = async (cal) => {
+  sandbox.__fitSet.api(async () => cal);
+  await e.renderCalendarRow();
+  return [el['calendar-state'].textContent, el['btn-calendar-disconnect'].hidden, el['btn-calendar-connect'].hidden];
+};
+process.stdout.write(JSON.stringify({
+  refreshing: await row({ configured: true, status: 'refreshing' }),
+  error: await row({ configured: true, status: 'error' }),
+  none: await row({ configured: false, status: 'unconfigured' }),
+}));
+""",
+        mocks=["api"],
+    )
+    assert out == {
+        "refreshing": ["Connected", False, True],
+        "error": ["Needs attention", False, False],
+        "none": ["Not connected", True, False],
+    }

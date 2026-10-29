@@ -4719,7 +4719,7 @@
     async function renderCalendarRow() {
         let cal = { configured: false, status: 'unconfigured' };
         try { cal = await api('/api/calendar/ical'); } catch (e) { console.error(e); }
-        const ok = cal.status === 'ok', broken = cal.status === 'error';
+        const broken = cal.status === 'error', ok = cal.configured && !broken; // 'refreshing' still counts as connected
         $('calendar-state').textContent = ok ? 'Connected' : broken ? 'Needs attention' : 'Not connected';
         $('calendar-state').className = 'state-chip' + (ok ? ' ok' : broken ? ' warn' : '');
         $('calendar-int-dot').className = ok ? 'int-dot int-dot-on' : 'int-dot';
