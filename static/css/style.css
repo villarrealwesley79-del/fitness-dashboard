@@ -2331,7 +2331,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     animation: toast-in .2s ease-out;
     max-width: 90%;
     text-align: center;
-    pointer-events: auto;
+    pointer-events: none; /* a plain message must not swallow taps on the modal buttons it now floats over */
 }
 .toast.ok { border-color: rgba(34,197,94,0.4); color: #a7f3d0; }
 .toast.err { border-color: rgba(239,68,68,0.45); color: #fecaca; }
@@ -2341,6 +2341,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     gap: 12px;
     padding: 8px 8px 8px 16px;
     border-color: rgba(248,113,113,0.45);
+    pointer-events: auto; /* the Undo button must stay tappable */
 }
 .toast-undo-text { color: var(--fg-0); }
 /* FIT-97 AC1 / FIT-124: tappable variant. Container has no role; focus

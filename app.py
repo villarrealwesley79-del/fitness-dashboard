@@ -4599,7 +4599,7 @@ def add_workout():
     if err2:
         return err2
 
-    if not all(isinstance(ex, dict) and ex.get("machine") for ex in exercises):
+    if not all(isinstance(ex, dict) and isinstance(ex.get("machine"), str) and ex["machine"].strip() for ex in exercises):
         return api_error("Each exercise must include machine", 400, code="invalid_field")  # readers index ["machine"]
 
     for exercise in exercises:

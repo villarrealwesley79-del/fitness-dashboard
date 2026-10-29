@@ -87,7 +87,7 @@ def test_the_log_tab_has_no_strength_quick_log_card():
 
 def test_add_workout_rejects_an_exercise_without_a_machine_and_stores_nothing(fitness_app):
     client = fitness_app.app.test_client()
-    for exercises in ([{"exercise": "Bench", "sets": []}], [{"machine": "", "sets": []}], ["Bench"]):
+    for exercises in ([{"exercise": "Bench", "sets": []}], [{"machine": "", "sets": []}], [{"machine": "  "}], [{"machine": ["x"]}], ["Bench"]):
         response = client.post(
             "/api/add-workout",
             json={"date": "2026-10-28", "session_type": "strength", "exercises": exercises},
@@ -424,4 +424,6 @@ def test_the_toast_host_stacks_above_every_modal_and_focus_clears_the_tab_bar():
     others = [int(z) for z in re.findall(r"z-index:\s*(\d+)", css)]
     others.remove(toast)
     assert toast > max(others)
+    assert re.search(r"\.toast \{[^}]*pointer-events:\s*none", css)  # a plain toast floats over modal buttons: it must not eat taps
+    assert re.search(r"\.toast-undo \{[^}]*pointer-events:\s*auto", css)  # but Undo stays tappable
     assert re.search(r"html \{ scroll-padding-bottom: calc\(\d+px \+ var\(--safe-bottom\)\); \}", css)
