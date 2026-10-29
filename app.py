@@ -1192,7 +1192,7 @@ def _fit95_number(value, default=0.0):
         if value is None or value == "":
             return default
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: an imported integer too large for a float
         return default
 
 
@@ -3443,8 +3443,9 @@ def _cardio_fatigue_inputs():
     rows, used = [], list(unlogged)
     for c in CARDIO_DATA:
         twin = matched.get(id(c))
-        # the reader's own alias and intensity default; at intensity <= 0 more minutes would lower fatigue
-        if twin and _fit95_number(c.get("intensity"), 5) > 0 and twin["duration_minutes"] > _fit95_number(c.get("duration_minutes") or c.get("duration_min")):
+        logged = _fit95_number(c.get("duration_minutes") or c.get("duration_min"))  # the reader's own alias
+        # the reader's intensity default; at intensity <= 0 more minutes would lower fatigue, and a non-finite read stays
+        if twin and _fit95_number(c.get("intensity"), 5) > 0 and math.isfinite(logged) and twin["duration_minutes"] > logged:
             rows.append({**c, "duration_minutes": twin["duration_minutes"]})
             used.append(twin)
         else:

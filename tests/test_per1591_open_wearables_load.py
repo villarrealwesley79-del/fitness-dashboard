@@ -622,3 +622,27 @@ def test_a_longer_watch_copy_never_swaps_into_a_run_with_non_positive_intensity(
     store(app_module, 1, "Running", 60, hour=7)
     assert app_module._cardio_with_open_wearables() == app_module.CARDIO_DATA
     _source_routes(app_module, used=False)
+
+
+def test_a_minus_inf_logged_run_is_never_swapped_for_its_watch_copy(app_module):
+    # the reader turns -inf minutes into full fatigue (min(3, nan)); swapping in 60 watch minutes would read fresher
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": "-inf", "intensity": 5}]
+    store(app_module, 1, "Running", 60, hour=7)
+    assert app_module._cardio_with_open_wearables() == app_module.CARDIO_DATA
+
+
+@pytest.mark.parametrize("field", ["intensity", "duration_minutes"])
+@pytest.mark.parametrize("twin", [False, True])
+def test_a_huge_integer_imported_cardio_value_keeps_every_page_up(app_module, field, twin):
+    """float(10**400) raises OverflowError; an imported 10-day-old run carrying one must not 500 the main routes."""
+    if twin:
+        store(app_module, 10, "Running", 60, hour=7)
+    run = {"date": day(10), "activity_type": "Outdoor Run", "duration_minutes": 20, "intensity": 5, field: 10 ** 400}
+    client = app_module.app.test_client()
+    assert client.post("/api/import-backup", json={"data": {"cardio": [run]}}).status_code == 200
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        codes = {r: client.get(r).status_code for r in ("/api/dashboard", "/api/next-workout", "/api/recommendation/smart", "/api/muscle-fatigue")}
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
+    assert set(codes.values()) == {200}, codes
