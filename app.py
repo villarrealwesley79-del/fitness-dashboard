@@ -3443,7 +3443,8 @@ def _cardio_fatigue_inputs():
     rows, used = [], list(unlogged)
     for c in CARDIO_DATA:
         twin = matched.get(id(c))
-        if twin and twin["duration_minutes"] > _fit95_number(c.get("duration_minutes") or c.get("duration_min")):  # the reader's own alias
+        # the reader's own alias and intensity default; at intensity <= 0 more minutes would lower fatigue
+        if twin and _fit95_number(c.get("intensity"), 5) > 0 and twin["duration_minutes"] > _fit95_number(c.get("duration_minutes") or c.get("duration_min")):
             rows.append({**c, "duration_minutes": twin["duration_minutes"]})
             used.append(twin)
         else:

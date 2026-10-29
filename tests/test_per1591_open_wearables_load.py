@@ -612,3 +612,13 @@ def test_a_longer_watch_run_still_replaces_a_shorter_duration_min_logged_run(app
     app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_min": 20, "intensity": 5}]
     store(app_module, 1, "Running", 60, hour=7)
     assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [60.0]
+
+
+@pytest.mark.parametrize("linked", [{}, {"workout_id": "w1"}])
+def test_a_longer_watch_copy_never_swaps_into_a_run_with_non_positive_intensity(app_module, linked):
+    # an imported backup row can carry intensity -5; there, the watch's longer minutes would make legs read fresher
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": 10, "intensity": -5, **linked}]
+    tonnage_wins(app_module)
+    store(app_module, 1, "Running", 60, hour=7)
+    assert app_module._cardio_with_open_wearables() == app_module.CARDIO_DATA
+    _source_routes(app_module, used=False)
