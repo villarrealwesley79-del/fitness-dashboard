@@ -1471,20 +1471,22 @@ def calculate_volume(workouts, weeks=4):
     return muscle_volume
 
 
+# Mapping of cardio activities to affected muscles with fatigue factors
+CARDIO_MUSCLE_IMPACT = {
+    "stairmaster": {"quads": 2, "glutes": 2, "calves": 1.5, "hamstrings": 1},
+    "treadmill": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+    "running": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+    "basketball": {"quads": 2, "calves": 2, "core": 1, "hamstrings": 1},
+    "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
+    "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
+    "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
+    "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1},
+    "walking": {"quads": 1, "hamstrings": 0.5, "calves": 1, "glutes": 0.5}
+}
+
+
 def get_cardio_muscle_impact(cardio_data, muscle, days=2):
     """Calculate cardio impact on a specific muscle group."""
-    # Mapping of cardio activities to affected muscles with fatigue factors
-    CARDIO_MUSCLE_IMPACT = {
-        "stairmaster": {"quads": 2, "glutes": 2, "calves": 1.5, "hamstrings": 1},
-        "treadmill": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
-        "running": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
-        "basketball": {"quads": 2, "calves": 2, "core": 1, "hamstrings": 1},
-        "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
-        "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
-        "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
-        "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1},
-        "walking": {"quads": 1, "hamstrings": 0.5, "calves": 1, "glutes": 0.5}
-    }
     cutoff = datetime.now() - timedelta(days=days)
     total_impact = 0
 
@@ -3426,12 +3428,31 @@ def _unlogged_watch_cardio(sessions):
     return _split_watch_cardio(sessions)[0]
 
 
+def _watch_cardio_row(s):
+    return {"date": s["date"], "activity_type": s["activity_type"], "duration_minutes": s["duration_minutes"]}
+
+
+def _cardio_fatigue_inputs():
+    """(CARDIO_DATA plus watch cardio, in its shape, for cardio fatigue; the watch sessions among them).
+
+    Like calculate_acwr: sessions dated after today are ignored, and a hand-logged run the watch
+    also recorded takes the longer duration (a non-finite logged one stays as it is).
+    """
+    today = datetime.now().date().isoformat()
+    unlogged, matched = _split_watch_cardio([s for s in _open_wearables_load_sessions(WORKOUTS) if s["date"] <= today])
+    rows, used = [], list(unlogged)
+    for c in CARDIO_DATA:
+        twin = matched.get(id(c))
+        if twin and twin["duration_minutes"] > _fit95_number(c.get("duration_minutes")):
+            rows.append({**c, "duration_minutes": twin["duration_minutes"]})
+            used.append(twin)
+        else:
+            rows.append(c)
+    return rows + [_watch_cardio_row(s) for s in unlogged], used
+
+
 def _cardio_with_open_wearables():
-    """CARDIO_DATA plus the kept non-strength Open Wearables sessions in its shape, for cardio fatigue."""
-    return CARDIO_DATA + [
-        {"date": s["date"], "activity_type": s["activity_type"], "duration_minutes": s["duration_minutes"]}
-        for s in _unlogged_watch_cardio(_open_wearables_load_sessions(WORKOUTS))
-    ]
+    return _cardio_fatigue_inputs()[0]
 
 
 def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
@@ -3501,12 +3522,14 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
             minutes = slot["duration_minutes"]
         add_minutes(d, minutes)
     for c in CARDIO_DATA:
-        if not c.get("workout_id"):  # completed-workout cardio is already in its WORKOUTS row
-            d, twin, minutes = in_window(c.get("date")), matched.get(id(c)), _fit95_number(c.get("duration_minutes"))
-            if d and twin:  # the watch recorded this run too: count it once, with the longer duration, so a short watch record never lowers the load
-                counted.append(twin)
-                minutes = max(_fit95_number(twin.get("duration_minutes")), minutes if math.isfinite(minutes) else 0.0)
-            add_minutes(d, minutes)
+        d, twin, minutes = in_window(c.get("date")), matched.get(id(c)), _fit95_number(c.get("duration_minutes"))
+        logged = minutes if math.isfinite(minutes) else 0.0
+        if d and twin:  # the watch recorded this run too: count it once, with the longer duration, so a short watch record never lowers the load
+            counted.append(twin)
+            minutes = max(_fit95_number(twin.get("duration_minutes")), logged)
+        if c.get("workout_id"):  # completed-workout cardio is already in its WORKOUTS row: only the watch's extra minutes count
+            minutes -= logged
+        add_minutes(d, minutes)
     for s in sessions:
         d = in_window(s.get("date"))
         if d:
@@ -7772,13 +7795,23 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
 
 
 def _watch_load_source(acwr_data):
-    """The Open Wearables load claim for the source list: set only when the minutes series (with counted watch sessions) is the ratio used."""
+    """The Open Wearables load claim for the source list: set when watch minutes act on the plan, through the ACWR ratio
+    (the minutes series is the one used) or through muscle readiness (a watch session reached cardio fatigue)."""
     acwr_series = (acwr_data or {}).get("acwr_series") or {}
-    return acwr_series.get("used") == "minutes" and {
-        "providers": acwr_series.get("watch_providers") or [],
-        "observed_at": acwr_series.get("watch_observed_at"),
-        "modifier_applied": float(acwr_data.get("acwr") or 0) >= 1.3,  # the band that downgrades or forces recovery
-    } or None
+    ratio = acwr_series.get("used") == "minutes"
+    muscles = {m for impact in CARDIO_MUSCLE_IMPACT.values() for m in impact}
+    fatigue = [s for s in _cardio_fatigue_inputs()[1] if any(get_cardio_muscle_impact([_watch_cardio_row(s)], m) for m in muscles)]  # inside its window, a known activity
+    if not (ratio or fatigue):
+        return None
+    providers = {str(s["provider_source"]) for s in fatigue if s.get("provider_source")} | set(acwr_series.get("watch_providers") or [])
+    observed = [str(s["start_time"]) for s in fatigue if s.get("start_time")] + [acwr_series.get("watch_observed_at")]
+    return {
+        "providers": sorted(providers),
+        "observed_at": max((o for o in observed if o), default=None),
+        "modifier_applied": ratio and float(acwr_data.get("acwr") or 0) >= 1.3,  # the band that downgrades or forces recovery
+        "ratio": ratio,
+        "muscle_readiness": bool(fatigue),
+    }
 
 
 def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None, watch_load=None):

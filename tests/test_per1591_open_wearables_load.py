@@ -525,3 +525,74 @@ def test_two_huge_imported_runs_keep_the_dashboard_up(app_module, twins):
     finally:
         app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
     assert set(codes.values()) == {200}, codes
+
+
+# ---- Round 7 ---------------------------------------------------------------------------------------------------
+
+def test_a_longer_watch_run_matched_to_workout_linked_cardio_counts_its_extra_minutes(app_module):
+    """The linked 15 minutes are inside the 60-minute workout; the watch saw a 120-minute run, so 105 more minutes count."""
+    app_module.WORKOUTS[:] = [{**timed_lift(2), "duration_minutes": 60}]
+    app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": 15, "workout_id": "w1"}]
+    store(app_module, 2, "Running", 120, hour=7)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 165
+
+
+def test_a_shorter_watch_copy_of_workout_linked_cardio_adds_nothing_but_keeps_the_series(app_module):
+    app_module.WORKOUTS[:] = [{**timed_lift(2), "duration_minutes": 75}]
+    app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": 30, "workout_id": "w1"}]
+    store(app_module, 2, "Running", 20, hour=7)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 75
+
+
+def tonnage_wins(module):
+    """A heavy-lifting month where a quiet watch run cannot lift the minutes ratio above the tonnage ratio."""
+    module.WORKOUTS[:] = [lift(n, weight=200) for n in (1, 3, 5, 8, 10, 12, 15, 17, 19, 22, 24, 26)]
+
+
+def _source_routes(module, **expect):
+    client = module.app.test_client()
+    for route in ("/api/dashboard", "/api/next-workout", "/api/recommendation/smart"):
+        source = client.get(route).get_json()["recommendation_sources"]["open_wearables"]
+        assert source["used_for_recommendation"] is expect["used"], route
+        if expect["used"]:
+            assert "muscle readiness" in source["detail"] and "training-load ratio" not in source["detail"], route
+    return client
+
+
+def test_a_watch_run_that_only_changes_muscle_readiness_is_credited_as_a_source(app_module):
+    tonnage_wins(app_module)
+    store(app_module, 1, "Running", 30, hour=7)
+    acwr = app_module.calculate_acwr(app_module.WORKOUTS)
+    assert acwr["acwr_series"]["used"] == "tonnage"
+    client = _source_routes(app_module, used=True)
+    proof = client.get("/api/recommendation/smart").get_json()["recommendation_sources"]["source_proof"]["open_wearables"]
+    assert proof["used_for_recommendation"] and proof["providers"] == ["WHOOP"] and proof["observed_at"] and not proof["modifier_applied"]
+
+
+def test_a_watch_run_outside_the_fatigue_window_is_not_credited_while_tonnage_wins(app_module):
+    tonnage_wins(app_module)
+    store(app_module, 10, "Running", 30, hour=7)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["used"] == "tonnage"
+    _source_routes(app_module, used=False)
+
+
+def test_a_future_dated_watch_run_reaches_neither_fatigue_nor_the_source(app_module):
+    tonnage_wins(app_module)
+    client = app_module.app.test_client()
+    before = client.get("/api/muscle-fatigue").get_json()
+    store(app_module, -1, "Running", 90, hour=7)
+    assert client.get("/api/muscle-fatigue").get_json() == before
+    assert app_module._watch_load_source(app_module.calculate_acwr(app_module.WORKOUTS)) is None
+
+
+@pytest.mark.parametrize("logged, watch, expected", [(30, 90, 90.0), (90, 30, 90), (float("inf"), 30, float("inf"))])
+def test_fatigue_takes_the_longer_duration_of_a_logged_run_the_watch_also_recorded(app_module, logged, watch, expected):
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": logged, "intensity": 5}]
+    store(app_module, 1, "Running", watch, hour=7)
+    assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [expected]
+
+
+def test_fatigue_also_takes_the_longer_watch_duration_for_workout_linked_cardio(app_module):
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": 15, "workout_id": "w1"}]
+    store(app_module, 1, "Running", 60, hour=7)
+    assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [60.0]

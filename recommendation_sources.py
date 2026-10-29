@@ -58,7 +58,8 @@ def build_open_wearables_recommendation_source(
     elif consumed:
         detail = f"Open Wearables contributed {len(consumed)} normalized fact{'s' if len(consumed) != 1 else ''}."
     elif load:
-        detail = "Logged and Open Wearables workout minutes are counted in the training-load ratio."
+        where = " and ".join(w for w, on in (("the training-load ratio", load.get("ratio")), ("muscle readiness", load.get("muscle_readiness"))) if on)
+        detail = f"Logged and Open Wearables workout minutes are counted in {where}."
     elif facts:
         detail = f"Open Wearables has {len(facts)} fact{'s' if len(facts) != 1 else ''}; none feed today's recommendation."
     elif provider_labels:
