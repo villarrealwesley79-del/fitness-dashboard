@@ -4184,22 +4184,34 @@ def _calendar_clock(moment):
     return moment.astimezone().strftime("%I:%M %p").lstrip("0")
 
 
-def _schedule_fit():
-    """How the calendar changes today's plan. plan_minutes is the shortened length, else None."""
+def _schedule_fit(plan=None):
+    """How the calendar changes today's plan. plan_minutes is the shortened length, else None.
+
+    `plan` is a preserved (customised) plan that is returned as it is: it is never shortened,
+    only checked against the free windows.
+    """
     now = _calendar_now()
     state = _calendar_state(now)
     if state["status"] != "ok":
         return {"status": state["status"], "plan_minutes": None}
-    wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
     windows = _calendar_day(state["events"], now, 0)[1]
-    fit = calendar_feed.fit_session(windows, wanted, [o["value"] for o in TIME_OPTIONS])
-    if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
-        built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
-                                      consume_cardio_rotation=False, include_open_wearables_readiness=False)
-        span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
-        if built["estimated_minutes"] > span((fit["window_start"], fit["window_end"])):
-            later = next((w for w in windows if span(w) >= built["estimated_minutes"]), None)  # earliest that holds the plan
-            fit = {**fit, "window_start": later[0], "window_end": later[1]} if later else {**fit, "fits": False, "minutes": 0, "shortened": False}
+    span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
+    if plan is not None:
+        need = int(plan.get("estimated_minutes") or 0)
+        held = next((w for w in windows if span(w) >= need), None)  # earliest that holds the plan
+        fit = {"fits": bool(held), "minutes": need if held else 0, "shortened": False,
+               "window_start": held[0] if held else None, "window_end": held[1] if held else None}
+    else:
+        wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
+        fit = calendar_feed.fit_session(windows, wanted, [o["value"] for o in TIME_OPTIONS])
+        if fit["fits"] and not fit["shortened"]:
+            fit = {**fit, "minutes": wanted}  # the generator keeps the owner's own length, even above the options
+        if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
+            built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
+                                          consume_cardio_rotation=False, include_open_wearables_readiness=False)
+            if built["estimated_minutes"] > span((fit["window_start"], fit["window_end"])):
+                later = next((w for w in windows if span(w) >= built["estimated_minutes"]), None)  # earliest that holds the plan
+                fit = {**fit, "window_start": later[0], "window_end": later[1]} if later else {**fit, "fits": False, "minutes": 0, "shortened": False}
     out = {
         "status": "ok", "fits": fit["fits"], "minutes": fit["minutes"] or None, "shortened": fit["shortened"],
         "plan_minutes": fit["minutes"] if fit["fits"] and fit["shortened"] else None,
@@ -4305,6 +4317,7 @@ def api_next_workout():
     fingerprint = _workout_recommendation_fingerprint()
     today_s = _today_str()
     current_plan = _same_day_preserved_workout_plan(today_s)
+    preserved_plan = current_plan
     lookup_token = None
     if not current_plan:
         current_plan = _current_workout_plan_for_fingerprint(
@@ -4344,7 +4357,7 @@ def api_next_workout():
     display_workout = _wearable_adjusted_for_display(current_plan, open_wearables_modifier)
     return jsonify({
         "next_workout": _workout_with_auth_scope(display_workout),
-        "schedule_fit": _schedule_fit(),
+        "schedule_fit": _schedule_fit(preserved_plan),
         "recommendation_sources": {
             **_recommendation_sources_payload(
                 freshness,
@@ -4624,7 +4637,7 @@ def api_dashboard():
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
         "next_workout": _workout_with_auth_scope(next_workout),
-        "schedule_fit": _schedule_fit(),
+        "schedule_fit": _schedule_fit(next_workout if using_stored_customization else None),
         "readiness_factors": {
             "acwr": acwr,
             "sleep_debt": sleep_debt,
@@ -8848,8 +8861,6 @@ def smart_recommendation_api():
     hour = datetime.now().hour
     time_of_day = "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
     reason_bits.append(f"Time of day: {time_of_day}")
-    if calendar_reason := _schedule_fit().get("reason"):
-        reason_bits.append(calendar_reason)
 
     # Workout history context (simple: last trained major muscle groups)
     history_context = []
@@ -8885,7 +8896,10 @@ def smart_recommendation_api():
     freshness = _compute_data_freshness()
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    canonical_plan = _same_day_preserved_workout_plan(today) or current_plan
+    preserved_plan = _same_day_preserved_workout_plan(today)
+    canonical_plan = preserved_plan or current_plan
+    if calendar_reason := _schedule_fit(preserved_plan).get("reason"):
+        reason_bits.append(calendar_reason)
     if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
         next_workout = dict(canonical_plan)
         next_workout.pop("_user_customized", None)

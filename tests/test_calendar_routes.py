@@ -498,3 +498,75 @@ def test_never_connected_user_is_not_refreshing_while_the_lock_is_held(feed):
     finally:
         module._CALENDAR_LOCK.release()
     assert body == {"configured": False, "status": "unconfigured", "last_fetch": None}
+
+
+# --- Codex P2 fixes: the budget the generator uses, and a preserved plan ----------------------------
+
+
+def test_probe_uses_the_budget_the_generator_will_use(feed):
+    """wanted=120 is above every time option: rounding down to 90 must not pick a 90-minute window for a 120-minute plan."""
+    module, client, set_feed = feed
+    set_feed(ics(((0, 11, 30), (0, 12, 0)), ((0, 14, 0), (0, 21, 0))))  # free 10:00-11:30 (90) and 12:00-14:00 (120)
+    module.USER_SETTINGS.update(available_time_minutes=120, training_goal="hypertrophy")
+    connect(client)
+    body = client.get("/api/next-workout").get_json()
+    fit, plan = body["schedule_fit"], body["next_workout"]
+    assert plan["available_time"] == 120 and fit["plan_minutes"] is None and fit["shortened"] is False
+    assert fit["fits"] is True and fit["minutes"] == 120
+    start, end = (datetime.fromisoformat(fit[k]) for k in ("window_start", "window_end"))
+    assert plan["estimated_minutes"] <= (end - start).total_seconds() / 60  # the advertised window holds the real plan
+    assert fit["window_start"] == iso(at(0, 12))  # the 90-minute window cannot hold it
+    assert fit["reason"] == "Calendar: 120 min fits 12:00 PM to 2:00 PM"
+
+
+PRESERVED = {"id": "per1586-kept", "estimated_minutes": 75}
+
+
+def preserve(module, **changes):
+    from test_fit256_workout_plan_persistence import _recommendation
+
+    module._persist_current_workout_plan({**_recommendation(module), **PRESERVED, **changes}, "fp-user-1", customized=True)
+
+
+@pytest.mark.parametrize("route", ["/api/next-workout", "/api/dashboard"])
+def test_a_preserved_plan_is_never_reported_as_shortened(feed, route):
+    module, client, set_feed = feed
+    set_feed(GAP_45)  # one 45-minute window today, tomorrow 06:00 free
+    module.USER_SETTINGS["available_time_minutes"] = 75
+    connect(client)
+    preserve(module)
+    body = client.get(route).get_json()
+    assert body["next_workout"]["estimated_minutes"] == 75 and body["next_workout"]["id"] == "per1586-kept"
+    assert body["schedule_fit"] == {
+        "status": "ok", "fits": False, "minutes": None, "shortened": False, "plan_minutes": None,
+        "next_window": {"day": "tomorrow", "start": iso(at(1, 6))},
+        "reason": "Calendar: no free window today; next window tomorrow 6:00 AM",
+    }
+
+
+@pytest.mark.parametrize("route", ["/api/next-workout", "/api/dashboard"])
+def test_a_preserved_plan_that_fits_a_window_says_so_without_a_budget_change(feed, route):
+    module, client, set_feed = feed
+    set_feed(ics(((0, 10, 30), (0, 12, 0)), ((0, 12, 50), (0, 21, 0))))  # free 10:00-10:30 and 12:00-12:50
+    module.USER_SETTINGS["available_time_minutes"] = 75
+    connect(client)
+    preserve(module, estimated_minutes=45)
+    body = client.get(route).get_json()
+    assert body["next_workout"]["estimated_minutes"] == 45
+    assert body["schedule_fit"] == {
+        "status": "ok", "fits": True, "minutes": 45, "shortened": False, "plan_minutes": None,
+        "window_start": iso(at(0, 12)), "window_end": iso(at(0, 12, 50)),
+        "reason": "Calendar: 45 min fits 12:00 PM to 12:50 PM",
+    }
+
+
+def test_the_brief_describes_the_preserved_plan_it_returns(feed):
+    module, client, set_feed = feed
+    set_feed(GAP_45)
+    module.USER_SETTINGS["available_time_minutes"] = 75
+    connect(client)
+    preserve(module)
+    body = client.get("/api/recommendation/smart").get_json()
+    assert body["next_workout"]["estimated_minutes"] == 75
+    assert "Calendar: no free window today; next window tomorrow 6:00 AM" in body["reasoning"]
+    assert "session budget" not in body["reasoning"]
