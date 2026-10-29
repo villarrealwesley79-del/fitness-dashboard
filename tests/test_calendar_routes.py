@@ -538,11 +538,14 @@ def test_the_minutes_named_always_fit_the_window_named(feed, wanted, goal, spans
     assert window in client.get("/api/recommendation/smart").get_json()["reasoning"]  # the brief says the same
 
 
-def test_a_preserved_plan_without_a_length_uses_the_gym_now_fallback(feed):
+@pytest.mark.parametrize("missing", [None, 0])
+def test_a_preserved_plan_without_minutes_falls_back_to_its_time_budget(feed, missing):
     module, client, set_feed = feed
     set_feed(GAP_45)
     connect(client)
-    preserve(module, estimated_minutes=None, estimated_duration=60)
+    preserve(module, estimated_minutes=missing, estimated_duration="60 min", available_time=60)  # the shape the generator writes
+    for route in ("/api/next-workout", "/api/dashboard", "/api/recommendation/smart"):
+        assert client.get(route).status_code == 200, route
     fit = client.get("/api/next-workout").get_json()["schedule_fit"]
     assert fit["fits"] is False and fit["next_window"]["day"] == "tomorrow"  # 60 minutes does not fit 45
 

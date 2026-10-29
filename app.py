@@ -4197,7 +4197,7 @@ def _schedule_fit(plan=None):
     windows = _calendar_day(state["events"], now, 0)[1]
     span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
     if plan is not None:
-        need = int(plan.get("estimated_minutes") or plan.get("estimated_duration") or plan.get("available_time") or 0)  # as /gym-now
+        need = int(plan.get("estimated_minutes") or plan.get("available_time") or 0)  # not estimated_duration: it is a "60 min" label
         held = next((w for w in windows if span(w) >= need), None)  # earliest that holds the plan
         fit = {"fits": bool(held), "minutes": need if held else 0, "shortened": False,
                "window_start": held[0] if held else None, "window_end": held[1] if held else None}
