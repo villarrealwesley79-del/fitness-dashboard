@@ -40,22 +40,22 @@ def test_classify_freshness_missing(fitness_app):
     [
         (
             82,
-            {"wearable_facts": {"status": "fresh"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "fresh"}},
             "high",
         ),
         (
             72,
-            {"wearable_facts": {"status": "aging"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "aging"}},
             "medium",
         ),
         (
             88,
-            {"wearable_facts": {"status": "stale"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "stale"}},
             "low",
         ),
         (
             88,
-            {"wearable_facts": {"status": "missing"}, "apple_health": {"status": "missing"}},
+            {"wearable_facts": {"status": "missing"}},
             "low",
         ),
     ],
@@ -73,11 +73,6 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
             "last_data_point": "2026-05-18",
             "last_sync_attempt": "2026-05-18T07:00:00",
             "source": "open_wearables",
-        },
-        "apple_health": {
-            "status": "fresh",
-            "last_data_point": "2026-05-18",
-            "last_sync_attempt": "2026-05-18T07:00:00",
         },
     }
     seed_readiness(fitness_app, monkeypatch, readiness=82, hrv=41)
@@ -133,7 +128,6 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
 def _freshness_payload():
     return {
         "wearable_facts": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
-        "apple_health": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
     }
 
 
@@ -283,31 +277,6 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
     assert response.get_json()["recommendation_sources"]["source_proof"]["weather"]["fields_used"] == [
         "feelslike_f"
     ]
-
-
-def test_recommendation_smart_does_not_claim_out_of_window_apple_health_workouts(fitness_app, monkeypatch):
-    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
-    monkeypatch.setattr(
-        fitness_app,
-        "_recommendation_workouts_with_apple_health",
-        lambda *_args, **_kwargs: [
-            {
-                "date": "2000-01-01",
-                "source": "apple_health",
-                "recommendation_load": 100,
-                "apple_health": {"hr_intensity_applied": True},
-            }
-        ],
-    )
-
-    payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
-
-    assert payload["recommendation_sources"]["source_proof"]["apple_health"] == {
-        "used_for_recommendation": False,
-        "fields_used": [],
-        "modifier_applied": False,
-        "ignored_reason": "missing_data",
-    }
 
 
 def test_fetch_weather_normalizes_provider_payload_for_response_and_cache(fitness_app, monkeypatch):
@@ -479,11 +448,6 @@ def test_dashboard_route_shape_without_server_or_cookie(fitness_app, monkeypatch
             "last_data_point": None,
             "last_sync_attempt": None,
             "source": "open_wearables",
-        },
-        "apple_health": {
-            "status": "missing",
-            "last_data_point": None,
-            "last_sync_attempt": None,
         },
     }
     monkeypatch.setattr(

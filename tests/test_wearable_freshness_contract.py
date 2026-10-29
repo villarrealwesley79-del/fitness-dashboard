@@ -1,15 +1,10 @@
 """Contract tests for the wearable-freshness UI surfaces (FIT-16).
 
-The Settings INTEGRATIONS panel renders wearable + Apple Health freshness
-evidence by reading specific fields from `/api/wearables/today` and
-`/api/apple-health/sync/status`. These tests pin the field set + types
-so a backend refactor can't silently break the UI's ability to show
-"latest daily / sleep / cached vs live" and "last accepted / attempt /
-records / stale" without the JS surface breaking too.
-
-Auth-gating, webhook semantics, and the legacy stub on
-`/api/apple-health/sync` are NOT exercised here — they have their own
-tests (test_apple_health_setup_url.py, test_apple_health_hae_dates.py).
+The Settings INTEGRATIONS panel renders wearable freshness evidence by
+reading specific fields from `/api/wearables/today` and `/api/freshness`.
+These tests pin the field set + types so a backend refactor can't silently
+break the UI's ability to show "latest daily / sleep / cached vs live"
+without the JS surface breaking too.
 """
 from __future__ import annotations
 
@@ -21,79 +16,10 @@ import pytest
 @pytest.fixture()
 def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit16-freshness-secret")
-    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit16-freshness-token")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
-
-
-# ──────────────────────────────────────────────────────────────────
-# /api/apple-health/sync/status — fields the FIT-16 panel renders
-# ──────────────────────────────────────────────────────────────────
-
-def test_apple_health_status_exposes_last_accepted_and_last_attempt(fitness_app):
-    """The UI reads ``last_sync`` (records actually inserted) and
-    ``last_attempt`` (raw webhook events) so it can distinguish
-    "data is landing" from "HAE is trying but nothing is inserting".
-    Both keys must be present in the response, even when null.
-    """
-    res = fitness_app.app.test_client().get("/api/apple-health/sync/status")
-    assert res.status_code == 200
-    payload = res.get_json()
-    assert "last_sync" in payload, "last_accepted timestamp must be exposed"
-    assert "last_attempt" in payload, "last_attempt timestamp must be exposed"
-
-
-def test_apple_health_status_exposes_record_breakdown(fitness_app):
-    """The UI renders ``total_records`` + the top categories from
-    ``by_type``. Both must be present (empty dict is fine when no
-    data has landed yet).
-    """
-    res = fitness_app.app.test_client().get("/api/apple-health/sync/status")
-    payload = res.get_json()
-    assert "total_records" in payload
-    assert isinstance(payload["total_records"], int)
-    assert "by_type" in payload
-    assert isinstance(payload["by_type"], dict)
-
-
-def test_apple_health_status_exposes_setup_configured_flag(fitness_app):
-    """The UI flips between "Setup · waiting for export" and "Not
-    connected" off this flag. Must be a real bool.
-    """
-    res = fitness_app.app.test_client().get("/api/apple-health/sync/status")
-    payload = res.get_json()
-    assert "setup_configured" in payload
-    assert isinstance(payload["setup_configured"], bool)
-
-
-def test_apple_health_status_exposes_last_event_counts_shape(fitness_app):
-    """When ``last_event`` is non-null it must carry ``inserted``,
-    ``skipped``, ``total`` ints so the UI can render "X inserted, Y
-    skipped" inline. When no events have landed, it may be null.
-    """
-    res = fitness_app.app.test_client().get("/api/apple-health/sync/status")
-    payload = res.get_json()
-    assert "last_event" in payload
-    event = payload["last_event"]
-    if event is not None:
-        assert "inserted" in event and isinstance(event["inserted"], int)
-        assert "skipped" in event and isinstance(event["skipped"], int)
-        assert "total" in event and isinstance(event["total"], int)
-
-
-def test_apple_health_status_does_not_leak_raw_health_data(fitness_app):
-    """The status endpoint must never include raw health records,
-    user-identifying payloads, or webhook secrets — only aggregates
-    and timestamps. Sanity check on the field set so a future refactor
-    doesn't accidentally widen the shape.
-    """
-    res = fitness_app.app.test_client().get("/api/apple-health/sync/status")
-    payload = res.get_json()
-    forbidden = ("token", "secret", "records", "samples", "raw", "user_id")
-    for key in forbidden:
-        assert key not in payload, f"{key!r} leaked into /api/apple-health/sync/status"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -163,7 +89,7 @@ def test_dashboard_freshness_block_distinguishes_attempt_from_data_point(fitness
     res = fitness_app.app.test_client().get("/api/dashboard")
     payload = res.get_json()
     freshness = payload.get("freshness") or {}
-    for source in ("wearable_facts", "apple_health"):
+    for source in ("wearable_facts",):
         assert source in freshness, f"freshness.{source} block must exist"
         block = freshness[source]
         assert "last_data_point" in block, (

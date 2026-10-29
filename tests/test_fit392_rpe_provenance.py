@@ -316,7 +316,7 @@ def test_set_rpe_control_has_mobile_safe_layout_and_new_asset_version():
     assert ".set-rpe-cell" in STYLE_CSS
     assert "min-height: 44px" in STYLE_CSS
     assert "@media (max-width: 420px)" in STYLE_CSS
-    assert "/static/css/style.css?v=20260716-fit392-rpe" in html
-    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
-    assert "/static/js/app.js?v=20260716-fit392-rpe" in loader
-    assert "fitness-dashboard-v20260716-fit392-rpe" in service_worker
+    assert "/static/css/style.css?v=20261028-w4c-apple-via-ow" in html
+    assert "/static/js/app-loader.js?v=20261028-w4c-apple-via-ow" in html
+    assert "/static/js/app.js?v=20261028-w4c-apple-via-ow" in loader
+    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in service_worker

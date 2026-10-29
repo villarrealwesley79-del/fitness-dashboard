@@ -14,11 +14,6 @@ def _payload_kwargs(tmp_path, **overrides):
         "open_wearables_configured": False,
         "open_wearables_user_id": "",
         "open_wearables_marker": {"configured": False},
-        "apple_health_enabled": True,
-        "apple_health_hr_intensity_enabled": False,
-        "apple_health_freshness": ("missing", None, None),
-        "apple_health_sync_db_file": str(tmp_path / "apple-health.sqlite3"),
-        "apple_health_workout_files": [],
         "wearable_facts": [{
             "date": "2026-06-27", "metric": "recovery_score", "provider": "oura", "value": 72,
             "freshness": "fresh", "conflict_state": None, "imported_at": "ignored",
@@ -29,7 +24,7 @@ def _payload_kwargs(tmp_path, **overrides):
     return base
 
 
-def test_build_payload_keeps_source_shapes_and_file_markers(tmp_path):
+def test_build_payload_keeps_source_shapes_and_has_no_apple_health_inputs(tmp_path):
     payload = fingerprint.build_payload(**_payload_kwargs(tmp_path))
 
     assert payload["auth_scope"] == "user:1"
@@ -38,7 +33,7 @@ def test_build_payload_keeps_source_shapes_and_file_markers(tmp_path):
         for field in fingerprint.SETTINGS_FIELDS
     }
     assert payload["workouts_latest"] == "2026-06-26T10:00:00"
-    assert payload["apple_health"]["sync_db"]["missing"] is True
+    assert "apple_health" not in payload
     assert payload["wearable_facts"] == [{
         "date": "2026-06-27", "metric": "recovery_score", "provider": "oura", "value": 72,
         "freshness": "fresh", "conflict_state": None,

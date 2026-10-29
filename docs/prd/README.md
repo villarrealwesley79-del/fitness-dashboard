@@ -1,8 +1,9 @@
 # Fitness Dashboard PRD Index
 
-> **Sources:** `README.md`, `docs/VISION.md`, `docs/PRD.md`, `docs/CURRENT_STATE.md`, `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, `templates/index.html`, `static/js/app.js`, `static/js/sw.js`
+> **Sources:** `README.md`, `docs/VISION.md`, `docs/PRD.md`, `docs/CURRENT_STATE.md`, `app.py`, `auth.py`, `templates/index.html`, `static/js/app.js`, `static/js/sw.js`
 > **Routes:** Master index for all documented app, API, auth, integration, PWA, and dead/legacy route surfaces.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
+> **Update 2026-10-28:** WHOOP, Oura and Apple Health reach the app only through Open Wearables. The Health Auto Export webhook, the direct Apple Health parser and the legacy `/api/health/*` routes are gone (PRD 08 was deleted). Sections of this pack that still describe them, food logging or the in-app AI coach are historical until the pack is regenerated.
 
 ## System Overview
 
@@ -16,15 +17,13 @@ Runtime data is local by default. The public repo intentionally excludes owner d
 
 - `app.py` - Main Flask app, route surface, workout engine, dashboard aggregation, meal flows, settings, AI coach routes, Open Wearables, WHOOP/Oura wrappers, push, backup/import, and PWA routes.
 - `ai_fact_query.py` - Sanitized fact-context question answering and pending suggestion creation for the AI fact modal.
-- `apple_health_parser.py` - Apple Health file parsing, Health Auto Export webhook ingestion, sync DB, setup URL, and Apple Health status routes.
 - `auth.py` - Flask-Login, single-owner guard, auth DB, login/register/logout, CSRF/origin checks, session config, and public route allowlist.
 - `branded_food_lookup.py` - Branded, restaurant, cache, Nutritionix, USDA, Open Food Facts, and product-page lookup orchestration for food estimates.
 - `claude_vision_adapter.py` - Optional Anthropic vision estimate adapter; real only when `ANTHROPIC_API_KEY` is configured.
 - `data_loader.py` - Legacy workout-log parsing and summary helpers.
 - `data_store.py` - SQLite store for body, cardio, nutrition, food logs, review snapshots, vocab, push subscriptions, and workout-adaptation events.
-- `health_ingest.py` - Legacy Apple Health JSON export routes for workouts, sleep, steps, vitals, and summary.
 - `heb_product_lookup.py` - H-E-B product-page helper for specific packaged-product nutrition lookup.
-- `history_normalization.py` - Workout/activity category normalization for history and Apple Health-derived rows.
+- `history_normalization.py` - Workout/activity category normalization for history and Open Wearables rows.
 - `lm_studio_adapter.py` - LM Studio primary/fallback routing, strict JSON schemas, adjust/analyze/swap helpers, and inference locks.
 - `local_vision_adapter.py` - Local LM Studio/Ollama vision-food estimator with model routing, schema validation, retries, and keep-warm.
 - `meal_estimate_schema.py` - Public meal estimate schema sanitizer and plausible-range validator.
@@ -56,7 +55,7 @@ Frontend:
 Data locations:
 
 - JSON files through `data_path(...)`: `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `open_wearables_config.json`.
-- SQLite files through `data_path(...)`: `auth.db`, `fitness_data.db`, `whoop.sqlite3`, `wearable_facts.sqlite3`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`.
+- SQLite files through `data_path(...)`: `auth.db`, `fitness_data.db`, `wearable_facts.sqlite3`, `ai_coach_cache.sqlite3`.
 - Protected/local material: `.flask-secret`, `.health-sync-token`, `.whoop-client-id`, WHOOP protected material under `WHOOP_PROTECTED_MATERIAL_DIR` or a derived protected-material file path.
 - Browser-local stores: active workout draft and sync queue in `localStorage`; meal queue metadata/photos in IndexedDB; adjust-intent draft in `sessionStorage`.
 
@@ -70,12 +69,11 @@ Data locations:
 | Meal logging: text and barcode | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) | Meal composer text path, barcode lookup, pending review, food logs, personal vocab, refresh events. |
 | Photo food logging and vision | [05-photo-food-logging-vision.md](05-photo-food-logging-vision.md) | Multi-photo capture/upload, local VLM estimation, image validation, privacy retention, manual review. |
 | Nutrition data sources | [06-nutrition-data-sources.md](06-nutrition-data-sources.md) | Nutritionix, USDA, Open Food Facts, H-E-B, branded lookup cache, nutrition history, source provenance. |
-| Apple Health integration | [08-apple-health-integration.md](08-apple-health-integration.md) | Health Auto Export token webhook, setup URL, legacy HealthKit JSON exports, sync freshness. |
 | Open Wearables integration | [10-open-wearables-integration.md](10-open-wearables-integration.md) | Hub setup, provider catalog, cloud sign-in gates, phone invites, metadata-only sync, normalized facts. |
 | AI coach and recommendations | [11-ai-coach-recommendations.md](11-ai-coach-recommendations.md) | LM Studio health/metrics, adjust plan, analyze workout, fact query, suggestion approval/rejection. |
 | Push notifications | [12-push-notifications.md](12-push-notifications.md) | Web Push subscription lifecycle, reminder preview, test delivery, service-worker notification display. |
 | Data layer and persistence | [14-data-layer-persistence.md](14-data-layer-persistence.md) | JSON/SQLite stores, backup/export/import, local queues, sanitized backup contracts, migrations. |
-| Ops and deployment | [15-ops-deployment.md](15-ops-deployment.md) | Local runtime, launchd, environment variables, smoke testing, release/cache-bust behavior, staleness jobs. |
+| Ops and deployment | [15-ops-deployment.md](15-ops-deployment.md) | Local runtime, launchd, environment variables, smoke testing, release/cache-bust behavior. |
 | Progress analytics and body composition | [16-progress-analytics-body.md](16-progress-analytics-body.md) | Body/recomp trends, sleep analytics, vitals, adherence, muscle fatigue, ACWR, progressive overload, weather, and advanced analytics. |
 
 ## Page Inventory
@@ -93,7 +91,7 @@ Data locations:
 | Body tab | `#tab-body` | Weight/body-fat cards, food-context interpretation, target progress, 90-day trends, measurements, 14-day nutrition trend, body logging. | [02-daily-brief-dashboard.md](02-daily-brief-dashboard.md), [14-data-layer-persistence.md](14-data-layer-persistence.md), [16-progress-analytics-body.md](16-progress-analytics-body.md) |
 | Stats tab | `#tab-stats` | Range-filtered totals, volume, RPE, time, muscle recovery, volume-by-muscle, progress insights. | [03-workout-planning-execution.md](03-workout-planning-execution.md), [16-progress-analytics-body.md](16-progress-analytics-body.md) |
 | Settings - coaching setup | `#tab-settings [data-group=coaching-setup]` | Goal, profile, duration, sessions/week, equipment, AI coach status. | [01-auth-and-account.md](01-auth-and-account.md), [03-workout-planning-execution.md](03-workout-planning-execution.md), [11-ai-coach-recommendations.md](11-ai-coach-recommendations.md) |
-| Settings - data sources | `#tab-settings [data-group=data-sources]` | Open Wearables, Apple Health, Weather. | [08-apple-health-integration.md](08-apple-health-integration.md), [10-open-wearables-integration.md](10-open-wearables-integration.md) |
+| Settings - data sources | `#tab-settings [data-group=data-sources]` | Open Wearables, Weather. | [10-open-wearables-integration.md](10-open-wearables-integration.md) |
 | Settings - notifications | `#tab-settings [data-group=notifications]` | Web Push support state, enable/test/disable actions, active alert preview. | [12-push-notifications.md](12-push-notifications.md) |
 | Settings - maintenance | `#tab-settings [data-group=maintenance]` | Backup export/import, units, account sign-out. | [14-data-layer-persistence.md](14-data-layer-persistence.md), [01-auth-and-account.md](01-auth-and-account.md) |
 | Swap Exercise modal | `#modal-swap` | Same-muscle alternatives and free-text swap resolution. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |
@@ -106,7 +104,6 @@ Data locations:
 | Meal Detail modal | `#modal-meal-detail` | Food-log detail, correction edit form, delete action. | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) |
 | Food Log modal | `#modal-food-log` | Today, yesterday, recent 14 days, day drilldown. | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) |
 | Delete confirmation modal | `#modal-delete-confirm` | Workout delete confirmation. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |
-| Apple Health setup modal | `#modal-apple` | Tokenized Health Auto Export setup URL and sync status. | [08-apple-health-integration.md](08-apple-health-integration.md) |
 | Active Workout modal | `#modal-active` | Live set logging, swap/adjust, complete workout. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |
 | Emergency gym view | `GET /gym-now` | Emergency no-app-shell workout view for stale mobile/PWA caches. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |
 | Workout Saved modal | `#modal-workout-saved` | Completion summary, queued state, analyze action. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |
@@ -130,7 +127,6 @@ See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-rout
 | Body, sleep, baselines, analytics | 5 |
 | AI coach and facts | 8 |
 | Oura | 4 |
-| Apple Health and legacy HealthKit | 14 |
 | WHOOP | 9 |
 | Open Wearables and wearable facts | 11 |
 | Push notifications | 5 |
@@ -142,9 +138,8 @@ See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-rout
 Permission model:
 
 - Most app and API routes are protected by Flask-Login and, in default single-owner mode, by owner-only user-id enforcement.
-- Public route allowlist includes login/register/logout, manifest, service worker, static assets, robots/sitemap, and the exact Apple Health sync webhook path.
+- Public route allowlist includes login/register/logout, manifest, service worker, static assets, robots/sitemap.
 - Mutating browser requests must pass same-origin browser metadata, a valid form CSRF token, or `X-Requested-With: XMLHttpRequest`.
-- `/api/apple-health/sync` is token-authenticated by `HEALTH_SYNC_TOKEN` via `X-Sync-Token` or `?token=...`, and is exempt from session and CSRF because it is called by Health Auto Export/Shortcuts.
 - `app.py` adds permissive CORS headers globally. Browser session/auth still gate protected routes, but the policy should be reviewed before any public multi-user deployment.
 
 Common interaction patterns:

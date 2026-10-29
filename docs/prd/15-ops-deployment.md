@@ -1,16 +1,16 @@
 # Ops & Deployment — PRD
 
-> **Sources:** `Dockerfile`, `.dockerignore`, `Procfile`, `runtime.txt`, `pyproject.toml`, `requirements.txt`, `scripts/install-launchd-agents.sh`, `scripts/check-apple-health-staleness.sh`, `scripts/worktree-server-guard.sh`, `scripts/install-worktree-guard.sh`, `scripts/whoop_sync.py`, `scripts/remove_synthetic_history_rows.py`, `scripts/smoke_branded_lookup_coverage.py`, `support/self_test.sh`, `docs/RELEASE_RUNBOOK.md`, `docs/REPO_HYGIENE.md`, `docs/AGENT_WORKTREES.md`, `.githooks/post-checkout`, `.githooks/pre-push`, `tests/test_docker_context_secret_hygiene.py`, `tests/test_fit183_runtime_paths.py`, `tests/test_worktree_server_guard.py`, `tests/test_whoop_sync.py`, `tests/test_synthetic_history_cleanup.py`, `tests/test_smoke_branded_lookup_coverage.py`, `tests/test_pytest_ci_contract.py`, `tests/test_whoop_ui_contract.py`, `README.md`, `docs/CURRENT_STATE.md`
-> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/wearables/today`, `/api/wearables/trends`, `/api/apple-health/sync/status`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, `/api/apple-health/sync`, `/api/apple-health/sync/setup-url`, WHOOP/Open Wearables routes during release checks.
+> **Sources:** `Dockerfile`, `.dockerignore`, `Procfile`, `runtime.txt`, `pyproject.toml`, `requirements.txt`, `scripts/install-launchd-agents.sh`, `scripts/worktree-server-guard.sh`, `scripts/install-worktree-guard.sh`, `scripts/whoop_sync.py`, `scripts/remove_synthetic_history_rows.py`, `scripts/smoke_branded_lookup_coverage.py`, `support/self_test.sh`, `docs/RELEASE_RUNBOOK.md`, `docs/REPO_HYGIENE.md`, `docs/AGENT_WORKTREES.md`, `.githooks/post-checkout`, `.githooks/pre-push`, `tests/test_docker_context_secret_hygiene.py`, `tests/test_fit183_runtime_paths.py`, `tests/test_worktree_server_guard.py`, `tests/test_whoop_sync.py`, `tests/test_synthetic_history_cleanup.py`, `tests/test_smoke_branded_lookup_coverage.py`, `tests/test_pytest_ci_contract.py`, `tests/test_whoop_ui_contract.py`, `README.md`, `docs/CURRENT_STATE.md`
+> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/wearables/today`, `/api/wearables/trends`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, WHOOP/Open Wearables routes during release checks.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
 
 Ops & Deployment is the operator product layer for keeping Fitness Dashboard running as a local-first personal system. It covers two runtime shapes: the actual Mac mini launchd path used for the owner runtime, and a container/gunicorn path for hosted-style deployment. It also includes smoke tests, release/rollback procedure, secret hygiene, repo hygiene, branch-switch safety, and bounded maintenance scripts.
 
-The primary operator scenario is: install or refresh the launchd agents on the Mac mini, keep the Flask app listening on `127.0.0.1:5050`, monitor Apple Health freshness without storing web credentials, run an authenticated smoke test against the live server, and release or roll back changes without deleting local runtime data. The operator should be able to reason about what is source code, what is local private state, and what checks prove the runtime is healthy.
+The primary operator scenario is: install or refresh the launchd agents on the Mac mini, keep the Flask app listening on `127.0.0.1:5050`, run an authenticated smoke test against the live server, and release or roll back changes without deleting local runtime data. The operator should be able to reason about what is source code, what is local private state, and what checks prove the runtime is healthy.
 
-The current local production-ish path is launchd running `python app.py`, not Docker. `docs/CURRENT_STATE.md` identifies the listener as `127.0.0.1:5050` and launchd jobs as `com.fitness-dashboard` and `com.fitness-dashboard.staleness`. The Dockerfile and Procfile both use gunicorn and are important deployment contracts, but the repo docs emphasize the local Mac mini service as the current owner runtime.
+The current local production-ish path is launchd running `python app.py`, not Docker. `docs/CURRENT_STATE.md` identifies the listener as `127.0.0.1:5050` and the launchd job as `com.fitness-dashboard`. The Dockerfile and Procfile both use gunicorn and are important deployment contracts, but the repo docs emphasize the local Mac mini service as the current owner runtime.
 
 Operations deliberately avoid destructive cleanup by default. Runtime databases, local JSON history, auth state, health exports, logs, backup bundles, protected WHOOP material, and generated audit/proof artifacts stay local and out of Git. Rollback is code-only unless a separate explicit recovery issue authorizes data changes.
 
@@ -18,11 +18,10 @@ Operations deliberately avoid destructive cleanup by default. Runtime databases,
 
 | Surface | Audience | File/command | Behavior |
 | --- | --- | --- | --- |
-| Launchd installer | Local operator | `scripts/install-launchd-agents.sh` | Installs/uninstalls/reinstalls the dashboard and staleness user agents. Supports dry run, repo override, and Python override. |
+| Launchd installer | Local operator | `scripts/install-launchd-agents.sh` | Installs/uninstalls/reinstalls the dashboard user agent. Supports dry run, repo override, and Python override. |
 | App launchd job | Local runtime | `com.fitness-dashboard` plist generated by installer | Runs `python app.py` with `HOST=127.0.0.1`, `PORT=5050`, `FLASK_DEBUG=0`, `DATA_DIR`, and public base URL. Keeps alive and runs at load. |
-| Staleness launchd job | Local monitoring | `com.fitness-dashboard.staleness` plist generated by installer | Runs Apple Health staleness check hourly and at load, pointed at selected runtime DB. |
 | Live smoke test | Operator/release agent | `support/self_test.sh` | Authenticates with owner credentials or session cookie, hits key endpoints, checks sensitive material redaction, validates AI health route behavior, and checks file descriptor leaks. |
-| Release runbook | Operator/release agent | `docs/RELEASE_RUNBOOK.md` | Defines release checklist, restart, launchd install/migration, cache bust, rollback, Apple Health bridge, WHOOP, and Open Wearables checks. |
+| Release runbook | Operator/release agent | `docs/RELEASE_RUNBOOK.md` | Defines release checklist, restart, launchd install/migration, cache bust, rollback, and Open Wearables checks. |
 | Repo hygiene doc | Agents/operators | `docs/REPO_HYGIENE.md` | Defines what remains in Git, what stays local/ignored, and what requires explicit approval before deletion. |
 | Worktree guard | Agents/operators | `.githooks/post-checkout`, `scripts/worktree-server-guard.sh`, `scripts/install-worktree-guard.sh` | Prevents branch switching in a worktree while a Python dashboard server from that worktree is still running. |
 | Pre-push hook | Developers/agents | `.githooks/pre-push` | Runs `python -m pytest -q` unless explicitly skipped with `FITNESS_SKIP_PRE_PUSH_TESTS=1`. |
@@ -60,19 +59,6 @@ Operations deliberately avoid destructive cleanup by default. Runtime databases,
 | KeepAlive | boolean | Yes | true | Fixed | Restarts app after exit. |
 | Logs | paths | Yes | `/tmp/fitness-dashboard.log`, `/tmp/fitness-dashboard.err.log` | Fixed | stdout/stderr destinations. |
 
-### Generated Staleness Agent Fields
-
-| Field | Type | Required | Default | Validation | Business meaning |
-| --- | --- | --- | --- | --- | --- |
-| Label | string | Yes | `com.fitness-dashboard.staleness` | Fixed | launchd service identity. |
-| ProgramArguments | list | Yes | `/bin/bash`, `scripts/check-apple-health-staleness.sh` | Generated | Runs watchdog script. |
-| StartInterval | integer seconds | Yes | `3600` | Fixed | Hourly staleness checks. |
-| RunAtLoad | boolean | Yes | true | Fixed | Checks immediately after bootstrap. |
-| `DATA_DIR` | env path | Yes | Installer-selected data dir | XML escaped | Runtime state root. |
-| `APPLE_HEALTH_SYNC_DB` | env path | Yes | `<DATA_DIR or ~/fitness-dashboard>/apple_health_sync.db` | XML escaped | SQLite DB to inspect; launchd installer sets it explicitly. |
-| `APPLE_HEALTH_FIRST_SEEN_FILE` | env path | Yes | `<DATA_DIR or ~/fitness-dashboard>/.apple-health-first-sync` | XML escaped | Marker that first sync has occurred; launchd installer sets it explicitly. |
-| Logs | paths | Yes | `/tmp/fitness-dashboard-staleness.log`, `/tmp/fitness-dashboard-staleness.err.log` | Fixed | stdout/stderr destinations. |
-
 ### Docker/Gunicorn Runtime Fields
 
 | Field | Type | Required | Default | Validation | Business meaning |
@@ -104,10 +90,10 @@ Operations deliberately avoid destructive cleanup by default. Runtime databases,
 ### Install or Refresh Local Runtime
 
 Trigger → Operator runs `scripts/install-launchd-agents.sh install`.  
-Behavior → Resolves repo path, data dir, Python interpreter, writes app and staleness plists if changed, bootouts old labels, bootstraps plists, and kickstarts both labels.  
+Behavior → Resolves repo path, data dir, Python interpreter, writes the app plist if changed, bootouts the old label, bootstraps the plist, and kickstarts it.  
 Validation → Unknown arguments return exit 2. `--dry-run` prints every write/launchctl action instead of mutating launchd state.  
 API → Local shell/launchd, not Flask.  
-Success → `com.fitness-dashboard` runs app from selected checkout; `com.fitness-dashboard.staleness` watches the matching Apple Health DB.  
+Success → `com.fitness-dashboard` runs app from selected checkout.  
 Failure → Shell exits due to `set -euo pipefail`; launchctl or path failures stop the install.
 
 ### Restart Local App
@@ -119,19 +105,10 @@ API → `GET /` should redirect to login when no session is present.
 Success → App listens on `127.0.0.1:5050`; auth gate still works.  
 Failure → No listener, no login redirect, or smoke failure blocks release.
 
-### Apple Health Staleness Watchdog
-
-Trigger → launchd runs `scripts/check-apple-health-staleness.sh` hourly and at load.  
-Behavior → Reads local SQLite DB directly because the status endpoint is auth-gated and the watchdog should not store web credentials. Uses max `created_at` from `ah_sync_events`, falling back to `ah_sync_log` max only when the events table is empty; records first seen sync marker; logs OK, INFO, WARN, STALE, or ERROR.  
-Validation → Missing DB exits 0. No sync ever recorded exits 0. Failed DB query exits 4. Unparseable timestamp exits 3. Last sync older than threshold exits 1.  
-API → SQLite file access only.  
-Success → Writes `/tmp/apple-health-staleness.log` line and exits 0 when fresh.  
-Failure → Non-zero exit lets launchd/log monitoring surface stale or broken sync.
-
 ### Authenticated Smoke Test
 
 Trigger → Operator runs `support/self_test.sh` against a live server.  
-Behavior → Logs in with owner credentials or uses a provided session cookie. Fetches dashboard, settings, history, history-all, Oura status/trends, Apple Health sync status, weather, smart recommendation, and AI health. Checks responses for raw JSON/token material. Requires AI health to report reachable loaded model and primary/fallback routing consistency. Sends a safe invalid complete-workout POST expecting HTTP 400. Checks file descriptor count before and after 25 authenticated `/api/settings` reads.  
+Behavior → Logs in with owner credentials or uses a provided session cookie. Fetches dashboard, settings, history, history-all, Open Wearables status/trends, weather, smart recommendation, and AI health. Checks responses for raw JSON/token material. Requires AI health to report reachable loaded model and primary/fallback routing consistency. Sends a safe invalid complete-workout POST expecting HTTP 400. Checks file descriptor count before and after 25 authenticated `/api/settings` reads.  
 Validation → Requires `curl`, `python3`, and `lsof` for FD check. Requires valid auth. Fails if any checked endpoint returns non-2xx, sensitive material is detected, model health is degraded beyond expected fallback behavior, or FD counts exceed thresholds.  
 API → Live Flask endpoints.  
 Success → Prints summaries and final `OK`.  
@@ -194,30 +171,23 @@ Ops does not own production API routes, but it verifies the following:
 | GET | `/api/history-all` | Auth required | Smoke | None | JSON full history/cardio | Real |
 | GET | `/api/wearables/today` | Auth required | Smoke | None | JSON Oura status | Real integration/cache |
 | GET | `/api/wearables/trends` | Auth required | Smoke | None | JSON trend series | Real integration/cache |
-| GET | `/api/apple-health/sync/status` | Auth required | Smoke/release | None | JSON sync status | Real local SQLite |
 | GET | `/api/weather` | Auth required | Smoke | None | JSON weather/degraded state | Real/degraded depending env |
 | GET | `/api/recommendation/smart` | Auth required | Smoke | None | JSON recommendation | Real deterministic/AI-wrapped |
 | GET | `/api/ai/health` | Auth required | Smoke | None | JSON AI route health | Real local model route state |
 | POST | `/api/complete-workout` | Auth + CSRF/same-origin behavior | Safe rejected write path | Invalid empty workout JSON | Expected HTTP 400 | Real validation |
-| POST | `/api/apple-health/sync` | Token-auth public webhook | Rollback checks | `token` query/header [see Apple Health PRD] | Rejects missing/invalid tokens | Real |
-| GET | `/api/apple-health/sync/setup-url` | Owner auth required | Rollback checks | None | Public webhook URL with token | Real |
 
 ## 6. Data Model & Persistence
 
-Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
+Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
 
 Launchd plists are written under `~/Library/LaunchAgents`:
 
 - `com.fitness-dashboard.plist`
-- `com.fitness-dashboard.staleness.plist`
 
 Operational logs are written under `/tmp`:
 
 - `/tmp/fitness-dashboard.log`
 - `/tmp/fitness-dashboard.err.log`
-- `/tmp/fitness-dashboard-staleness.log`
-- `/tmp/fitness-dashboard-staleness.err.log`
-- `/tmp/apple-health-staleness.log`
 
 The smoke test creates temporary cookie/body files with mode `0600` and deletes them on normal exit and common signals. Cleanup scripts only mutate runtime JSON when explicitly passed `--apply`.
 
@@ -227,12 +197,8 @@ The smoke test creates temporary cookie/body files with mode `0600` and deletes 
 | --- | --- | --- |
 | Launchd actions | `install`, `uninstall`, `reinstall` | Installer operations. |
 | App label | `com.fitness-dashboard` | Dashboard launchd service. |
-| Staleness label | `com.fitness-dashboard.staleness` | Apple Health watchdog launchd service. |
 | App host/port | `127.0.0.1:5050` | Local launchd runtime binding. |
 | App debug | `FLASK_DEBUG=0` | Debug/reloader off under launchd. |
-| Staleness interval | `3600` seconds | Hourly launchd watchdog cadence. |
-| Staleness threshold | `36` hours | Default maximum age after first Apple Health sync. |
-| Staleness exit codes | `0`, `1`, `3`, `4` | OK/quiet, stale, timestamp parse warning, SQLite query error. |
 | Docker base | `python:3.11-slim` | Container Python runtime. |
 | Docker defaults | `PORT=8080`, `FLASK_DEBUG=0`, `DATA_DIR=/data` | Container environment defaults. |
 | Gunicorn workers | `2` | Docker production worker count. |
@@ -250,7 +216,7 @@ The smoke test creates temporary cookie/body files with mode `0600` and deletes 
 
 ## 8. Integration Points
 
-Ops touches all major app systems indirectly. Auth is required for smoke. Apple Health drives the staleness watchdog and rollback checks. Oura, weather, recommendations, and AI health are smoke-test dependencies. WHOOP has a standalone sync CLI and release checks. Open Wearables has release checks around metadata-only sync, provider gates, and invitation codes. Docker and Procfile depend on access-log redaction because OAuth and health routes can include sensitive query strings.
+Ops touches all major app systems indirectly. Auth is required for smoke. Oura, weather, recommendations, and AI health are smoke-test dependencies. WHOOP has a standalone sync CLI and release checks. Open Wearables has release checks around metadata-only sync, provider gates, and invitation codes. Docker and Procfile depend on access-log redaction because OAuth and health routes can include sensitive query strings.
 
 The worktree guard is an agent/developer safety integration. It protects product/runtime truth by preventing a live server from continuing to serve one branch's Python code while templates or route contracts are switched underneath it.
 
@@ -260,7 +226,6 @@ The local app launchd job binds to `127.0.0.1` by default. Public exposure, if a
 
 Secrets and private runtime artifacts stay out of Docker context and Git. `.dockerignore` excludes common DBs, `.env`, `.flask-secret`, Health Auto Export markers/tokens, WHOOP client/token/protected material, logs, backups, generated audit bundles, and `.claude/`. `tests/test_docker_context_secret_hygiene.py` walks the Docker context and fails if sensitive paths would be included.
 
-The staleness watchdog intentionally avoids web credentials by reading local SQLite. The smoke test rejects responses containing `"raw_json"`, `?token=`, `HEALTH_SYNC_TOKEN`, or `APPLE_HEALTH_WEBHOOK_URL`.
 
 Gunicorn access logs avoid full query strings. Tests assert Dockerfile and Procfile use access log format with `%(U)s` and do not include `%(q)s` or `%(r)s`. The launchd/direct `python app.py` path also installs a sanitized request handler that redacts token-bearing query params and Authorization bearer values from Werkzeug logs.
 
@@ -271,7 +236,6 @@ Gunicorn access logs avoid full query strings. Tests assert Dockerfile and Procf
 - Backend/route changes require authenticated smoke testing against a running server.
 - Static JS/CSS behavior changes require cache-busting asset versions in the same PR.
 - Rollback uses code revert semantics and does not reset shared history or delete local data.
-- Apple Health public URL must come from `FITNESS_DASHBOARD_PUBLIC_BASE_URL` or intentional `APPLE_HEALTH_WEBHOOK_URL`; committed docs/config must not hardcode personal Tailscale hosts.
 - Open Wearables sync responses must stay metadata-only unless a future issue changes the privacy contract.
 - WHOOP client ID, client secret, access/refresh material, raw payloads, and token references must not be in repo, docs, logs, screenshots, PRs, or Linear comments.
 - A branch switch is unsafe while a server from the same worktree is running; use another worktree or stop the server.
@@ -283,9 +247,6 @@ Gunicorn access logs avoid full query strings. Tests assert Dockerfile and Procf
 | --- | --- | --- |
 | `DATA_DIR` | App dir in runtime; `REPO_DIR` in launchd installer; `/data` in Docker | Controls runtime JSON/SQLite paths. |
 | `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | Empty | Launchd includes empty string; URL helpers fall back to request-derived values where available. |
-| `APPLE_HEALTH_SYNC_DB` | `<DATA_DIR or ~/fitness-dashboard>/apple_health_sync.db` in staleness script | Watchdog reads this SQLite path; outside launchd, unset `DATA_DIR` falls back to `~/fitness-dashboard`. |
-| `APPLE_HEALTH_FIRST_SEEN_FILE` | `<DATA_DIR or ~/fitness-dashboard>/.apple-health-first-sync` | Watchdog first-sync marker; outside launchd, unset `DATA_DIR` falls back to `~/fitness-dashboard`. |
-| `STALE_AFTER_HOURS` | `36` | Watchdog stale threshold. |
 | `HOST` | `127.0.0.1` in launchd; `app.py` env default also `127.0.0.1` | Flask bind host for `python app.py`. |
 | `PORT` | `5050` for `app.py`; `8080` for Docker; required for Procfile host | Runtime port. |
 | `FLASK_DEBUG` | `0` | Debug/reloader disabled unless explicitly set to `1`. |
@@ -308,7 +269,6 @@ Coverage gaps:
 - No test starts real launchd agents; installer is tested through dry-run output.
 - No test runs `support/self_test.sh` end to end against a live authenticated server.
 - No test proves Docker container startup with mounted `/data`.
-- No test proves staleness watchdog behavior against malformed/missing SQLite tables beyond script inspection [TBC].
 - No test enforces that release rollback commands were followed; runbook is procedural.
 - No test proves launchd app job uses gunicorn; it intentionally runs `python app.py`, while Docker/Procfile use gunicorn.
 
@@ -321,7 +281,7 @@ Coverage gaps:
 - **Problem:** Existing tests assert selected strings in dry-run output, but they do not parse the generated plist XML or validate all launchd keys for both agents.
 - **Why it matters:** A malformed plist can leave the owner runtime down even when string checks pass.
 - **Acceptance criteria:**
-  - Parse generated app and staleness plist XML from dry-run output.
+  - Parse the generated app plist XML from dry-run output.
   - Assert required launchd keys, ProgramArguments, env vars, logs, RunAtLoad, KeepAlive/StartInterval.
   - Cover install and reinstall action output.
 - **Duplicate-of:** none
@@ -349,18 +309,6 @@ Coverage gaps:
   - Tests or architecture checks flag new critical in-memory mutable state.
   - Deployment docs state whether Docker is supported, experimental, or secondary.
 - **Duplicate-of:** FIT-256
-
-### IC-4: Add staleness watchdog unit coverage with temporary SQLite DBs
-- **Type:** Test
-- **Priority:** medium
-- **Where:** `scripts/check-apple-health-staleness.sh:21-80`
-- **Problem:** The watchdog contract is important, but current assigned tests do not directly exercise missing DB, no rows, fresh rows, stale rows, malformed timestamps, and query errors through the shell script.
-- **Why it matters:** Apple Health freshness is an operator-facing trust signal.
-- **Acceptance criteria:**
-  - Tests create temp SQLite DBs with `ah_sync_events` and `ah_sync_log` cases.
-  - Tests assert exit codes and log messages for quiet, OK, stale, parse, and query-error paths.
-  - Tests cover `STALE_AFTER_HOURS` override.
-- **Duplicate-of:** none
 
 ### IC-5: Make the WHOOP sync scheduling decision explicit
 - **Type:** Docs
@@ -393,7 +341,7 @@ Coverage gaps:
 - **Problem:** Operators currently combine `launchctl`, `lsof`, `curl`, logs, and smoke scripts manually to understand runtime health.
 - **Why it matters:** A single status command would reduce mistakes during release and rollback.
 - **Acceptance criteria:**
-  - Provide a read-only status script that reports launchd loaded/running state, listener PID, data dir, last staleness log line, and smoke prerequisites.
+  - Provide a read-only status script that reports launchd loaded/running state, listener PID, data dir, and smoke prerequisites.
   - Do not print secrets, session cookies, or token-bearing URLs.
   - Tests cover output redaction and missing-service states.
 - **Duplicate-of:** none
@@ -406,6 +354,6 @@ Coverage gaps:
 - **Why it matters:** Small quoting or portability errors can break the local runtime controls.
 - **Acceptance criteria:**
   - Add a documented shell static check using an existing available tool or a no-new-dependency alternative.
-  - Cover launchd installer, staleness checker, worktree guard, install guard, pre-push hook, post-checkout hook, and self-test.
+  - Cover launchd installer, worktree guard, install guard, pre-push hook, post-checkout hook, and self-test.
   - Document any intentionally ignored warnings.
 - **Duplicate-of:** none

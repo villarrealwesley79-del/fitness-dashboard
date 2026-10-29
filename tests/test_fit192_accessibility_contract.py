@@ -156,7 +156,7 @@ sandbox.__fitSet.getOpenWearablesStatus(async () => ({}));
 sandbox.__fitSet.getWearableSources(async () => ([]));
 sandbox.__fitSet.api(async (path) => path === '/api/freshness' ? { freshness: {} } : {});
 sandbox.__fitSet.updateSetting((value) => selected.push(value.training_goal));
-['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
+['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderSettingsGroupSummaries', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
 await e.renderSettings();
 const options = host.children;
 let prevented = false;
@@ -173,7 +173,7 @@ process.stdout.write(JSON.stringify({
         mocks=[
             "getSettings", "getOuraStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
             "renderOpenWearablesDetail", "renderFreshnessChips",
-            "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderPushSection",
+            "renderSettingsGroupSummaries", "renderPushSection",
         ],
     )
     assert output == {
@@ -331,10 +331,10 @@ def test_modal_markup_exposes_dialog_semantics_and_labels():
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/css/style.css?v=20260716-fit392-rpe" in html
-    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
-    assert "/static/js/app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260716-fit392-rpe" in sw
+    assert "/static/css/style.css?v=20261028-w4c-apple-via-ow" in html
+    assert "/static/js/app-loader.js?v=20261028-w4c-apple-via-ow" in html
+    assert "/static/js/app.js?v=20261028-w4c-apple-via-ow" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in sw
 
 
 def test_settings_hash_route_and_reco_sources_modal_aria_state():

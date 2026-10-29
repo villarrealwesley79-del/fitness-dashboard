@@ -2115,39 +2115,6 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     font-size: 12px;
     text-decoration: line-through;
 }
-.setup-steps {
-    padding-left: 20px;
-    color: var(--fg-1);
-    font-size: 13px;
-    line-height: 1.55;
-    margin: 10px 0;
-}
-.setup-steps li { margin-bottom: 8px; }
-.setup-url {
-    display: block;
-    margin-top: 6px;
-    padding: 8px 10px;
-    background: var(--bg-0);
-    border: 1px solid var(--border-2);
-    border-radius: 8px;
-    color: var(--accent-blue);
-    font-size: 11px;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    word-break: break-all;
-}
-.setup-sync-state {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: rgba(15,23,42,0.7);
-    border: 1px solid var(--border-1);
-    font-size: 12px;
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-.setup-sync-label { color: var(--fg-dim); font-weight: 700; }
-.setup-sync-detail { color: var(--fg-1); }
 .adjust-opt {
     display: block;
     text-align: left;

@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20260716-fit392-rpe';
+        script.src = '/static/js/app.js?v=20261028-w4c-apple-via-ow';
         script.async = true;
         document.body.appendChild(script);
     }

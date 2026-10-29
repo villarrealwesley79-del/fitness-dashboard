@@ -78,7 +78,6 @@ Recommendation-engine internals belong to PRD 11. This PRD documents what the us
 | `freshness.oura.status` | enum | yes | computed | See enums. | Oura freshness bucket. |
 | `freshness.oura.source` | enum | yes | `cached` | `live` if last Oura sync attempt is under 1 hour old, else `cached`. | Whether readiness is from recent sync or cached data. |
 | `freshness.whoop.status` | enum | no | computed | WHOOP-specific freshness. | WHOOP data trust state. |
-| `freshness.apple_health.status` | enum | yes | computed | Based on latest accepted Health Auto Export evidence. | Apple Health trust state. |
 | `freshness.food.status` | enum | yes | computed | Based on food log activity. | Food logging trust state. |
 | `freshness.food.pending_review` | boolean | yes | false | True when unaccepted estimates exist. | Food entries may not count yet. |
 | `freshness.food.target_state` | enum | yes | `none` | `none`, `under`, `on_track`, `over`. | Macro target state shown in food chip. |
@@ -265,7 +264,6 @@ The app is single-owner by default. `FITNESS_DASHBOARD_SINGLE_USER=false` disabl
 | `FITNESS_DASHBOARD_SINGLE_USER` | `true` | Owner-only data access by default. |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | first local user id | Owner id override. |
 | `OURA_API_TOKEN` | unset | Oura status/sync availability. |
-| `HEALTH_SYNC_TOKEN` | unset | Apple Health webhook auth; status remains auth-gated. |
 | `OW_*` variables | unset | Open Wearables hub setup/status. |
 | `WHOOP_*` variables/files | unset | WHOOP status and source contribution. |
 | `LM_STUDIO_*` variables | unset | AI coach health/reasoning availability. |

@@ -5,7 +5,7 @@ APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
 APP_SW_JS = Path("static/js/sw.js").read_text()
 APP_HTML = Path("templates/index.html").read_text()
 
-ASSET_VERSION = "20260716-fit392-rpe"
+ASSET_VERSION = "20261028-w4c-apple-via-ow"
 
 
 def test_fit270_asset_versions_are_coordinated():

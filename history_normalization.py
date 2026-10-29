@@ -41,7 +41,7 @@ def history_source_label(item: dict | None) -> str:
     source = _normalise_label(item.get("source"))
     if source == "lifted":
         return "Strength - Logged"
-    if source in {"watch", "apple health", "apple_health"}:
+    if source in {"watch", "apple health"}:
         return "Strength - Watch" if canonical_training_category(
             item.get("activity_type") or item.get("activity") or item.get("session_type"),
             source,

@@ -6,7 +6,6 @@ import os
 import sys
 
 os.environ.setdefault("SECRET_KEY", "fit22-diagnostic-secret")
-os.environ.setdefault("HEALTH_SYNC_TOKEN", "fit22-diagnostic-token")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app
 

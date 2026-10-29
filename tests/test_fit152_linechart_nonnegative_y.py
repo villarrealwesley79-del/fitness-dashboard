@@ -114,7 +114,7 @@ ids.forEach((id) => {
 let captured;
 e.state.ranges = { history: 30 };
 sandbox.__fitSet.getHistory(async () => ({ workouts: [] }));
-sandbox.__fitSet.getAppleHealthWorkouts(async () => []);
+sandbox.__fitSet.getOpenWearablesWorkouts(async () => []);
 sandbox.__fitSet.barChart(() => {});
 sandbox.__fitSet.lineChart((_container, _points, opts) => { captured = opts; });
 sandbox.__fitSet.setChartTakeaway(() => {});
@@ -122,7 +122,7 @@ await e.renderHistory();
 process.stdout.write(JSON.stringify(captured));
 """,
         mocks=[
-            "getHistory", "getAppleHealthWorkouts", "barChart", "lineChart",
+            "getHistory", "getOpenWearablesWorkouts", "barChart", "lineChart",
             "setChartTakeaway",
         ],
     )

@@ -161,9 +161,8 @@ Existing fallback files are read under a shared lock, including valid read-only 
 | `CSRF_FORM_FIELD` | `csrf_token` | Hidden form field for server-rendered POSTs. |
 | `CSRF_SESSION_KEY` | `_auth_csrf_token` | Flask session key storing the generated form token. |
 | `_CSRF_MUTATING_METHODS` | `POST`, `PUT`, `PATCH`, `DELETE` | Methods requiring CSRF/origin approval. |
-| `_CSRF_EXEMPT_PATHS` | `/api/apple-health/sync` | External token-authenticated path exempt from CSRF. |
 | `_PASSWORD_HASH_METHOD` | `scrypt:32768:8:1` | Werkzeug hash method for new and upgraded passwords. |
-| `_PUBLIC_PREFIXES` | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/api/apple-health/sync` | Routes allowed before login. Entries ending in `/` are prefix matches; others are exact. |
+| `_PUBLIC_PREFIXES` | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml` | Routes allowed before login. Entries ending in `/` are prefix matches; others are exact. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Default `"true"`; `"false"` disables owner restriction | Controls single-owner mode. |
 | `FITNESS_DASHBOARD_NO_LOGIN` | Disabled unless the trimmed, case-insensitive value is exactly `"true"` | Enables request-scoped owner access for the owner's trusted-network boot. |
 | `SESSION_COOKIE_SECURE` | Default true unless env equals `"false"` | Controls session and remember-cookie Secure flag. |
@@ -183,7 +182,7 @@ The optional local QA account is the only additional identity accepted by the si
 
 Session cookies are HTTP-only, `SameSite=Lax`, and Secure by default. Local HTTP development can set `SESSION_COOKIE_SECURE=false`; production should set `SECRET_KEY` through environment or secret manager. `.flask-secret` is a local-dev fallback and is excluded by Docker hygiene tests.
 
-CSRF protection is not a per-route decorator; it is a global before-request gate. It protects public login/register forms and authenticated API mutations. The exempt Apple Health path relies on `HEALTH_SYNC_TOKEN` authentication.
+CSRF protection is not a per-route decorator; it is a global before-request gate. It protects public login/register forms and authenticated API mutations.
 
 `LOGIN_DISABLED` bypasses the global login/owner guard entirely when truthy. This is a test convention, not a production access mode.
 
@@ -203,7 +202,6 @@ Because the application currently sends wildcard CORS response headers, the no-l
 - If trusted-network owner resolution fails, protected requests keep the normal redirect/401 behavior.
 - If single-user mode is disabled, `_is_owner_user_id()` returns true for any authenticated user.
 - A missing owner row allows access rather than blocking setup.
-- Public prefix entries without trailing slash are exact matches; `/api/apple-health/sync/status` remains protected even though `/api/apple-health/sync` is public.
 - API/JSON unauthorized responses are JSON 401; browser unauthorized responses redirect to login.
 - Form-token CSRF, same-origin metadata, and `X-Requested-With` are alternative valid mutation proofs unless cross-origin metadata is detected.
 - A successful login clears only the current IP's rate-limit history.

@@ -942,15 +942,6 @@
         state.history = await api('/api/history-all');
         return state.history;
     }
-    async function getAppleHealthWorkouts(days = 90, force = false) {
-        const key = `aw_${days}`;
-        if (!force && state[key]) return state[key];
-        try {
-            const r = await api(`/api/apple-health/workouts?days=${days}`);
-            state[key] = r && Array.isArray(r.workouts) ? r.workouts : [];
-        } catch { state[key] = []; }
-        return state[key];
-    }
     async function getOpenWearablesWorkouts(force = false) {
         const key = 'open_wearables_workouts';
         if (!force && state[key]) return state[key];
@@ -1022,36 +1013,10 @@
         return { cls: 'unknown', label };
     }
 
-    function formatAppleChip(apple, ago) {
-        if (!apple || apple.status === 'unknown' || apple.status == null) {
-            return { cls: 'unknown', label: 'Apple · —', title: 'Apple Health freshness' };
-        }
-        if (apple.status === 'missing') {
-            return { cls: 'stale', label: 'Apple · no data', title: 'Apple Health freshness · no data received' };
-        }
-        // FIT-113: collapse the two-signal label into a single short chip so it
-        // stays on one line at 390/375 widths. The dual-signal detail
-        // (sync attempt vs data point — useful when sync just ran but the
-        // watch isn't writing) moves to the chip's `title` attribute so
-        // users can hover / long-press for the full story without
-        // crowding the reco card.
-        const syncedAgo = ago(apple.last_sync_attempt);
-        const dataAgo = ago(apple.last_data_point);
-        const primary = dataAgo || syncedAgo;
-        const label = primary ? 'Apple · ' + primary : 'Apple · —';
-        const title = (syncedAgo && dataAgo && syncedAgo !== dataAgo)
-            ? `Apple Health · synced ${syncedAgo} · data ${dataAgo}`
-            : 'Apple Health freshness';
-        if (apple.status === 'fresh')  return { cls: 'ok',    label, title };
-        if (apple.status === 'aging')  return { cls: 'warn',  label, title };
-        if (apple.status === 'stale')  return { cls: 'stale', label, title };
-        return { cls: 'unknown', label, title };
-    }
-
     function normalizeSourceKey(value) {
         const raw = String(value == null ? '' : value).trim().toLowerCase();
         if (!raw) return '';
-        if (raw === 'apple' || raw === 'apple health' || raw === 'apple-health') return 'apple_health';
+        if (raw === 'apple' || raw === 'apple health' || raw === 'apple-health') return 'apple';
         if (raw === 'open wearables' || raw === 'open-wearables' || raw === 'open_wearables') return 'open_wearables';
         if (raw === 'oura' || raw === 'oura ring') return 'oura';
         if (raw === 'noop' || raw === 'noop import') return 'noop';
@@ -1063,7 +1028,7 @@
         if (key === 'whoop') return 'WHOOP';
         if (key === 'open_wearables') return 'Open Wearables';
         if (key === 'oura') return 'Oura';
-        if (key === 'apple_health') return 'Apple Health';
+        if (key === 'apple') return 'Apple Health';
         if (key === 'noop') return 'Noop import';
         if (!key) return 'Unknown source';
         return key.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
@@ -1079,14 +1044,6 @@
                     label: 'Open Wearables',
                     role: ow.role || (ow.used_for_recommendation ? 'wearable hub' : 'display only'),
                     detail: ow.detail || 'Open Wearables is the wearable hub; this web app keeps coaching authority.',
-                });
-            }
-            if (entries.load_source && !entries.load_source_summary_hidden) {
-                normalizedEntries.push({
-                    key: entries.load_source,
-                    label: sourceDisplayName(entries.load_source),
-                    role: 'load source',
-                    detail: `${sourceDisplayName(entries.load_source)} remains the training-load source.`,
                 });
             }
             entries = normalizedEntries;
@@ -1130,10 +1087,6 @@
 
     const DASHBOARD_FRESHNESS_SLOTS = [
         { id: 'reco-fresh-wearables', key: 'wearable_facts', render: formatWearablesChip },
-        { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
-    ];
-    const SETTINGS_FRESHNESS_SLOTS = [
-        { id: 'apple-connect-state', key: 'apple_health', render: formatAppleChip, rowId: 'settings-row-apple' },
     ];
 
     function renderFreshnessChips(freshness, slots) {
@@ -1189,23 +1142,13 @@
     // tail of their work; safe to call any time after the initial
     // settings render.
     function renderSettingsGroupSummaries() {
-        // Data sources: count fresh vs stale by inspecting the live
-        // SETTINGS_FRESHNESS_SLOTS chips (already populated by
-        // renderFreshnessChips, which runs before this helper).
+        // Data sources: count fresh vs stale from the live Open Wearables chip.
         let fresh = 0, stale = 0;
         const openWearablesChip = $('open-wearables-state');
         if (openWearablesChip && !elementOrAncestorHidden(openWearablesChip)) {
             if (openWearablesChip.classList.contains('ok')) fresh++;
             else if (openWearablesChip.classList.contains('warn') || openWearablesChip.classList.contains('stale')) stale++;
         }
-        SETTINGS_FRESHNESS_SLOTS.forEach((slot) => {
-            const chip = $(slot.id);
-            if (!chip) return;
-            const row = slot.rowId ? $(slot.rowId) : null;
-            if (row && row.hidden) return;
-            if (chip.classList.contains('ok')) fresh++;
-            else if (chip.classList.contains('warn') || chip.classList.contains('stale')) stale++;
-        });
         const total = fresh + stale;
         applyGroupChip($('settings-group-summary-data-sources'),
             stale ? 'warn' : (fresh ? 'ok' : 'unknown'),
@@ -1307,7 +1250,7 @@
         );
         let wearableSources = normalizeWearableSources((dash && dash.wearable_sources) || []);
         if (!wearableSources.length && freshness) {
-            wearableSources = ['wearable_facts', 'apple_health']
+            wearableSources = ['wearable_facts']
                 .filter(function (key) { return freshness[key]; })
                 .map(function (key) {
                     const node = freshness[key];
@@ -1422,26 +1365,6 @@
     function openWearablesProviderConnected(provider, status = state.openWearablesStatus) {
         const providerIds = openWearablesConnectedProviderIds(status);
         return openWearablesProviderAliases(provider).some((alias) => providerIds.has(alias));
-    }
-
-    function openWearablesDirectSourceReplaced(provider, status = state.openWearablesStatus) {
-        const replacementSources = Array.isArray(status && status.replacement_sources)
-            ? status.replacement_sources.map(normalizeOpenWearablesProviderId)
-            : [];
-        return openWearablesProviderAliases(provider).some((alias) => replacementSources.includes(alias))
-            && openWearablesProviderConnected(provider, status);
-    }
-
-    function applyOpenWearablesDirectSourceVisibility(status = state.openWearablesStatus) {
-        [
-            { provider: 'apple_health', rowId: 'settings-row-apple', detailId: 'apple-detail' },
-        ].forEach((entry) => {
-            const hidden = openWearablesDirectSourceReplaced(entry.provider, status);
-            const row = $(entry.rowId);
-            const detail = $(entry.detailId);
-            if (row) row.hidden = hidden;
-            if (detail) detail.hidden = hidden;
-        });
     }
 
     function openWearablesCanSync(status, config, setupState) {
@@ -2060,7 +1983,6 @@
         const openWearablesSource = ((dash && dash.recommendation_sources) || (reco && reco.recommendation_sources) || {}).open_wearables;
         const wearableStatuses = [
             freshness && freshness.wearable_facts && freshness.wearable_facts.status,
-            freshness && freshness.apple_health && freshness.apple_health.status,
             // WHOOP arrives only via Open Wearables: count the hub only when it supplied usable facts.
             openWearablesSource && (openWearablesSource.used_for_recommendation ? 'fresh' : 'missing'),
         ].filter(Boolean);
@@ -2989,11 +2911,10 @@
         $('history-total-volume').textContent = fmtKilo(0);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
-        let hist, aw, ow;
+        let hist, ow;
         try {
-            [hist, aw, ow] = await Promise.all([
+            [hist, ow] = await Promise.all([
                 getHistory(),
-                getAppleHealthWorkouts(Math.max(days, 30)),
                 getOpenWearablesWorkouts(),
             ]);
         } catch (e) {
@@ -3018,13 +2939,10 @@
         const lifts = allLifts
             .map((w) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted' }))
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
-        const watch = (Array.isArray(aw) ? aw : [])
-            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
-            .map(normalizeWatchHistoryRow);
         const openWearables = (Array.isArray(ow) ? ow : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map(normalizeOpenWearablesHistoryRow);
-        const wearableRows = mergeOpenWearablesHistory(watch, openWearables);
+        const wearableRows = openWearables;
         const mergedHistoryRows = mergeStrengthHistorySources(lifts, wearableRows);
 
         const workouts = mergedHistoryRows.filter((w) => w.source === 'lifted');
@@ -3921,15 +3839,13 @@
 
     async function renderStats() {
         const days = state.ranges.stats;
-        const [hist, appleWorkouts] = await Promise.all([
+        const [hist, ow] = await Promise.all([
             getHistory(),
-            getAppleHealthWorkouts(Math.max(days, 30)),
+            getOpenWearablesWorkouts(),
         ]);
         const logged = Array.isArray(hist && hist.workouts) ? hist.workouts.map((w) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training' })) : [];
-        const watch = Array.isArray(appleWorkouts)
-            ? appleWorkouts.map(normalizeWatchHistoryRow)
-            : [];
-        const all = mergeStrengthHistorySources(logged, watch);
+        const wearables = (Array.isArray(ow) ? ow : []).map(normalizeOpenWearablesHistoryRow);
+        const all = mergeStrengthHistorySources(logged, wearables);
         const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
         const workouts = all.filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
 
@@ -4057,29 +3973,12 @@
     }
 
     async function renderSettings() {
-        // FIT-16: refresh the wearable facts first. The freshness block (which
-        // drives the integration chips below) must be read AFTER that refresh
-        // lands — parallel fetches race and can show "stale" right after a
-        // successful live refresh.
         const [st, , openWearables, wearableSources] = await Promise.all([
             getSettings(),
             getOuraStatus(true, true),
             getOpenWearablesStatus(true),
             getWearableSources(true),
         ]);
-        // FIT-16: use the side-effect-free /api/freshness endpoint.
-        // /api/dashboard would also work but it regenerates
-        // next_workout and writes LAST_WORKOUT_RECOMMENDATION server-
-        // side, which would silently overwrite an adjusted/swapped
-        // plan whenever the user opens Settings.
-        let freshness = null;
-        try {
-            const fresh = await api('/api/freshness');
-            freshness = (fresh && fresh.freshness) || null;
-        } catch {
-            freshness = null;
-        }
-        const appleFreshness = freshness && freshness.apple_health;
         renderOpenWearablesDetail(openWearables, wearableSources);
         const host = $('settings-goals');
         host.innerHTML = '';
@@ -4151,59 +4050,11 @@
         });
         eqSel.onchange = () => updateEquipment(eqSel.value);
 
-        // Integration chips: routed through the shared formatters so Settings
-        // matches the dashboard reco-card exactly. Detail panels below each
-        // chip carry the richer cached/live + sync nuance.
-        renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
         // FIT-111: populate the four settings group header chips so the
         // user gets a glance-level signal per section. Reads live chip
         // state from the DOM, so renderPushSection also calls it after its
         // async updates to keep the headers in lockstep.
         renderSettingsGroupSummaries();
-
-        // Apple Health — prefer the real sync-status endpoint over
-        // the file-existence probe, and only claim "connected" when a
-        // sync actually landed recently AND the server's freshness
-        // block agrees the data isn't stale. The chip must not contradict
-        // the detail panel: a recent HAE attempt that inserted only
-        // duplicate / old records should NOT read green.
-        try {
-            const ah = await api('/api/apple-health/sync/status');
-            // FIT-16: use ``last_sync`` (insertion ts) for the chip's
-            // age calc — not ``last_attempt``, which can be recent
-            // even when nothing actually inserted.
-            const lastSyncRaw = ah && ah.last_sync;
-            const last = parseServerDateTime(lastSyncRaw);
-            const ageDays = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : Infinity;
-            const ahFreshnessStatus = appleFreshness && appleFreshness.status;
-            const dataIsStale = ahFreshnessStatus === 'stale';
-            const dataIsMissing = ahFreshnessStatus === 'missing';
-            const connected = last && ageDays <= 3 && !dataIsStale && !dataIsMissing;
-            const setupConfigured = Boolean(ah && ah.setup_configured);
-            const detail = $('apple-last-export');
-            const dotOn = connected || dataIsStale || setupConfigured;
-            $('apple-int-dot').className = dotOn ? 'int-dot int-dot-on' : 'int-dot';
-            if (detail) {
-                detail.textContent = last
-                    ? `Last export ${fmtDateTime(lastSyncRaw)} · ${ah.total_records || 0} records`
-                    : 'No accepted export yet';
-            }
-            // FIT-16: detail panel — last accepted vs last attempt,
-            // data-through (record_date), record-type breakdown, and
-            // a stale-warning row driven by the same freshness signal
-            // the chip above uses.
-            renderAppleHealthFreshnessDetail(ah, appleFreshness);
-        } catch {
-            $('apple-int-dot').className = 'int-dot';
-            const detail = $('apple-last-export');
-            if (detail) detail.textContent = 'Export status unavailable';
-            renderAppleHealthFreshnessDetail(null, appleFreshness);
-        }
-        const setupBtn = $('btn-apple-setup');
-        if (setupBtn && !setupBtn.dataset.wired) {
-            setupBtn.dataset.wired = '1';
-            setupBtn.addEventListener('click', openAppleSetup);
-        }
 
         try {
             const w = await api('/api/weather');
@@ -4825,103 +4676,6 @@
                 state.openWearablesUi.config,
                 setupState
             );
-        }
-        applyOpenWearablesDirectSourceVisibility(status);
-    }
-
-    function renderAppleHealthFreshnessDetail(ah, freshness) {
-        const detail = $('apple-detail');
-        if (!detail) return;
-        const staleRow = $('apple-detail-stale-row');
-        const attemptRow = $('apple-detail-attempt-row');
-
-        if (!ah) {
-            _setDetail('apple-detail-last-sync', 'Status endpoint unavailable');
-            _setDetail('apple-detail-records', '—');
-            _setDetail('apple-detail-data-through', '—');
-            if (attemptRow) attemptRow.hidden = true;
-            if (staleRow) staleRow.hidden = true;
-            return;
-        }
-
-        const lastSyncDt = parseServerDateTime(ah.last_sync);
-        const lastAttemptDt = parseServerDateTime(ah.last_attempt);
-
-        // Last accepted: the timestamp of the most recent inserted row
-        // (insertion event, not the data date). This is when the
-        // import landed. The data covered by that import is in
-        // ``freshness.apple_health.last_data_point``.
-        if (lastSyncDt) {
-            const ago = _fmtAgo(lastSyncDt);
-            _setDetail('apple-detail-last-sync',
-                `${fmtDateTime(ah.last_sync)} · ${ago}`);
-        } else {
-            _setDetail('apple-detail-last-sync',
-                ah.setup_configured ? 'Configured, no accepted export yet' : 'Never');
-        }
-
-        // Last attempt: only surface separately when it diverges from
-        // last_sync — that's the signal that HAE *tried* but nothing
-        // got inserted (auth issue, schema drift, etc.). When they
-        // match, the row is redundant.
-        if (attemptRow) {
-            const sameAsSync = lastAttemptDt && lastSyncDt
-                && Math.abs(lastAttemptDt.getTime() - lastSyncDt.getTime()) < 5000;
-            if (!lastAttemptDt || sameAsSync) {
-                attemptRow.hidden = true;
-            } else {
-                attemptRow.hidden = false;
-                const lastEvent = ah.last_event || {};
-                const ago = _fmtAgo(lastAttemptDt);
-                const parts = [`${fmtDateTime(ah.last_attempt)} · ${ago}`];
-                if (typeof lastEvent.inserted === 'number'
-                    || typeof lastEvent.skipped === 'number') {
-                    parts.push(`${lastEvent.inserted || 0} inserted, ${lastEvent.skipped || 0} skipped`);
-                }
-                _setDetail('apple-detail-last-attempt', parts.join(' · '));
-            }
-        }
-
-        // Data through: the date the most recent record_date covers.
-        // Honest signal of how current the data actually is — survives
-        // HAE replays of old exports.
-        const dataThrough = freshness && freshness.last_data_point;
-        _setDetail('apple-detail-data-through',
-            dataThrough ? `${dataThrough} (${freshness.status || 'unknown'})` : 'No data points');
-
-        // Records: total + small per-type breakdown so the owner can
-        // see whether the categories they care about (workouts, HRV,
-        // sleep) are actually landing.
-        const total = Number(ah.total_records || 0);
-        const byType = ah.by_type || {};
-        const recordParts = [`${total.toLocaleString()} total`];
-        const interesting = ['workouts', 'steps', 'heart_rate', 'hrv', 'sleep', 'active_energy'];
-        const typeSummary = interesting
-            .filter((k) => byType[k])
-            .map((k) => `${k.replace('_', ' ')} ${Number(byType[k]).toLocaleString()}`)
-            .slice(0, 3);
-        if (typeSummary.length) recordParts.push(typeSummary.join(' · '));
-        _setDetail('apple-detail-records', recordParts.join(' — '));
-
-        // Stale warning: drive off the server's freshness status, NOT
-        // ah.last_sync. The server computes stale from MAX(record_date)
-        // and the documented _FRESHNESS_STALE_HOURS=48 threshold, so a
-        // recent HAE replay of an old export still triggers the alert.
-        if (staleRow) {
-            const freshnessStatus = freshness && freshness.status;
-            if (freshnessStatus === 'stale') {
-                staleRow.hidden = false;
-                _setDetail('apple-detail-stale-text',
-                    dataThrough
-                        ? `Data through ${dataThrough} — more than 48h old. Expected daily.`
-                        : 'No accepted export in the last 48 hours. Expected daily.');
-            } else if (freshnessStatus === 'missing' && ah.setup_configured) {
-                staleRow.hidden = false;
-                _setDetail('apple-detail-stale-text',
-                    'Webhook configured but no Apple Health records have landed yet.');
-            } else {
-                staleRow.hidden = true;
-            }
         }
     }
 
@@ -6872,53 +6626,6 @@
             state.nextWorkout = state.dashboard.next_workout;
             if (state.currentTab === 'tab-workout') renderNextWorkout();
         }
-    }
-
-    async function openAppleSetup() {
-        const urlEl = $('apple-webhook-url');
-        const headerStep = $('apple-sync-header-step');
-        const headerEl = $('apple-sync-header');
-        const detail = $('apple-sync-detail');
-        if (detail) detail.textContent = 'Checking…';
-        if (headerStep) headerStep.hidden = true;
-
-        // Setup URL is split from routine status so Settings doesn't fetch
-        // token material unless the setup modal is explicitly opened.
-        const appleHealthOrigin = (location.hostname.endsWith('.tail6c6490.ts.net') && location.protocol === 'http:')
-            ? `https://${location.host}`
-            : location.origin;
-        let tokenizedUrl = `${appleHealthOrigin}/api/apple-health/sync`;
-        let status = null;
-        try {
-            status = await api('/api/apple-health/sync/status');
-        } catch {}
-        try {
-            const setup = await api('/api/apple-health/sync/setup-url');
-            if (setup && setup.webhook_url) tokenizedUrl = setup.webhook_url;
-            const syncToken = setup && setup.headers && setup.headers['X-Sync-Token'];
-            if (syncToken && headerEl && headerStep) {
-                headerEl.textContent = `X-Sync-Token: ${syncToken}`;
-                headerStep.hidden = false;
-            }
-        } catch {}
-
-        if (urlEl) urlEl.textContent = tokenizedUrl;
-
-        if (detail) {
-            if (status && status.last_sync) {
-                const lastExport = status.last_attempt || status.last_sync;
-                const last = parseServerDateTime(lastExport);
-                const days = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : 0;
-                detail.textContent = `Last accepted export ${fmtDateTime(lastExport)} · ${days}d ago · ${status.total_records || 0} records`;
-            } else if (status && status.setup_configured) {
-                detail.textContent = 'Webhook is configured — waiting for Health Auto Export to post data.';
-            } else if (status) {
-                detail.textContent = 'No syncs yet — Health Auto Export has not posted.';
-            } else {
-                detail.textContent = 'Sync endpoint not reachable.';
-            }
-        }
-        $('modal-apple').hidden = false;
     }
 
     const ADJUST_INTENT_KEY = 'fit24:adjust-intent:v1';

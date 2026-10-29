@@ -240,10 +240,7 @@ CSRF_HEADER_VALUE = "XMLHttpRequest"
 CSRF_FORM_FIELD = "csrf_token"
 CSRF_SESSION_KEY = "_auth_csrf_token"
 _CSRF_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_CSRF_EXEMPT_PATHS = {
-    # Health Auto Export / Shortcuts webhook: authenticated by HEALTH_SYNC_TOKEN.
-    "/api/apple-health/sync",
-}
+_CSRF_EXEMPT_PATHS = set()
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
@@ -912,15 +909,12 @@ def logout():
 
 # ── Global auth guard ─────────────────────────────────────
 # Each entry is either a literal path (exact match) or a prefix ending in "/"
-# (startswith match for subtree). Keep the HAE webhook exact-match so that
-# `/api/apple-health/sync/status` still requires login — that endpoint can
-# expose the sync token hint and last-sync metadata.
+# (startswith match for subtree).
 _PUBLIC_PREFIXES = (
     "/login", "/register", "/logout",
     "/manifest.json", "/sw.js",
     "/static/",           # prefix — any static asset
     "/robots.txt", "/sitemap.xml",  # SEO crawlers
-    "/api/apple-health/sync",   # exact — the POST webhook; its token is its auth
 )
 
 

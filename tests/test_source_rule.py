@@ -144,7 +144,7 @@ def test_stale_facts_give_no_readiness_and_lower_confidence(db, isolated_app):
     ])
     assert isolated_app._get_oura_readiness_today(include_open_wearables=False) is None
     assert fact_age_freshness(_day(5)) == "stale"
-    stale = {"wearable_facts": {"status": "stale"}, "apple_health": {"status": "fresh"}}
+    stale = {"wearable_facts": {"status": "stale"}}
     assert isolated_app._confidence_level_from(95, stale) == "low"
 
 
@@ -186,7 +186,7 @@ def test_multi_day_sleep_summary_stores_one_dated_fact_per_night(tmp_path):
             ]},
         },
         db_file=db_file, profile_key="1",
-        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
     )
     series = preferred_daily_facts(db_file, {"sleep_duration"}, days[-1], days[0], profile_key="1")
     assert sorted(series) == sorted(days)
@@ -220,7 +220,7 @@ def test_first_imported_time_survives_a_window_refresh(tmp_path):
                 ]},
             },
             db_file=db_file, profile_key="1",
-            activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+            activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
         )
 
     sync(400, f"{day}T12:00:00+00:00")

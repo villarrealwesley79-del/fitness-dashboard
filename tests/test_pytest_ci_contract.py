@@ -91,11 +91,10 @@ def test_shell_static_check_covers_operational_scripts() -> None:
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines() == [
         "bash -n: scripts/install-launchd-agents.sh",
-        "bash -n: scripts/check-apple-health-staleness.sh",
         "bash -n: scripts/worktree-server-guard.sh",
         "bash -n: scripts/install-worktree-guard.sh",
         "bash -n: .githooks/pre-push",
         "bash -n: .githooks/post-checkout",
         "bash -n: support/self_test.sh",
-        "Shell static checks passed (7 files).",
+        "Shell static checks passed (6 files).",
     ]

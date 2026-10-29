@@ -233,7 +233,6 @@ def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeyp
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "fresh"},
-            "apple_health": {"status": "fresh"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
@@ -260,7 +259,6 @@ def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "missing"},
-            "apple_health": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
@@ -280,7 +278,6 @@ def test_dashboard_recomp_command_uses_null_for_unavailable_readiness(fitness_ap
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "missing"},
-            "apple_health": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
@@ -301,7 +298,6 @@ def test_dashboard_recomp_command_preserves_real_zero_readiness(fitness_app, mon
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "fresh"},
-            "apple_health": {"status": "missing"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
@@ -323,7 +319,6 @@ def test_dashboard_uses_final_smart_signal_for_visible_cardio(fitness_app, monke
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "fresh"},
-            "apple_health": {"status": "fresh"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 360})
@@ -344,7 +339,6 @@ def test_dashboard_uses_cached_weather_without_blocking_fetch(fitness_app, monke
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "fresh"},
-            "apple_health": {"status": "fresh"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
@@ -382,7 +376,6 @@ def test_dashboard_recomputes_plan_when_readiness_changes(fitness_app, monkeypat
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "wearable_facts": {"status": "fresh"},
-            "apple_health": {"status": "fresh"},
         },
     )
     monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})

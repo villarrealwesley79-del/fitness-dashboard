@@ -6,7 +6,6 @@ import os
 import sys
 
 os.environ.setdefault("SECRET_KEY", "fit10-contract-secret")
-os.environ.setdefault("HEALTH_SYNC_TOKEN", "fit10-contract-token")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app

@@ -1,6 +1,6 @@
 # API Inventory
 
-> **Sources:** `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, route inventory at `/private/tmp/claude-501/-Users-admin-fitness-dashboard--claude-worktrees-dazzling-golick-7cd594/2a68f015-a5ff-4689-823e-ec2c0ee13b04/scratchpad/routes.txt`
+> **Sources:** `app.py`, `auth.py`, route inventory at `/private/tmp/claude-501/-Users-admin-fitness-dashboard--claude-worktrees-dazzling-golick-7cd594/2a68f015-a5ff-4689-823e-ec2c0ee13b04/scratchpad/routes.txt`
 > **Routes:** All `app.py` routes plus registered auth/Apple Health/legacy HealthKit routes.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -9,7 +9,7 @@ Auth values used below:
 - `session/owner`: Requires Flask session and owner user in default single-owner mode.
 - `public`: Allowlisted before login.
 - `token`: External caller authenticated by a shared token instead of browser session.
-- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected. `/api/apple-health/sync` is exempt.
+- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected.
 - `dead/legacy`: Route or page exists in code/templates but appears dev-only, legacy, or not wired.
 
 ## App Shell, Auth, Account, Public, PWA
@@ -116,25 +116,6 @@ Auth values used below:
 | GET | `/api/wearables/trends` | session/owner | Return the 7-day HRV, steps, active-minute and sleep series from stored facts. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 | GET | `/api/sleep/summary` | session/owner | Return last night, 7-day averages, bedtime spread and data quality from stored facts. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 
-## Apple Health And Legacy HealthKit
-
-| Method(s) | Path | Auth | Purpose | Owning PRD |
-| --- | --- | --- | --- | --- |
-| GET | `/api/apple-health/summary` | session/owner | Return merged file-export and HAE summary. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/workouts` | session/owner | Return merged/deduped Apple Health workouts, optional `days`. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/sleep` | session/owner | Return merged Apple Health sleep records, optional `days`. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/steps` | session/owner | Return merged Apple Health steps series, optional `days`. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/vitals` | session/owner | Return merged RHR/HRV series, optional `days`. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| POST | `/api/apple-health/sync` | token | Accept Health Auto Export/Shortcuts JSON, normalize, dedupe, and persist sync rows. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/sync/status` | session/owner | Return sync DB counts, last accepted, last attempt, and setup flags. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/sync/setup-url` | session/owner | Return tokenized webhook URL for owner setup UI. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/apple-health/status` | session/owner | Return Apple Health availability and file-count status. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/health/workouts` | session/owner | Legacy file-export workouts endpoint. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/health/sleep` | session/owner | Legacy file-export sleep endpoint. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/health/steps` | session/owner | Legacy file-export steps endpoint. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/health/vitals` | session/owner | Legacy file-export vitals endpoint. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-| GET | `/api/health/summary` | session/owner | Legacy file-export summary endpoint. | [../08-apple-health-integration.md](../08-apple-health-integration.md) |
-
 ## WHOOP
 
 | Method(s) | Path | Auth | Purpose | Owning PRD |
@@ -145,7 +126,7 @@ Auth values used below:
 
 | Method(s) | Path | Auth | Purpose | Owning PRD |
 | --- | --- | --- | --- | --- |
-| POST | `/api/health/sync` | session/owner | Manually pull Open Wearables data and return redacted metadata only. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
+| POST | `/api/open-wearables/check-sync` | session/owner | Manually pull Open Wearables data and return redacted metadata only. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 | GET | `/api/open-wearables/status` | session/owner | Return local Open Wearables hub/setup/provider status. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 | GET/POST | `/api/open-wearables/setup` | session/owner | Read/save advanced local hub mapping and setup values. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |
 | POST | `/api/open-wearables/setup/bootstrap` | session/owner | Prepare local hub profile from sidecar env and owner mapping. | [../10-open-wearables-integration.md](../10-open-wearables-integration.md) |

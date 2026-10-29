@@ -16,7 +16,6 @@ _OMIT_AUTO_CSRF = {"fitness_dashboard.omit_auto_csrf_header": True}
 
 def _app_module(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit191-csrf-secret")
-    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit191-health-token")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
@@ -185,25 +184,27 @@ def test_state_changing_post_with_csrf_header_continues_to_work(monkeypatch):
     assert response.get_json()["status"] == "success"
 
 
-def test_token_authed_apple_health_webhook_is_csrf_exempt(monkeypatch):
+def test_removed_apple_health_webhook_is_neither_csrf_exempt_nor_login_exempt(monkeypatch):
     module = _app_module(monkeypatch)
+    import auth
 
+    assert not auth._is_csrf_exempt("/api/apple-health/sync")
+    assert not auth._is_public("/api/apple-health/sync")
     response = module.app.test_client().post(
         "/api/apple-health/sync",
         json={"steps": []},
         environ_overrides=_OMIT_AUTO_CSRF,
     )
 
-    assert response.status_code == 401
-    assert response.get_json()["error"] == "invalid or missing sync token"
+    assert response.status_code == 403
 
 
 def test_csrf_rollout_bumps_cached_asset_versions():
     index = Path("templates/index.html").read_text()
     service_worker = Path("static/js/sw.js").read_text()
 
-    assert "app-loader.js?v=20260716-fit392-rpe" in index
-    assert "app.js?v=20260716-fit392-rpe" in Path("static/js/app-loader.js").read_text()
-    assert "fitness-dashboard-v20260716-fit392-rpe" in service_worker
+    assert "app-loader.js?v=20261028-w4c-apple-via-ow" in index
+    assert "app.js?v=20261028-w4c-apple-via-ow" in Path("static/js/app-loader.js").read_text()
+    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in service_worker
     assert "self.skipWaiting()" in service_worker
     assert "self.clients.claim()" in service_worker

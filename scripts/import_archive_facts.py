@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Import archived Oura and Apple Health history into wearable facts (read-only on the archives).
 
-    python scripts/import_archive_facts.py --oura oura_daily.sqlite3 --apple apple_health_sync.db \
+    python scripts/import_archive_facts.py --oura oura_daily.sqlite3 --apple apple_archive.db \
         --db wearable_facts.sqlite3
 
 Facts are written with source_system="archive" and the archive's own label in

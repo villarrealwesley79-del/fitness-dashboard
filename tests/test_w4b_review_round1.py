@@ -50,7 +50,6 @@ def app_db(isolated_app, monkeypatch):
     monkeypatch.setattr(isolated_app, "WORKOUTS", [])
     monkeypatch.setattr(isolated_app, "SORENESS_DATA", [])
     monkeypatch.setattr(isolated_app, "RECOVERY_DATA", [])
-    monkeypatch.setattr(isolated_app, "_load_apple_health_recommendation_workouts", lambda **_k: [], raising=False)
     return isolated_app
 
 
@@ -270,7 +269,7 @@ def test_seven_five_hour_nights_via_ow_store_give_seven_nights_under(app_db):
             ]},
         },
         db_file=app_db.WEARABLE_FACTS_DB_FILE, profile_key="1",
-        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
     )
     debt = app_db.calculate_sleep_debt(days=7)
     assert debt["nights_under"] == 7
@@ -355,7 +354,7 @@ def _wal_archives(folder: Path):
             )
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    apple = folder / "apple_health_sync.db"
+    apple = folder / "apple_archive.db"
     with closing(sqlite3.connect(apple)) as conn:
         conn.execute(
             "CREATE TABLE ah_sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, record_type TEXT NOT NULL, "
@@ -399,7 +398,7 @@ def test_archive_import_is_read_only_idempotent_and_ow_wins(isolated_app, tmp_pa
                 "FROM wearable_daily_facts ORDER BY 1, 2, 3, 4, 5"
             ).fetchall()
         assert (oura.read_bytes(), apple.read_bytes()) == before_bytes
-        assert sorted(os.listdir(folder)) == ["apple_health_sync.db", "oura_daily.sqlite3"]
+        assert sorted(os.listdir(folder)) == ["apple_archive.db", "oura_daily.sqlite3"]
     finally:
         folder.chmod(stat.S_IRWXU)
     assert first["written"] > 0 and first["skipped_live"] >= 1
@@ -432,7 +431,7 @@ def test_later_ow_sync_wins_over_archive_and_keeps_the_archive_row(isolated_app,
             ]},
         },
         db_file=db, profile_key="1",
-        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
     )
     picked = preferred_daily_facts(db, {"sleep_duration"}, "2026-02-01", "2026-02-01", profile_key="1")
     assert (picked["2026-02-01"]["sleep_duration"]["via"], picked["2026-02-01"]["sleep_duration"]["value"]) == ("open_wearables", 455)
@@ -507,7 +506,7 @@ def test_workout_window_refresh_keeps_provenance(tmp_path):
                 }]},
             },
             db_file=db_file, profile_key="1",
-            activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+            activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
         )
         with closing(sqlite3.connect(db_file)) as conn:
             return conn.execute(

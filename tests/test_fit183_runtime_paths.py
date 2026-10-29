@@ -16,7 +16,6 @@ def _run_probe(script: str, **env_updates: str) -> dict:
     env = os.environ.copy()
     env.update(env_updates)
     env.setdefault("SECRET_KEY", "fit183-test-secret")
-    env.setdefault("HEALTH_SYNC_TOKEN", "fit183-test-token")
     env["PYTHONPATH"] = str(REPO_ROOT)
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -71,7 +70,6 @@ import json
 import os
 
 import app
-import apple_health_parser
 import auth
 import data_store
 
@@ -87,7 +85,6 @@ stores = {
     "wearable_facts_db": app.WEARABLE_FACTS_DB_FILE,
     "fitness_data_db": data_store.DATA_DB,
     "auth_db": auth.AUTH_DB,
-    "apple_health_sync_db": apple_health_parser._apple_health_sync_db_path(),
 }
 
 json_defaults = {
@@ -103,12 +100,12 @@ json_defaults = {
 for path, default in json_defaults.items():
     app.save_json(path, default)
 app.app.config.update(LOGIN_DISABLED=True)
-app.app.test_client().get("/api/apple-health/sync/status")
+app.app.test_client().get("/api/freshness")
 
 print(json.dumps({name: {"path": path, "exists": os.path.exists(path)} for name, path in stores.items()}))
 """
 
-    payload = _run_probe(script, DATA_DIR=str(tmp_path), APPLE_HEALTH_SYNC_DB="")
+    payload = _run_probe(script, DATA_DIR=str(tmp_path))
 
     expected_filenames = {
         "workouts_json": "data_workouts.json",
@@ -122,7 +119,6 @@ print(json.dumps({name: {"path": path, "exists": os.path.exists(path)} for name,
         "wearable_facts_db": "wearable_facts.sqlite3",
         "fitness_data_db": "fitness_data.db",
         "auth_db": "auth.db",
-        "apple_health_sync_db": "apple_health_sync.db",
     }
     assert set(payload) == set(expected_filenames)
     for name, expected_filename in expected_filenames.items():
@@ -130,6 +126,25 @@ print(json.dumps({name: {"path": path, "exists": os.path.exists(path)} for name,
         assert payload[name]["exists"] is True
         assert Path(path).name == expected_filename
         assert _under(tmp_path, path)
+
+
+def test_boot_and_requests_create_no_legacy_apple_health_files(tmp_path):
+    script = r"""
+import json
+import os
+
+import app
+
+app.app.config.update(LOGIN_DISABLED=True)
+client = app.app.test_client()
+client.get("/api/freshness")
+client.get("/api/dashboard")
+print(json.dumps(sorted(os.listdir(os.environ["DATA_DIR"]))))
+"""
+
+    created = _run_probe(script, DATA_DIR=str(tmp_path))
+
+    assert not [name for name in created if "apple" in name or name.startswith(".health-sync")]
 
 
 def test_save_json_uses_unique_atomic_temp_file(tmp_path):
@@ -167,16 +182,14 @@ print(json.dumps({
     assert payload["replacements"][0]["src"].startswith(".data.json.")
 
 
-def test_canonical_public_base_url_feeds_apple_health_and_push(tmp_path):
+def test_canonical_public_base_url_feeds_push(tmp_path):
     script = r"""
 import json
 
 import app
-import apple_health_parser
 
 with app.app.test_request_context("/api/push/test", base_url="http://127.0.0.1:5050"):
     print(json.dumps({
-        "apple_health_endpoint": apple_health_parser._apple_health_sync_endpoint(),
         "push_claims": app._push_vapid_claims(),
         "push_payload": app._push_test_payload(),
     }))
@@ -186,12 +199,10 @@ with app.app.test_request_context("/api/push/test", base_url="http://127.0.0.1:5
         script,
         DATA_DIR=str(tmp_path),
         FITNESS_DASHBOARD_PUBLIC_BASE_URL="fitness.example.test",
-        APPLE_HEALTH_WEBHOOK_URL="",
         FITNESS_PUSH_VAPID_SUBJECT="",
         VAPID_SUBJECT="",
     )
 
-    assert payload["apple_health_endpoint"] == "https://fitness.example.test/api/apple-health/sync"
     assert payload["push_claims"] == {"sub": "https://fitness.example.test"}
     assert payload["push_payload"]["url"] == "https://fitness.example.test"
 
@@ -257,8 +268,7 @@ def test_launchd_installer_exports_data_dir_and_public_base_url(tmp_path):
     assert f"<string>{data_dir}</string>" in result.stdout
     assert "<key>FITNESS_DASHBOARD_PUBLIC_BASE_URL</key>" in result.stdout
     assert "<string>https://fitness.example.test:5050</string>" in result.stdout
-    assert f"<string>{data_dir}/apple_health_sync.db</string>" in result.stdout
-    assert f"<string>{data_dir}/.apple-health-first-sync</string>" in result.stdout
+    assert "apple_health_sync.db" not in result.stdout
     assert "admins-mac-mini.tail6c6490.ts.net" not in result.stdout
 
 
@@ -289,15 +299,14 @@ def test_launchd_installer_does_not_hardcode_public_base_url(tmp_path):
 def test_launchd_install_and_reinstall_emit_valid_complete_plists(tmp_path):
     launch_agents = tmp_path / "home" / "Library" / "LaunchAgents"
     app_path = launch_agents / "com.fitness-dashboard.plist"
-    staleness_path = launch_agents / "com.fitness-dashboard.staleness.plist"
     data_dir = tmp_path / "runtime-data"
 
     for action in ("install", "reinstall"):
         output = _launchd_dry_run(tmp_path, action)
         plists = _plists_from_dry_run(output)
 
-        assert len(plists) == 2
-        app_plist, staleness_plist = plists
+        assert len(plists) == 1
+        [app_plist] = plists
         assert app_plist == {
             "Label": "com.fitness-dashboard",
             "WorkingDirectory": str(REPO_ROOT),
@@ -315,30 +324,13 @@ def test_launchd_install_and_reinstall_emit_valid_complete_plists(tmp_path):
             "StandardOutPath": "/tmp/fitness-dashboard.log",
             "StandardErrorPath": "/tmp/fitness-dashboard.err.log",
         }
-        assert staleness_plist == {
-            "Label": "com.fitness-dashboard.staleness",
-            "WorkingDirectory": str(REPO_ROOT),
-            "ProgramArguments": [
-                "/bin/bash",
-                str(REPO_ROOT / "scripts" / "check-apple-health-staleness.sh"),
-            ],
-            "StartInterval": 3600,
-            "RunAtLoad": True,
-            "EnvironmentVariables": {
-                "DATA_DIR": str(data_dir),
-                "APPLE_HEALTH_SYNC_DB": str(data_dir / "apple_health_sync.db"),
-                "APPLE_HEALTH_FIRST_SEEN_FILE": str(data_dir / ".apple-health-first-sync"),
-            },
-            "StandardOutPath": "/tmp/fitness-dashboard-staleness.log",
-            "StandardErrorPath": "/tmp/fitness-dashboard-staleness.err.log",
-        }
-
-        assert output.count("[dry-run] write ") == 2
-        assert output.count("[dry-run] launchctl bootstrap ") == 2
-        assert output.count("[dry-run] launchctl kickstart -k ") == 2
+        assert "staleness" not in output
+        assert output.count("[dry-run] write ") == 1
+        assert output.count("[dry-run] launchctl bootstrap ") == 1
+        assert output.count("[dry-run] launchctl kickstart -k ") == 1
         if action == "install":
-            assert output.count("[dry-run] launchctl bootout ") == 2
+            assert output.count("[dry-run] launchctl bootout ") == 1
             assert "[dry-run] rm -f " not in output
         else:
-            assert output.count("[dry-run] launchctl bootout ") == 4
-            assert f"[dry-run] rm -f {app_path} {staleness_path}" in output
+            assert output.count("[dry-run] launchctl bootout ") == 2
+            assert f"[dry-run] rm -f {app_path}" in output

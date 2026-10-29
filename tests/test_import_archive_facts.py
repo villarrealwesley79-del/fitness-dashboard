@@ -161,7 +161,7 @@ def test_a_refresh_does_not_delete_archive_rows(tmp_path, archives):
             "sleep_summary": {"data": []},
         },
         db_file=db, profile_key="1",
-        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None, row_replacement_sources=lambda _r: [],
+        activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
     )
     day = preferred_daily_facts(db, {"sleep_duration"}, "2026-01-05", "2026-01-05", "1")["2026-01-05"]
     assert day["sleep_duration"]["via"] == "archive"

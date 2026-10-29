@@ -135,7 +135,7 @@ def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
 
     monkeypatch.setattr(module, "fetch_open_wearables_data", lambda: raw_payload)
 
-    response = module.app.test_client().post("/api/health/sync")
+    response = module.app.test_client().post("/api/open-wearables/check-sync")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -207,16 +207,15 @@ def test_open_wearables_check_sync_alias_is_metadata_only(monkeypatch):
     )
 
     client = module.app.test_client()
-    for path in ("/api/open-wearables/check-sync", "/api/health/sync"):
-        response = client.post(path)
-        assert response.status_code == 200
-        assert response.get_json() == {
-            "status": "success",
-            "source": "open_wearables",
-            "fetched_at": "2026-07-12T00:00:00",
-            "counts": {"sleep": 0, "workouts": 0, "activity_summary": 0},
-            "errors": {},
-        }
+    response = client.post("/api/open-wearables/check-sync")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "success",
+        "source": "open_wearables",
+        "fetched_at": "2026-07-12T00:00:00",
+        "counts": {"sleep": 0, "workouts": 0, "activity_summary": 0},
+        "errors": {},
+    }
 
 
 def test_health_sync_exception_uses_stable_error_response(monkeypatch):
@@ -231,7 +230,7 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
 
     monkeypatch.setattr(module, "fetch_open_wearables_data", fail_fetch)
 
-    response = module.app.test_client().post("/api/health/sync")
+    response = module.app.test_client().post("/api/open-wearables/check-sync")
 
     assert response.status_code == 500
     payload = response.get_json()
@@ -256,12 +255,25 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
         assert fragment not in body
 
 
-def test_legacy_health_sync_route_is_explicitly_not_apple_health():
+def test_apple_health_and_legacy_health_routes_are_gone():
     module = _fitness_app()
-    endpoints = {rule.rule: rule.endpoint for rule in module.app.url_map.iter_rules()}
+    rules = [rule.rule for rule in module.app.url_map.iter_rules()]
 
-    assert endpoints["/api/health/sync"] == endpoints["/api/open-wearables/check-sync"]
-    assert "not an Apple Health webhook" in module.health_sync.__doc__
+    assert not [rule for rule in rules if rule.startswith(("/api/health", "/api/apple-health"))]
+    assert module.app.test_client().post("/api/apple-health/sync", json={}).status_code in (401, 403, 404)
+
+
+def test_wearable_sources_and_alerts_name_open_wearables_only(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_open_wearables_status_source", lambda: {"source": "open_wearables"})
+    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
+        "open_wearables": {"status": "fresh"},
+        "wearable_facts": {"status": "stale", "last_data_point": "2026-06-24"},
+    })
+
+    assert [source["source"] for source in module._wearable_sources_payload({})] == ["open_wearables"]
+    alerts = module._push_alert_preview()["alerts"]
+    assert [(alert["source"], alert["severity"]) for alert in alerts] == [("wearable_facts", "warning")]
 
 
 def test_open_wearables_fetch_blocks_unallowlisted_remote_before_network(monkeypatch):
@@ -299,244 +311,6 @@ def test_open_wearables_provider_route_reports_real_provider_probe(monkeypatch):
     assert payload["status"] == "connected"
     assert payload["providers"][0]["label"] == "WHOOP"
     assert payload["providers"][0]["capabilities"]["workouts"] is True
-
-
-def test_open_wearables_supersedes_direct_oura_and_apple_sources(monkeypatch):
-    module = _fitness_app()
-    monkeypatch.setattr(module, "_open_wearables_status_source", lambda: {
-        "source": "open_wearables",
-        "status": "fresh",
-        "hub_status": "connected",
-        "connected": True,
-        "facts_ready": True,
-        "replacement_sources": ["oura", "apple_health"],
-        "providers": [
-            {"provider_id": "oura", "state": "connected"},
-            {"provider_id": "apple", "state": "active"},
-        ],
-    })
-
-    payload = module._wearable_sources_payload({
-        "oura": {"status": "stale"},
-        "apple_health": {"status": "stale"},
-    })
-
-    sources = [source["source"] for source in payload]
-    assert sources == ["open_wearables"]
-
-
-def test_open_wearables_stale_or_error_providers_do_not_supersede_direct_sources(monkeypatch):
-    module = _fitness_app()
-    monkeypatch.setattr(module, "_open_wearables_status_source", lambda: {
-        "source": "open_wearables",
-        "status": "fresh",
-        "hub_status": "connected",
-        "connected": True,
-        "facts_ready": True,
-        "replacement_sources": ["apple_health"],
-        "providers": [
-            {"provider_id": "apple", "state": "connected", "error_code": "sync_failed"},
-        ],
-    })
-
-    payload = module._wearable_sources_payload({
-        "apple_health": {"status": "stale"},
-    })
-
-    sources = [source["source"] for source in payload]
-    assert sources == ["apple_health", "open_wearables"]
-
-
-def test_open_wearables_generic_facts_ready_without_source_replacement_does_not_supersede(monkeypatch):
-    module = _fitness_app()
-    monkeypatch.setattr(module, "_open_wearables_status_source", lambda: {
-        "source": "open_wearables",
-        "status": "fresh",
-        "hub_status": "connected",
-        "connected": True,
-        "facts_ready": True,
-        "replacement_sources": ["oura"],
-        "providers": [
-            {"provider_id": "oura", "state": "connected"},
-            {"provider_id": "apple", "state": "connected"},
-        ],
-    })
-
-    payload = module._wearable_sources_payload({
-        "apple_health": {"status": "stale"},
-    })
-
-    sources = [source["source"] for source in payload]
-    assert sources == ["apple_health", "open_wearables"]
-
-
-def test_open_wearables_replacement_sources_use_recent_sync_provenance(monkeypatch, tmp_path):
-    module = _fitness_app()
-    facts_db = tmp_path / "wearable_facts.sqlite3"
-    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
-    module.upsert_wearable_source(str(facts_db), {
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": "fresh",
-        "last_data_point": "2026-06-28",
-        "last_sync_attempt": "2026-06-29T10:00:00",
-        "capabilities": {
-            "replacement_sources": ["apple_health", "oura", "not_a_source"],
-            "replacement_source_dates": {
-                "apple_health": "2026-06-28",
-                "oura": "2026-06-28",
-                "not_a_source": "2026-06-28",
-            },
-        },
-    }, profile_key=module._open_wearables_profile_key())
-
-    sources = module._open_wearables_replacement_sources(now=module.datetime(2026, 6, 29, 12, 0, 0))
-
-    assert sources == ["apple_health"]  # oura is no longer a direct source to replace
-
-
-def test_open_wearables_replacement_sources_expire_when_sync_is_stale(monkeypatch, tmp_path):
-    module = _fitness_app()
-    facts_db = tmp_path / "wearable_facts.sqlite3"
-    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
-    module.upsert_wearable_source(str(facts_db), {
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": "fresh",
-        "last_data_point": "2026-06-20",
-        "last_sync_attempt": "2026-06-20T10:00:00",
-        "capabilities": {
-            "replacement_sources": ["apple_health", "oura"],
-            "replacement_source_dates": {
-                "apple_health": "2026-06-20",
-                "oura": "2026-06-20",
-            },
-        },
-    }, profile_key=module._open_wearables_profile_key())
-
-    sources = module._open_wearables_replacement_sources(now=module.datetime(2026, 6, 29))
-
-    assert sources == []
-
-
-def test_open_wearables_replacement_sources_accept_offset_aware_sync_timestamp(monkeypatch, tmp_path):
-    module = _fitness_app()
-    facts_db = tmp_path / "wearable_facts.sqlite3"
-    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
-    module.upsert_wearable_source(str(facts_db), {
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": "fresh",
-        "last_data_point": "2026-06-29",
-        "last_sync_attempt": "2026-07-01T19:00:00-05:00",
-        "capabilities": {
-            "replacement_source_dates": {"apple_health": "2026-06-29"},
-        },
-    }, profile_key=module._open_wearables_profile_key())
-
-    replacement_dates = module._open_wearables_replacement_source_dates(
-        now=module.datetime(2026, 7, 1, 20, 0, tzinfo=timezone(timedelta(hours=-5))),
-    )
-
-    assert replacement_dates == {"apple_health": "2026-06-29"}
-
-
-def test_open_wearables_store_records_domain_dates_without_claiming_partial_replacement(monkeypatch, tmp_path):
-    module = _fitness_app()
-    facts_db = tmp_path / "wearable_facts.sqlite3"
-    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
-
-    facts_count = module._store_wearable_facts_from_open_wearables({
-        "fetched_at": "2026-06-29T10:00:00",
-        "activity_summary": {"summaries": [
-            {"day": "2026-06-28", "steps": 1200, "source": {"provider": "oura"}},
-        ]},
-        "sleep": {"events": [
-            {"end": "2026-06-28T23:58:00Z", "duration_seconds": 3600, "source": {"provider": "Eight Sleep", "device": "Watch6,18"}},
-        ]},
-    })
-
-    assert facts_count == 2
-    stored = module.list_wearable_sources(str(facts_db), profile_key=module._open_wearables_profile_key())
-    open_wearables = next(source for source in stored if source["provider_id"] == "open_wearables")
-    assert open_wearables["capabilities"]["replacement_sources"] == []
-    assert open_wearables["capabilities"]["replacement_source_dates"] == {}
-    assert open_wearables["capabilities"]["replacement_source_domain_dates"] == {
-        "apple_health": {"sleep": "2026-06-28"},
-    }
-
-
-def test_open_wearables_connected_providers_without_facts_do_not_supersede_direct_sources(monkeypatch):
-    module = _fitness_app()
-    monkeypatch.setattr(module, "_open_wearables_status_source", lambda: {
-        "source": "open_wearables",
-        "status": "fresh",
-        "hub_status": "connected",
-        "connected": True,
-        "facts_ready": False,
-        "replacement_sources": [],
-        "providers": [
-            {"provider_id": "oura", "state": "connected"},
-            {"provider_id": "apple", "state": "connected"},
-        ],
-    })
-
-    payload = module._wearable_sources_payload({
-        "apple_health": {"status": "stale"},
-    })
-
-    sources = [source["source"] for source in payload]
-    assert sources == ["apple_health", "open_wearables"]
-
-
-def test_push_alert_preview_suppresses_direct_alerts_owned_by_open_wearables(monkeypatch):
-    module = _fitness_app()
-    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
-        "open_wearables": {
-            "status": "fresh",
-            "hub_status": "connected",
-            "connected": True,
-            "facts_ready": True,
-            "replacement_sources": ["oura", "apple_health"],
-            "providers": [
-                {"provider_id": "oura", "state": "connected"},
-                {"provider_id": "healthkit", "state": "connected"},
-            ],
-        },
-        "oura": {"status": "stale", "last_data_point": "2026-06-24"},
-        "apple_health": {"status": "stale", "last_data_point": "2026-06-24"},
-        "whoop": {"status": "missing", "connected": False},
-    })
-
-    payload = module._push_alert_preview()
-
-    assert payload["alerts"] == []
-
-
-def test_open_wearables_adjusted_freshness_marks_superseded_sources_fresh():
-    module = _fitness_app()
-
-    payload = module._open_wearables_adjusted_freshness({
-        "open_wearables": {
-            "status": "fresh",
-            "hub_status": "connected",
-            "connected": True,
-            "replacement_sources": ["apple_health"],
-            "replacement_source_dates": {
-                "apple_health": "2026-06-28",
-            },
-            "providers": [
-                {"provider_id": "oura", "state": "connected"},
-                {"provider_id": "apple", "state": "connected"},
-            ],
-        },
-        "apple_health": {"status": "stale", "last_data_point": "2026-06-24"},
-        "whoop": {"status": "fresh"},
-    })
-
-    assert payload["apple_health"]["status"] == "fresh"
-    assert payload["apple_health"]["superseded_by"] == "open_wearables"
-    assert payload["apple_health"]["last_data_point"] == "2026-06-28"
 
 
 def test_open_wearables_setup_check_reports_attention_without_cosmetic_success(monkeypatch):
@@ -1803,7 +1577,6 @@ def test_open_wearables_freshness_uses_provider_aware_status(monkeypatch):
 
     module = _fitness_app()
     monkeypatch.setattr(module, "_latest_wearable_fact_freshness", lambda _now: ("missing", None, None))
-    monkeypatch.setattr(module, "_latest_apple_health_freshness", lambda _now: ("missing", None, None))
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
     monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
     monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")

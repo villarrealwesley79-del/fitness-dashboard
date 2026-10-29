@@ -106,8 +106,6 @@ def build_recommendation_source_proof(
                 ignored_reason = str(ignored_override)
             elif display_only:
                 ignored_reason = "display_only"
-            elif node.get("superseded_by"):
-                ignored_reason = f"superseded_by_{node.get('superseded_by')}"
             elif status in {"stale", "error", "blocked"}:
                 ignored_reason = f"{status}_source"
             elif status == "missing" or not fields:
@@ -169,12 +167,6 @@ def build_recommendation_source_proof(
             domain: domain_proof(domain, bool((source_inputs.get("domain_modifier_applied") or {}).get(domain)))
             for domain in ("sleep", "recovery", "activity")
         },
-        "apple_health": proof(
-            "apple_health",
-            source_inputs.get("apple_health_fields"),
-            bool(source_inputs.get("apple_health_modifier_applied")),
-            used_override=source_inputs.get("apple_health_used_override"),
-        ),
         "weather": proof(
             "weather",
             source_inputs.get("weather_fields"),

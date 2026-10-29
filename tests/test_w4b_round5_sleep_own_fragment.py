@@ -34,7 +34,6 @@ def app_db(isolated_app, monkeypatch):
     monkeypatch.setattr(isolated_app, "WORKOUTS", [])
     monkeypatch.setattr(isolated_app, "SORENESS_DATA", [])
     monkeypatch.setattr(isolated_app, "RECOVERY_DATA", [])
-    monkeypatch.setattr(isolated_app, "_load_apple_health_recommendation_workouts", lambda **_k: [], raising=False)
     return isolated_app
 
 

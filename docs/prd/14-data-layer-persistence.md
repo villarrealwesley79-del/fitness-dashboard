@@ -1,6 +1,6 @@
 # Data Layer & Persistence — PRD
 
-> **Sources:** README.md; docs/VISION.md; docs/PRD.md; docs/CURRENT_STATE.md; app.py; data_store.py; data_loader.py; history_normalization.py; runtime_config.py; wearable_fact_store.py; whoop_store.py; tests/test_data_store_connection_lifecycle.py; tests/test_data_store_sodium.py; tests/test_fit183_runtime_paths.py; docs/FIT30_SYNTHETIC_HISTORY_CLEANUP.md; scripts/remove_synthetic_history_rows.py
+> **Sources:** README.md; docs/VISION.md; docs/PRD.md; docs/CURRENT_STATE.md; app.py; data_store.py; data_loader.py; history_normalization.py; runtime_config.py; wearable_fact_store.py; protected_secrets.py; tests/test_data_store_connection_lifecycle.py; tests/test_data_store_sodium.py; tests/test_fit183_runtime_paths.py; docs/FIT30_SYNTHETIC_HISTORY_CLEANUP.md; scripts/remove_synthetic_history_rows.py
 > **Routes:** GET /api/export-backup; POST /api/import-backup; GET /api/export-md; all feature routes that read/write JSON or SQLite stores indirectly
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -8,7 +8,7 @@
 
 The data layer is a local-first persistence system for a single-owner Flask fitness app. Runtime data lives under `DATA_DIR` as a mix of JSON files and SQLite databases. The public repository is sanitized; real owner data, auth databases, wearable caches, food logs, and secrets are runtime artifacts, not tracked source files.
 
-The system uses JSON files for long-lived app-native history such as workouts, soreness, cardio, recovery, settings, body, sleep, nutrition, and baselines. It uses SQLite for structured local data that needs uniqueness, indexes, idempotency, caching, or multi-step contracts: food logs, meal review state, workout adaptation events, Oura/Apple Health/WHOOP caches, wearable facts, auth, push subscriptions, and AI coach cache/metrics.
+The system uses JSON files for long-lived app-native history such as workouts, soreness, cardio, recovery, settings, body, sleep, nutrition, and baselines. It uses SQLite for structured local data that needs uniqueness, indexes, idempotency, caching, or multi-step contracts: food logs, meal review state, workout adaptation events, wearable facts, auth, push subscriptions, and AI coach cache/metrics.
 
 This PRD is the data contract other feature PRDs should link to. It defines path resolution, store ownership, schemas, freshness/persistence behavior, backup/import boundaries, synthetic-history cleanup, and known multi-worker/global-state risks. It does not define UI rendering or individual feature workflows except where persistence affects product behavior.
 
@@ -26,7 +26,7 @@ The data layer has few direct screens, but it powers nearly every surface:
 | AI coach surfaces | Persist adjust/analyze cache and metrics in SQLite; rely on local history and wearable fact stores for context. |
 | Admin/debug smoke tests | Depend on `DATA_DIR` isolation, authenticated session cookies, and route-level persistence paths. |
 
-Backend-only consumers include recommendation generation, AI fact context, Apple Health sync, WHOOP sync/import, Open Wearables fact sync, and push alerts. `delete_user_data` exists as an unwired helper used by tests; no user-facing account-data deletion flow currently exists.
+Backend-only consumers include recommendation generation, AI fact context, Open Wearables fact sync, and push alerts. `delete_user_data` exists as an unwired helper used by tests; no user-facing account-data deletion flow currently exists.
 
 ## 3. Field Inventory
 
@@ -36,9 +36,7 @@ Backend-only consumers include recommendation generation, AI fact context, Apple
 | --- | --- | --- | --- | --- | --- |
 | `APP_DIR` | path | Yes | Directory containing `runtime_config.py` | Derived | Source checkout root. |
 | `DATA_DIR` | path | Yes | `APP_DIR` | `DATA_DIR` env stripped; directory created by `data_path` | Root for runtime JSON, SQLite, caches, and local config. |
-| `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | URL string | No | derived from request | Adds https if scheme missing; `.ts.net` hosts forced to https | Canonical URL for external callbacks, push, and Apple Health links. |
-| `APPLE_HEALTH_SYNC_DB` | path | No | `DATA_DIR/apple_health_sync.db` | Env override | Apple Health sync database path. |
-| `WHOOP_PROTECTED_MATERIAL_DIR` | path | No | `~/Library/Application Support/Fitness Dashboard/secrets` | Directory created; file chmod 600 | Location for protected WHOOP token material. |
+| `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | URL string | No | derived from request | Adds https if scheme missing; `.ts.net` hosts forced to https | Canonical URL for external callbacks, and push. |
 
 ### JSON stores
 
@@ -63,8 +61,7 @@ Backend-only consumers include recommendation generation, AI fact context, Apple
 | --- | --- | --- | --- |
 | Fitness data | `fitness_data.db` | `data_store.py` | Food logs, structured body/cardio/nutrition/recovery data, meal review, adaptation events, lookup caches, push subscriptions, settings table. |
 | Auth | `auth.db` | `auth.py` | Local users, password hashes, and owner guard. |
-| Apple Health sync | `apple_health_sync.db` or env override | Apple Health integration | Health Auto Export records/events used for freshness and load. |
-| WHOOP | `whoop.sqlite3` | `whoop_store.py` | WHOOP connection, OAuth states, records, daily facts, sync runs. |
+| Wearable facts | `wearable_facts.sqlite3` | `wearable_fact_store.py` | Normalized WHOOP, Oura and Apple Health facts from Open Wearables, plus archive imports labelled `source_system=archive`. |
 | Wearable facts | `wearable_facts.sqlite3` | `wearable_fact_store.py` | Public coaching-safe daily facts and wearable sources, profile-scoped. |
 | AI coach cache | `ai_coach_cache.sqlite3` | app AI coach routes | Adjust/analyze cache and reliability metrics. |
 
@@ -100,18 +97,6 @@ Backend-only consumers include recommendation generation, AI fact context, Apple
 
 Raw traces/images and unrecognized fields are dropped before storage in `original_estimate_json`.
 
-### WHOOP tables
-
-| Table | Key fields | Business meaning |
-| --- | --- | --- |
-| `whoop_connection` | singleton id=1, status, connected/disconnected/sync timestamps, scopes_json, material_ref, access_token_expires_at, reauth_required, last_error | Public and private connection state without token values. |
-| `whoop_oauth_states` | state, redirect_uri, user_binding, created/expires/consumed | OAuth CSRF/state tracking with 10-minute default TTL. |
-| `whoop_sync_runs` | run id, reason, window, status, started/completed, records count, retryable, redacted_error | Sync audit trail. |
-| `whoop_records` | record_type/upstream_id PK, local_date, times, score_state, recovery/strain/sleep/health metrics, imported_at, sync_run_id | Raw-enough normalized WHOOP records without protected token material. |
-| `whoop_daily_facts` | local_date PK, metrics, score_state, last_sync_attempt, projected_at | Daily coaching facts projected from scored records. |
-
-WHOOP metric fields are: `recovery_score`, `recovery_band`, `strain`, `sleep_performance_pct`, `sleep_need_gap_min`, `workout_kj`, `hrv_rmssd`, `resting_hr`, `respiratory_rate`, `spo2`, `skin_temp`, and `percent_recorded`.
-
 ### Wearable fact tables
 
 | Table | Key fields | Business meaning |
@@ -132,7 +117,6 @@ Forbidden field names for public wearable facts include `authorization`, `access
 | `data.meal_acceptance_events` | list | Yes | Meal acceptance lifecycle rows. |
 | `data.meal_review_snapshots` | list | Yes | Meal review snapshots. |
 | `data.personal_vocab` | list | Yes | Learned food vocabulary. |
-| `data.whoop_daily_facts` | list | Yes | Last 366 WHOOP daily facts only. |
 
 Backup filename is `fitness_backup_YYYY-MM-DD.json`.
 
@@ -156,13 +140,9 @@ Backup filename is `fitness_backup_YYYY-MM-DD.json`.
 
 **Store public wearable facts.** Trigger: Open Wearables sync or provider bridge. Behavior: validate facts against forbidden fields, scope to profile key, upsert by `(profile_key,date,provider_id,metric)`. Success: facts become available for AI/recommendations. Failure: forbidden field raises an error before persistence.
 
-**Store WHOOP token material.** Trigger: OAuth connect/refresh. Behavior: write protected material file outside SQLite, chmod 600, then update DB with material reference and expiry. If DB update fails, cleanup attempts to remove written material. Success: DB never stores token values. Failure: connection may require reauth.
+**Export backup.** Trigger: `GET /api/export-backup`. Behavior: assemble JSON stores plus selected SQLite rows. Success: downloads JSON file. Failure: unhandled errors return server failure [TBC: no explicit wrapper observed].
 
-**Project WHOOP daily facts.** Trigger: sync/import. Behavior: group records by local date; copy metrics only from records with `score_state=SCORED`; prefer recovery scored state, otherwise preserve unscored/calibrating state; delete and rebuild daily facts. Success: recommendation layer reads daily facts. Failure: invalid records are skipped or transaction fails.
-
-**Export backup.** Trigger: `GET /api/export-backup`. Behavior: assemble JSON stores plus selected SQLite rows and WHOOP daily facts. Success: downloads JSON file. Failure: unhandled errors return server failure [TBC: no explicit wrapper observed].
-
-**Import backup.** Trigger: `POST /api/import-backup`. Behavior: validate JSON body and `data` object; validate WHOOP facts before mutating; acquire WHOOP mutation guard if needed; restore JSON stores under `JSON_DATA_LOCK`; import food logs/vocab/meal state; clear and reproject WHOOP facts from backup records. Success: returns status and counts [TBC: exact count fields below truncated in sampled output]. Failure: invalid format returns 400; concurrent WHOOP sync returns 409 `whoop_sync_in_progress`; caught errors return 400 `status:error`.
+**Import backup.** Trigger: `POST /api/import-backup`. Behavior: validate JSON body and `data` object; restore JSON stores under `JSON_DATA_LOCK`; import food logs/vocab/meal state. Success: returns status and counts [TBC: exact count fields below truncated in sampled output]. Failure: invalid format returns 400; caught errors return 400 `status:error`.
 
 **Remove synthetic history rows.** Trigger: manual script execution. Behavior: `scripts/remove_synthetic_history_rows.py` inspects `data_workouts.json`, `data_cardio.json`, and `data_recovery.json` for suspect dates 2026-04-12 through 2026-04-14. Dry run lists candidates. Actual deletion requires explicit `--remove KIND:ID`, `--expect-count`, and `--apply`; it does not delete by date alone. Success: only specified rows are removed. Failure: expectation mismatch blocks deletion.
 
@@ -181,15 +161,13 @@ Persistence is otherwise accessed indirectly through feature routes:
 | Feature route group | Stores touched |
 | --- | --- |
 | Food logging/review/barcode/text/photo | `fitness_data.db` food logs, refresh events, lookup caches, personal vocab, meal snapshots/events, adaptation pending. |
-| Recommendation/AI coach | JSON history/settings, Oura/Apple/WHOOP/wearable fact DBs, adaptation events, `ai_coach_cache.sqlite3`, in-memory recommendation cache. |
-| Wearable sync/status | Oura cache, Apple Health DB, WHOOP DB/protected material, wearable facts DB, Open Wearables config JSON. |
+| Recommendation/AI coach | JSON history/settings, the wearable facts DB, adaptation events, `ai_coach_cache.sqlite3`, in-memory recommendation cache. |
+| Wearable sync/status | Wearable facts DB, Open Wearables config JSON, protected setup password (Keychain or 0600 file). |
 | Account/auth/push | `auth.db`, `fitness_data.db` push subscriptions and user-scoped tables. |
 
 Endpoint details:
 
-- `GET /api/export-backup` exports WHOOP daily facts but deliberately does not export WHOOP protected material, OAuth states, sync run internals beyond facts, auth DB, push subscriptions, or AI cache.
-- `POST /api/import-backup` validates WHOOP backup facts against forbidden fields: `access_token`, `refresh_token`, `token_ref`, `material_ref`, `raw`, `raw_json`, `payload`, `provider_payload`, and `client_secret`.
-- `POST /api/import-backup` restores JSON stores first, then imports SQLite food/vocab/meal rows, then WHOOP facts. This is not a single cross-store transaction.
+- `POST /api/import-backup` restores JSON stores first, then imports SQLite food/vocab/meal rows. This is not a single cross-store transaction.
 
 ## 6. Data Model & Persistence
 
@@ -218,7 +196,6 @@ Retention is mostly indefinite. JSON history, SQLite logs, wearable facts, food 
 
 | Constant | Value |
 | --- | --- |
-| `WHOOP_SYNC_LOCK_FILE` | `DATA_DIR/whoop_sync.lock` |
 | `WORKOUTS_FILE` | `DATA_DIR/data_workouts.json` |
 | `SORENESS_FILE` | `DATA_DIR/data_soreness.json` |
 | `SETTINGS_FILE` | `DATA_DIR/data_settings.json` |
@@ -228,7 +205,6 @@ Retention is mostly indefinite. JSON history, SQLite logs, wearable facts, food 
 | `BODY_FILE` | `DATA_DIR/data_body.json` |
 | `SLEEP_FILE` | `DATA_DIR/data_sleep.json` |
 | `NUTRITION_FILE` | `DATA_DIR/data_nutrition.json` |
-| `WHOOP_DB_FILE` | `DATA_DIR/whoop.sqlite3` |
 | `WEARABLE_FACTS_DB_FILE` | `DATA_DIR/wearable_facts.sqlite3` |
 | `OPEN_WEARABLES_CONFIG_FILE` | `DATA_DIR/open_wearables_config.json` |
 | `DATA_DB` | `DATA_DIR/fitness_data.db` |
@@ -284,19 +260,6 @@ These differ from app JSON settings defaults and should not be treated as equiva
 | `_FRESHNESS_AGING_HOURS` | 24 | Data point becomes aging after 24 hours. |
 | `_FRESHNESS_STALE_HOURS` | 48 | Data point becomes stale after 48 hours. |
 | Weather cache max age | 600 seconds | Cached wttr.in response reuse window. |
-| WHOOP OAuth state TTL | 10 minutes | Default state expiry. |
-| WHOOP CSV max bytes | 512 KiB | Upload/import cap. |
-| WHOOP CSV max rows | 5000 | Upload/import cap. |
-
-### WHOOP statuses and score states
-
-| Value | Meaning |
-| --- | --- |
-| `disconnected` | Default connection status. |
-| `connected` | OAuth/material connection is present. |
-| `reauth_required` | Token/material needs renewed auth. |
-| `SCORED` | Daily record can project metrics into recommendation facts. |
-| `UNSCORED` / `CALIBRATING` [TBC exact upstream spellings] | Stored as score state but not used for modifying recommendation. |
 
 ### Food and meal states
 
@@ -315,29 +278,28 @@ These differ from app JSON settings defaults and should not be treated as equiva
 | Auth rate window | 600 seconds | Login/register failure window. |
 | Auth max failures | 10 | Lockout threshold. |
 | CSRF header | `X-Requested-With: XMLHttpRequest` | Browser mutation proof accepted by server. |
-| CSRF exempt paths | `/api/apple-health/sync` | External token-authenticated route. |
 
 ## 8. Integration Points
 
-- AI Coach / Recommendation Engine reads workouts, soreness, settings, recovery, cardio, food logs, adaptation events, Oura, Apple Health, WHOOP, wearable facts, and AI cache.
+- AI Coach / Recommendation Engine reads workouts, soreness, settings, recovery, cardio, food logs, adaptation events, wearable facts, and AI cache.
 - Food logging writes `food_logs`, lookup caches, personal vocabulary, meal review state, refresh events, and adaptation pending windows.
-- Wearable integrations write Oura cache, Apple Health sync DB, WHOOP DB/protected material, Open Wearables config, and public wearable facts.
+- Wearable integrations write Open Wearables config and public wearable facts.
 - Auth gates route access and owns `auth.db`, single-owner mode, password hashes, sessions, CSRF, and SQLite-backed shared rate limiting.
-- Backup/import crosses JSON stores, food/meal/vocab SQLite rows, and WHOOP daily facts.
+- Backup/import crosses JSON stores, and food/meal/vocab SQLite rows.
 - Push notifications store subscriptions in `fitness_data.db` and derive public URLs from runtime config.
 - Synthetic cleanup script operates on runtime JSON history and should be coordinated with backup/export flows.
 
 ## 9. Permissions & Security
 
-Runtime data is local but not inherently public-safe. The sanitized repository excludes real `DATA_DIR` artifacts. Session auth protects app routes by default; public prefixes are login/register/logout, static/manifest/service worker/SEO pages, and the exact Apple Health sync webhook. Single-user mode is enabled unless `FITNESS_DASHBOARD_SINGLE_USER=false`; registration is disabled once a user exists.
+Runtime data is local but not inherently public-safe. The sanitized repository excludes real `DATA_DIR` artifacts. Session auth protects app routes by default; public prefixes are login/register/logout, static/manifest/service worker/SEO pages. Single-user mode is enabled unless `FITNESS_DASHBOARD_SINGLE_USER=false`; registration is disabled once a user exists.
 
-Mutating browser requests must pass same-origin browser metadata or `X-Requested-With: XMLHttpRequest`. Cross-origin browser headers are rejected before CSRF header checks. Apple Health sync is exempt from browser CSRF because it is token-authenticated.
+Mutating browser requests must pass same-origin browser metadata or `X-Requested-With: XMLHttpRequest`. Cross-origin browser headers are rejected before CSRF header checks.
 
-WHOOP access/refresh token values are stored in a protected material file outside SQLite, not in the database. The connection table stores only `material_ref`, expiry, scopes, status, and redacted errors. Backup export validates WHOOP facts to reject token/material/raw payload fields.
+WHOOP, Oura and Apple Health tokens live in the Open Wearables hub, not in this app. The only integration secret this app stores is the Open Wearables setup password (`protected_secrets.py`: macOS Keychain, or a 0600 file).
 
 Wearable facts are public coaching facts only. The store rejects raw provider payloads, records/samples, secrets, token fields, and `user_id`. Profile scoping uses `profile_key` rather than raw user id.
 
-Known security/privacy risks remain: Open Wearables/Apple Health token and URL handling is covered by existing FIT-261; `delete_user_data` is unwired and omits push subscriptions; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
+Known security/privacy risks remain: Open Wearables URL handling is covered by existing FIT-261; `delete_user_data` is unwired and omits push subscriptions; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
 
 ## 10. Business Rules
 
@@ -347,11 +309,11 @@ JSON files are the app-native source for workout history and many dashboard list
 
 The app uses in-memory globals as hot state for JSON stores and some caches. This is acceptable for a single local process but unsafe as a multi-worker data contract. The open FIT-256 issue covers global-state corruption; this PRD references it rather than duplicating the root issue.
 
-Backups are user-data exports, not full runtime clones. They do not include auth users/passwords, WHOOP protected token material, OAuth states, sync lock files, push subscriptions, AI coach cache, weather cache, raw provider payloads, or app config secrets.
+Backups are user-data exports, not full runtime clones. They do not include auth users/passwords, push subscriptions, AI coach cache, weather cache, raw provider payloads, or app config secrets.
 
-Import is not all-or-nothing across JSON, food SQLite, and WHOOP stores. WHOOP facts are validated before mutation, and JSON stores are restored under one lock, but later SQLite imports can still partially apply if a later row fails [TBC: exact rollback behavior per import helper varies].
+Import is not all-or-nothing across JSON and food SQLite stores. JSON stores are restored under one lock, but later SQLite imports can still partially apply if a later row fails [TBC: exact rollback behavior per import helper varies].
 
-Account data deletion is table-based in `fitness_data.db` and does not touch JSON history files, wearable integration DBs, auth users, WHOOP protected material, Open Wearables config, Apple Health sync DB, Oura cache, or push subscriptions. Treat it as partial structured-data deletion, not full local-data erasure.
+Account data deletion is table-based in `fitness_data.db` and does not touch JSON history files, wearable integration DBs, auth users, Open Wearables config, or push subscriptions. Treat it as partial structured-data deletion, not full local-data erasure.
 
 ## 11. Config & Environment
 
@@ -359,8 +321,6 @@ Account data deletion is table-based in `fitness_data.db` and does not touch JSO
 | --- | --- | --- |
 | `DATA_DIR` | App directory | Runtime data is read/written beside source files. |
 | `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | request-derived | Public URLs are inferred from host/proxy headers. |
-| `APPLE_HEALTH_SYNC_DB` | `DATA_DIR/apple_health_sync.db` | Apple Health freshness/load reads default DB. |
-| `WHOOP_PROTECTED_MATERIAL_DIR` | macOS Application Support secrets dir | WHOOP protected material file is stored outside repo/data DB. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | true | Registration closes after first user. |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | min user id | Owner guard uses first local user. |
 | `FITNESS_PUSH_VAPID_PUBLIC_KEY` / `VAPID_PUBLIC_KEY` | empty | Push public key unavailable. |
@@ -374,8 +334,8 @@ Existing focused tests cover:
 
 - `tests/test_data_store_connection_lifecycle.py`: food-log operations close every `fitness_data.db` connection.
 - `tests/test_data_store_sodium.py`: sodium round-trip through nutrition records, migration adding sodium to pre-existing nutrition table, and missing sodium accepted.
-- `tests/test_fit183_runtime_paths.py`: `DATA_DIR` controls JSON and SQLite stores, `save_json` uses unique atomic temp files, public base URL feeds Apple Health and push, VAPID claims keep mailto fallback for local HTTP, auth/Oura helpers use `DATA_DIR`, and launchd installer exports runtime path/public base URL without hardcoding.
-- Adjacent assigned tests also exercise persistence contracts indirectly: FIT-136 adaptation events/pending rows, AI fact context sanitization, AI metrics cache, Apple Health recommendation bridge history normalization/deduping, and dynamic cardio plan cache behavior.
+- `tests/test_fit183_runtime_paths.py`: `DATA_DIR` controls JSON and SQLite stores, `save_json` uses unique atomic temp files, public base URL feeds push, VAPID claims keep mailto fallback for local HTTP, auth helpers use `DATA_DIR`, and launchd installer exports runtime path/public base URL without hardcoding.
+- Adjacent assigned tests also exercise persistence contracts indirectly: FIT-136 adaptation events/pending rows, AI fact context sanitization, AI metrics cache, and dynamic cardio plan cache behavior.
 
 Coverage gaps:
 
@@ -401,8 +361,8 @@ Coverage gaps:
 ### IC-2: Move integration secrets and tokens out of plaintext/URLs
 - **Type:** Privacy
 - **Priority:** high
-- **Where:** app.py:212; runtime_config.py:29; whoop_store.py:348
-- **Problem:** WHOOP token material is protected outside SQLite, but adjacent integration material such as Open Wearables hub credentials and Apple Health tokenized URLs remain a known risk area. The current data contract cannot claim all integration secrets are protected consistently.
+- **Where:** app.py:212; runtime_config.py:29; protected_secrets.py
+- **Problem:** The Open Wearables setup password is protected outside SQLite, but adjacent integration material such as Open Wearables hub credentials in config files remains a known risk area. The current data contract cannot claim all integration secrets are protected consistently.
 - **Why it matters:** Local-first still needs clear secret boundaries; backups, logs, URLs, and config files can leak sensitive health integration access.
 - **Acceptance criteria:**
   - Inventory each integration secret/token and its storage location.
@@ -438,7 +398,7 @@ Coverage gaps:
 - **Type:** Improvement
 - **Priority:** medium
 - **Where:** app.py:15243
-- **Problem:** Backup import restores JSON stores, then imports food/vocab/meal SQLite rows, then WHOOP facts. These operations are not one cross-store transaction, so a later failure can leave a partially restored runtime.
+- **Problem:** Backup import restores JSON stores, then imports food/vocab/meal SQLite rows. These operations are not one cross-store transaction, so a later failure can leave a partially restored runtime.
 - **Why it matters:** A failed restore can mix old and new owner data without a clear recovery path.
 - **Acceptance criteria:**
   - Import either stages and swaps all stores atomically where feasible or writes a resumable import journal.
@@ -462,7 +422,7 @@ Coverage gaps:
 - **Type:** Privacy
 - **Priority:** medium
 - **Where:** data_store.py:1955; app.py runtime store declarations at app.py:199
-- **Problem:** Account deletion only deletes selected `fitness_data.db` tables. It does not remove JSON history, auth rows, Oura/Apple Health/WHOOP/wearable fact DBs, protected token material, Open Wearables config, AI cache, or sync lock files.
+- **Problem:** Account deletion only deletes selected `fitness_data.db` tables. It does not remove JSON history, auth rows, the wearable fact DB, protected secret material, Open Wearables config, AI cache, or sync lock files.
 - **Why it matters:** Product language around deleting user data could overpromise unless the boundary is explicit.
 - **Acceptance criteria:**
   - Product copy and API docs distinguish structured food/body data deletion from full local purge.

@@ -67,7 +67,6 @@ def test_push_reminder_preview_surfaces_stale_wearable(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "wearable_facts": {"status": "stale", "last_data_point": "2026-05-17", "last_sync_attempt": "2026-05-17T07:00:00"},
-        "apple_health": {"status": "fresh", "last_data_point": "2026-05-18", "last_sync_attempt": "2026-05-18T07:00:00"},
     })
     client = module.app.test_client()
     client.post("/api/push/subscriptions", json={"subscription": _subscription()})
@@ -87,7 +86,6 @@ def test_push_reminder_preview_gracefully_degrades_without_subscription(monkeypa
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
-        "apple_health": {"status": "fresh"},
     })
 
     body = module.app.test_client().get("/api/push/reminders/preview?permission=denied").get_json()
@@ -101,7 +99,6 @@ def test_push_reminder_preview_uses_stored_subscription_degradation_state(monkey
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
-        "apple_health": {"status": "fresh"},
     })
     client = module.app.test_client()
     client.post(
@@ -118,7 +115,6 @@ def test_push_subscription_normalizes_invalid_permission_state_before_preview(mo
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
         "oura": {"status": "fresh"},
-        "apple_health": {"status": "fresh"},
     })
     client = module.app.test_client()
 
