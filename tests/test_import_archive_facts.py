@@ -107,7 +107,7 @@ def test_import_is_idempotent_and_deletes_nothing(tmp_path, archives):
     db = str(tmp_path / "facts.sqlite3")
     keep = WearableDailyFact(
         date="2026-02-01", provider_id="whoop", source_label="WHOOP", metric="sleep_duration", value=401.0,
-        source_provider="whoop", source_system="open_wearables", source_id="live-1",
+        source_provider="whoop", source_system="open_wearables", source_id="live-1", freshness="fresh",
     )
     upsert_daily_facts(db, [keep], profile_key="1")
 
@@ -129,12 +129,12 @@ def test_open_wearables_wins_for_the_same_provider_metric_and_date(tmp_path, arc
     live = [
         WearableDailyFact(
             date="2026-01-05", provider_id="oura", source_label="Oura", metric="sleep_duration", value=500.0,
-            source_provider="oura", source_system="open_wearables", source_id="sleep-summary",
+            source_provider="oura", source_system="open_wearables", source_id="sleep-summary", freshness="fresh",
         ),
         WearableDailyFact(
             date="2025-03-01", provider_id="apple", source_label="Apple Health", metric="workout_duration", value=49.0,
             source_provider="apple", source_system="open_wearables", source_id="w-1", source_record_kind="event",
-            observed_at="2025-03-01T17:30:00Z", original_label="Functional Strength Training", category="strength_training",
+            observed_at="2025-03-01T17:30:00Z", original_label="Functional Strength Training", category="strength_training", freshness="fresh",
         ),
     ]
     upsert_daily_facts(db, live, profile_key="1")
@@ -218,7 +218,7 @@ def test_an_archived_morning_run_survives_a_live_evening_ride_on_the_same_day(tm
     upsert_daily_facts(db, [WearableDailyFact(
         date="2025-03-01", provider_id="apple", source_label="Apple Health", metric="workout_duration", value=41.0,
         source_provider="apple", source_system="open_wearables", source_id="w-ride", source_record_kind="event",
-        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"))], profile_key="1")
+        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"), freshness="fresh")], profile_key="1")
 
     summary = importer.import_archives(None, str(apple), db)
 
@@ -234,7 +234,7 @@ def test_stored_workouts_hides_an_archive_row_only_for_its_own_live_session(tmp_
     upsert_daily_facts(db, [WearableDailyFact(
         date="2025-03-01", provider_id="apple", source_label="Apple Health", metric="workout_duration", value=41.0,
         source_provider="apple", source_system="open_wearables", source_id="w-ride", source_record_kind="event",
-        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"))], profile_key="1")
+        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"), freshness="fresh")], profile_key="1")
     rows = sorted(hub.stored_workouts(db, "1"), key=lambda r: r["start_time"])
     assert [(r["activity_type"], r["archive"]) for r in rows] == [("Running", True), ("Cycling", False)]
 

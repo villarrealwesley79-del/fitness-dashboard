@@ -752,7 +752,7 @@ def test_adjust_deterministic_fallback_accepts_bare_tricep_extensions(monkeypatc
     payload = response.get_json()
     exercise = payload["recommendation"]["exercises"][0]
     assert payload["status"] == "ok"
-    assert payload["meta"]["mode"] == "deterministic_fallback"
+    assert payload["meta"]["mode"] == "deterministic"
     assert exercise["exercise"] == "Overhead Tricep Extension"
     assert exercise["load_source"] == "similar_history"
     assert exercise["load_inference"]["source_exercise"] == "Cable Pushdown"

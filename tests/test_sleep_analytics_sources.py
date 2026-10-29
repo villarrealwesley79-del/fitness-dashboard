@@ -7,7 +7,7 @@ def _night(module, day, provider, minutes, wake):
     upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
         WearableDailyFact(
             date=day, provider_id=provider, source_label=provider, metric="sleep_duration", value=float(minutes),
-            source_provider=provider, source_system="open_wearables", source_id="sleep-summary", observed_at=wake,
+            source_provider=provider, source_system="open_wearables", source_id="sleep-summary", observed_at=wake, freshness="fresh",
         )
     ])
 

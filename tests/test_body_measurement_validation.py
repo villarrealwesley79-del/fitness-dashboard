@@ -19,7 +19,6 @@ def client(monkeypatch, tmp_path):
     [
         ("date", "2026-02-30"),
         ("date", "07/11/2026"),
-        ("date", ""),
         ("weight_lbs", float("nan")),
         ("weight_lbs", float("inf")),
         ("body_fat_pct", float("nan")),

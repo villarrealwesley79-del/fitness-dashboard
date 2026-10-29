@@ -39,7 +39,7 @@ def test_sleep_summary_rates_midnight_straddling_bedtimes_excellent(isolated_app
             facts.append(WearableDailyFact(
                 date=day, provider_id="oura", source_label="Oura", metric=metric, value=480.0,
                 source_provider="oura", source_system="open_wearables", source_id="sleep-summary",
-                observed_at=f"{day}T{wake}Z",
+                observed_at=f"{day}T{wake}Z", freshness="fresh",
             ))
     upsert_daily_facts(isolated_app.WEARABLE_FACTS_DB_FILE, facts)
 

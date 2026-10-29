@@ -83,7 +83,7 @@ Failure → Invalid credentials flash "Invalid username or password." and return
 ### Authenticated GET `/login`
 
 Trigger → Already-authenticated user opens `/login`.  
-Behavior → Redirects to `next` query param or `/`; non-local or protocol-relative redirects are normalized to `/`. A bare `/` is rewritten to `/?fd_shell_reload=20260525-fit181-controller-reload-r2` to force a cached shell refresh.  
+Behavior → Redirects to `next` query param or `/`; non-local or protocol-relative redirects are normalized to `/`.  
 Validation → `next` must start with a single `/`.  
 API → `GET /login`.  
 Success → Redirect to sanitized target.

@@ -2481,7 +2481,9 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     cursor: text;
 }
 .set-rpe-cell > span {
-    font-size: 9px;
+    font-size: 11px;
+    line-height: 1.1;
+    max-width: 5.5em;
     font-weight: 700;
     letter-spacing: 0.04em;
     color: var(--fg-dim);

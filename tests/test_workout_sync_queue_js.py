@@ -72,12 +72,12 @@ const saved = [];
 sandbox.localStorage.setItem = (key, value) => saved.push({ key, value: JSON.parse(value) });
 const fields = {
   'input[data-field="weight"]': { value: '88' }, 'input[data-field="reps"]': { value: '12' },
-  'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'WHOOP switch proof' },
+  'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'background' },
   'input[data-field="rpe"]': { value: '7' },
 };
 const row = { dataset: { ex: '0', set: '0' }, querySelector: (selector) => fields[selector] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row], querySelector: () => null };
-sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit236');
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit264');
 e.state.activeWorkout = { id: 'workout-1', dirty: false, exercises: [{ exercise: 'Row', logged_sets: [{ weight: '66', reps: '20', done: false, notes: '' }] }] };
 e.saveActiveWorkoutDraftBeforePageHidden();
 process.stdout.write(JSON.stringify(saved[0]));
@@ -85,10 +85,10 @@ process.stdout.write(JSON.stringify(saved[0]));
         mocks=["currentActiveWorkoutDraftScope"],
     )
     assert output["key"] == "fit168:active-workout-draft:v1"
-    assert output["value"]["auth_scope"] == "user:fit236"
+    assert output["value"]["auth_scope"] == "user:fit264"
     assert output["value"]["workout"]["dirty"] is True
     assert output["value"]["workout"]["exercises"][0]["logged_sets"][0] == {
-        "weight": "88", "reps": "12", "done": True, "notes": "WHOOP switch proof",
+        "weight": "88", "reps": "12", "done": True, "notes": "background",
         "rpe": 7, "rpe_observed": False,
     }
 
@@ -137,9 +137,9 @@ process.stdout.write(JSON.stringify({ restored, active: e.state.activeWorkout, c
 
 def test_frontend_asset_versions_stay_in_sync():
     # Stable deployment/cache constants are intentionally source contracts.
-    assert "/static/js/app-loader.js?v=20261028-w4c-apple-via-ow" in APP_HTML
-    assert "/static/js/app.js?v=20261028-w4c-apple-via-ow" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20261028-w4c-apple-via-ow';" in APP_SW
+    assert "/static/js/app-loader.js?v=20261028-w7-follow-ups" in APP_HTML
+    assert "/static/js/app.js?v=20261028-w7-follow-ups" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20261028-w7-follow-ups';" in APP_SW
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS
 

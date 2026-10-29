@@ -40,7 +40,7 @@ def _store_today(fitness_app):
         WearableDailyFact(
             date=today, provider_id="oura", source_label="Oura", metric=metric, value=float(value),
             source_provider="oura", source_system="open_wearables", source_id="s",
-            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True,
+            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True, freshness="fresh",
         )
         for metric, value in metrics.items()
     ], profile_key=fitness_app._open_wearables_profile_key())

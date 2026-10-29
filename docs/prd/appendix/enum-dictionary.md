@@ -54,8 +54,6 @@ Default settings:
 | `CARDIO_RECOVERY_MODALITIES` | Recovery cardio options: Treadmill incline walk, Bike, Elliptical, Outdoor walk. | `app.py:618` |
 | `outdoor run`, `outdoor walk` | Outdoor modality set. | `app.py:647` |
 | `bike -> cycling`, `rower -> rowing`, treadmill variants -> `treadmill`, outdoor variants -> `running`/`walking` | Cardio fatigue-category aliases. | `app.py:669` |
-| `APPLE_HEALTH_WORKOUT_HR_MIN` | `30` | Minimum plausible Apple Health workout HR. | `app.py:1340` |
-| `APPLE_HEALTH_WORKOUT_HR_MAX` | `230` | Maximum plausible Apple Health workout HR. | `app.py:1341` |
 | `strength_training` | Canonical history category for lifted/strength labels. | `history_normalization.py:10`, `static/js/app.js:3722` |
 
 ## Meal Estimate, Review, And Nutrition Policy

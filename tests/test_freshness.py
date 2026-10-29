@@ -142,7 +142,7 @@ def seed_readiness(module, monkeypatch, readiness=None, hrv=None, provider="oura
         WearableDailyFact(
             date=today, provider_id=provider, source_label=provider, metric="heart_rate_variability", value=float(hrv),
             source_provider=provider, source_system="open_wearables", source_id="recovery",
-            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True,
+            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True, freshness="fresh",
         )
     ] if hrv is not None else [], profile_key=module._open_wearables_profile_key())
 
@@ -188,7 +188,7 @@ def test_recommendation_smart_stale_facts_are_not_used_and_say_why(fitness_app, 
     old = (date.today() - timedelta(days=6)).isoformat()
     upsert_daily_facts(fitness_app.WEARABLE_FACTS_DB_FILE, [WearableDailyFact(
         date=old, provider_id="oura", source_label="Oura", metric="recovery_score", value=20.0,
-        source_provider="oura", source_system="open_wearables", source_id="recovery", observed_at=f"{old}T06:00:00Z",
+        source_provider="oura", source_system="open_wearables", source_id="recovery", observed_at=f"{old}T06:00:00Z", freshness="fresh",
     )], profile_key=fitness_app._open_wearables_profile_key())
 
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()

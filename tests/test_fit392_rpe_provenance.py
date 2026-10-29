@@ -169,7 +169,7 @@ process.stdout.write(JSON.stringify({
         "fractional": {"rpe": 7.5, "rpe_observed": True},
         "passiveFocus": False,
         "programmaticClick": False,
-        "explicitConfirm": True,
+        "explicitConfirm": False,  # PER-1588: focusing or tapping never confirms an RPE
         "trustedEdit": True,
     }
 
@@ -209,7 +209,12 @@ process.stdout.write(JSON.stringify({
     )
 
     assert output["html"].count('data-field="rpe"') == 2
-    assert "tap to confirm prescribed value" in output["html"]
+    # PER-1588: target vs logged is spelled out in text and aria-label, never colour alone.
+    assert "tap to confirm" not in output["html"]
+    assert output["html"].count("<span>RPE target</span>") == 1
+    assert output["html"].count("<span>RPE logged</span>") == 1
+    assert "RPE for set 1, prescribed target, not confirmed; change it to log your own" in output["html"]
+    assert "RPE for set 2, logged value" in output["html"]
     assert output["sets"] == [[8, False], [9, True]]
 
 
@@ -315,8 +320,10 @@ def test_set_rpe_control_has_mobile_safe_layout_and_new_asset_version():
 
     assert ".set-rpe-cell" in STYLE_CSS
     assert "min-height: 44px" in STYLE_CSS
+    label_rule = STYLE_CSS.split(".set-rpe-cell > span {", 1)[1].split("}", 1)[0]
+    assert "font-size: 11px" in label_rule  # PER-1588: was 9px
     assert "@media (max-width: 420px)" in STYLE_CSS
-    assert "/static/css/style.css?v=20261028-w4c-apple-via-ow" in html
-    assert "/static/js/app-loader.js?v=20261028-w4c-apple-via-ow" in html
-    assert "/static/js/app.js?v=20261028-w4c-apple-via-ow" in loader
-    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in service_worker
+    assert "/static/css/style.css?v=20261028-w7-follow-ups" in html
+    assert "/static/js/app-loader.js?v=20261028-w7-follow-ups" in html
+    assert "/static/js/app.js?v=20261028-w7-follow-ups" in loader
+    assert "fitness-dashboard-v20261028-w7-follow-ups" in service_worker

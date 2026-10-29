@@ -1,6 +1,6 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v20261028-w4c-apple-via-ow';
+const CACHE_NAME = 'fitness-dashboard-v20261028-w7-follow-ups';
 
 // Install - take control immediately, but do not precache the app shell.
 // The workout screen is gym-critical, and stale cached HTML/JS can strand the

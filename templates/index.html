@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Fitness Dashboard</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20261028-w4c-apple-via-ow">
-    <link rel="stylesheet" href="/static/css/app.css?v=20261028-w4c-apple-via-ow">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261028-w7-follow-ups">
+    <link rel="stylesheet" href="/static/css/app.css?v=20261028-w7-follow-ups">
 </head>
 <body>
     <div class="app-shell">
@@ -515,6 +515,15 @@
                         <button id="btn-calc-navy" class="btn btn-secondary body-navy-calculate" type="button">Calculate estimate</button>
                         <p id="body-navy-result" class="body-navy-result" role="status" aria-live="polite" hidden></p>
                         <p id="body-navy-error" class="body-navy-error" role="alert" aria-live="assertive" hidden></p>
+                    </details>
+                    <details class="body-navy-calculator">
+                        <summary>Arm and leg tape (optional)</summary>
+                        <div class="body-navy-fields">
+                            <div class="form-field"><label for="body-log-arms-l">Left arm (in)</label><input type="number" id="body-log-arms-l" step="0.1" inputmode="decimal"></div>
+                            <div class="form-field"><label for="body-log-arms-r">Right arm (in)</label><input type="number" id="body-log-arms-r" step="0.1" inputmode="decimal"></div>
+                            <div class="form-field"><label for="body-log-legs-l">Left leg (in)</label><input type="number" id="body-log-legs-l" step="0.1" inputmode="decimal"></div>
+                            <div class="form-field"><label for="body-log-legs-r">Right leg (in)</label><input type="number" id="body-log-legs-r" step="0.1" inputmode="decimal"></div>
+                        </div>
                     </details>
                     <button id="btn-log-body" class="btn btn-primary btn-block" type="button">Save Measurement</button>
                 </form>
@@ -1094,6 +1103,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20261028-w4c-apple-via-ow"></script>
+    <script src="/static/js/app-loader.js?v=20261028-w7-follow-ups"></script>
 </body>
 </html>

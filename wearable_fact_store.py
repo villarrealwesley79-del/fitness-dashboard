@@ -6,6 +6,7 @@ material are rejected before persistence.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -1026,6 +1027,8 @@ def preferred_daily_facts(
         provider = fact_provider(row["provider_id"], row["source_provider"])
         if only_provider and provider != only_provider:
             continue
+        if row["freshness"] == "unknown" and row["source_system"] != "archive":
+            continue  # the mapper's invalid-time marker; archive rows use `unknown` legitimately
         preference = SOURCE_PREFERENCE.get(_default_metric_domain(row["metric"]), [])
         rank = (
             preference.index(provider) if provider in preference else len(preference),
@@ -1057,6 +1060,9 @@ def preferred_daily_facts(
             gap_fills[date_s] = next(iter(by_provider))
         if by_provider:
             fragments[date_s] = {(c[2], c[3]["source_id"]) for c in candidates if c[1] < MIN_NIGHT_SLEEP_MIN}
+    sleep_metrics_carried = Counter(  # how many sleep metrics each record supplies
+        (d, c[2], c[3]["source_id"]) for (d, m), cs in grouped.items() if _default_metric_domain(m) == "sleep" for c in cs
+    )
     for (date_s, metric), candidates in grouped.items():
         forced = None
         if _default_metric_domain(metric) == "sleep":
@@ -1067,6 +1073,8 @@ def preferred_daily_facts(
             ]
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
+            if forced:  # one provider, several plausible records: the fullest record wins
+                candidates.sort(key=lambda c: -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])])
         rank, value, provider, row = candidates[0]
         conflict = "conservative_value_used" if date_s in conflicts and forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {
