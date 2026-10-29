@@ -192,11 +192,13 @@ const paint = (openWearablesUsed) => {
   };
   e.state.reco = { recommendation: 'strength', reasoning: 'WHOOP recovery 80' };
   e.paintDashboardFromState();
-  return sandbox.elements['reco-why'].textContent;
+  return { why: sandbox.elements['reco-why'].textContent, title: sandbox.elements['reco-title'].textContent };
 };
 process.stdout.write(JSON.stringify({ withOw: paint(true), withoutOw: paint(false) }));
 """,
         mocks=["gaugeChart"],
     )
-    assert "No recent wearable data" not in output["withOw"]
-    assert "No recent wearable data" in output["withoutOw"]
+    assert "No recent wearable data" not in output["withOw"]["why"]
+    assert "No recent wearable data" in output["withoutOw"]["why"]
+    # The plan is still a workout, so the title must not call the day a rest day.
+    assert output["withoutOw"]["title"] == "Generic Recommendation — No Recent Wearable Data"

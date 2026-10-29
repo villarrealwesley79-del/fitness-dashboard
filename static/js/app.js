@@ -1993,7 +1993,7 @@
         // Title — swap to lower-confidence variant when wearable signal is gone
         let recoTitle;
         if (wearableAllMissing) {
-            recoTitle = 'Rest day — no recent wearable data';
+            recoTitle = 'Generic recommendation — no recent wearable data';
         } else if (wearableStale) {
             const lastDayIso = freshness && freshness.wearable_facts && freshness.wearable_facts.last_data_point;
             let daysOld = null;
