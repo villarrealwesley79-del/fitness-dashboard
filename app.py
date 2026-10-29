@@ -3349,9 +3349,12 @@ def _set_numbers(s):
     if not isinstance(s, dict):
         return None
     pair = (s.get("weight_lbs"), s.get("reps"))
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pair):
+    try:
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pair):
+            return None
+        return float(pair[0]), float(pair[1])
+    except OverflowError:  # an imported integer too large for a float
         return None
-    return float(pair[0]), float(pair[1])
 
 
 def _set_volume(s):
@@ -3384,7 +3387,7 @@ def _open_wearables_fold(workouts):
         rows = open_wearables_hub.stored_workouts(WEARABLE_FACTS_DB_FILE, _open_wearables_profile_key(), start)
     except (sqlite3.Error, OSError, ValueError):
         return [], {}
-    absorbable = collections.Counter(w.get("date") for w in workouts if w.get("date"))
+    absorbable = collections.Counter(w["date"] for w in workouts if isinstance(w.get("date"), str) and w["date"])  # an imported list date is unhashable
     kept, folded = [], collections.defaultdict(list)
     for row in rows:
         row = normalize_history_item(row, source="open_wearables")
@@ -3415,7 +3418,7 @@ def _split_watch_cardio(sessions):
     """
     cardio = [s for s in sessions if s["canonical_category"] != "strength_training"]
     matched = {}
-    for c in CARDIO_DATA:
+    for c in (c for c in CARDIO_DATA if isinstance(c, dict)):  # an imported non-object row matches nothing
         key = (c.get("date"), _canonical_cardio_fatigue_type(c.get("activity_type")))
         same = [s for s in cardio if (s["date"], _canonical_cardio_fatigue_type(s["activity_type"])) == key]
         if same:
@@ -3518,12 +3521,12 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
         if d:
             daily[d] = daily.get(d, 0.0) + workout_load(w)
         minutes = _workout_duration_minutes(w)
-        slot = folded[w["date"]].pop(0) if folded.get(w.get("date")) else None  # every workout takes its slot, as in History
+        slot = folded[w["date"]].pop(0) if isinstance(w.get("date"), str) and folded.get(w["date"]) else None  # every workout takes its slot, as in History
         if d and not minutes and slot and _fit95_number(slot.get("duration_minutes")) > 0:  # logged without a duration: the watch's own
             counted.append(slot)
             minutes = slot["duration_minutes"]
         add_minutes(d, minutes)
-    for c in CARDIO_DATA:
+    for c in (c for c in CARDIO_DATA if isinstance(c, dict)):  # an imported non-object row has no minutes
         d, twin, minutes = in_window(c.get("date")), matched.get(id(c)), _fit95_number(c.get("duration_minutes"))
         logged = minutes if math.isfinite(minutes) else 0.0
         if d and twin:  # the watch recorded this run too: count it once, with the longer duration, so a short watch record never lowers the load

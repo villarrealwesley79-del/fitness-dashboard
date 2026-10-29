@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta
 
 import pytest
@@ -39,7 +40,10 @@ def store(module, n, label, minutes, *, provider="whoop", sid=None, hour=12, cat
 
 
 @pytest.fixture()
-def app_module(isolated_app, monkeypatch):
+def app_module(isolated_app, monkeypatch, tmp_path):
+    for name, path in list(vars(isolated_app).items()):  # /api/import-backup saves the JSON stores; keep them out of the shared DATA_DIR
+        if name.endswith("_FILE") and isinstance(path, str) and path.endswith(".json"):
+            monkeypatch.setattr(isolated_app, name, str(tmp_path / os.path.basename(path)))
     monkeypatch.setattr(isolated_app, "WORKOUTS", [])
     monkeypatch.setattr(isolated_app, "CARDIO_DATA", [])
     return isolated_app
@@ -625,7 +629,8 @@ def test_a_longer_watch_copy_never_swaps_into_a_run_with_non_positive_intensity(
 
 
 def test_a_minus_inf_logged_run_is_never_swapped_for_its_watch_copy(app_module):
-    # the reader turns -inf minutes into full fatigue (min(3, nan)); swapping in 60 watch minutes would read fresher
+    # main's reader already mis-reads -inf (fresher on the muscles a run loads, full fatigue via min(3, nan) on the rest);
+    # the watch must not change that reading, or the rest would read fresher than with no watch data
     app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": "-inf", "intensity": 5}]
     store(app_module, 1, "Running", 60, hour=7)
     assert app_module._cardio_with_open_wearables() == app_module.CARDIO_DATA
@@ -646,3 +651,49 @@ def test_a_huge_integer_imported_cardio_value_keeps_every_page_up(app_module, fi
     finally:
         app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
     assert set(codes.values()) == {200}, codes
+
+
+@pytest.mark.parametrize("field", ["weight_lbs", "reps"])
+@pytest.mark.parametrize("machine", [None, "Leg Press"])
+def test_a_huge_integer_imported_set_keeps_dashboard_and_history_up(app_module, field, machine):
+    """float(10**400) and math.isfinite(10**400) raise OverflowError; such a set is skipped like any other bad set.
+
+    Main's own lift readers (progression, next-workout e1RM) still overflow on a named machine's huge set, so the
+    dashboard is checked only for the nameless exercise main skips; the import-validation follow-up covers the rest.
+    """
+    w = lift(1)
+    w["exercises"] = [{"machine": machine, "sets": [{"weight_lbs": 100, "reps": 10, field: 10 ** 400}]}]
+    client = app_module.app.test_client()
+    assert client.post("/api/import-backup", json={"data": {"workouts": list(OWNER_LIFTS) + [w]}}).status_code == 200
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        routes = ("/api/history", "/api/history-all", "/api/export-md", "/api/acwr") + (() if machine else ("/api/dashboard",))
+        codes = {r: client.get(r).status_code for r in routes}
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
+    assert set(codes.values()) == {200}, codes
+
+
+@pytest.mark.parametrize("date", [[1], {"a": 1}])
+def test_an_unhashable_imported_workout_date_keeps_muscle_fatigue_and_acwr_up(app_module, date):
+    store(app_module, 1, "Strength Training", 45, hour=18)
+    client = app_module.app.test_client()
+    assert client.post("/api/import-backup", json={"data": {"workouts": list(OWNER_LIFTS) + [{**lift(1), "date": date}]}}).status_code == 200
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        codes = {r: client.get(r).status_code for r in ("/api/muscle-fatigue", "/api/acwr")}
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
+    assert set(codes.values()) == {200}, codes
+
+
+@pytest.mark.parametrize("row", [1, [1], None, "x"])
+def test_a_non_object_imported_cardio_row_keeps_acwr_up(app_module, row):
+    store(app_module, 1, "Running", 60, hour=7)
+    client = app_module.app.test_client()
+    assert client.post("/api/import-backup", json={"data": {"workouts": list(OWNER_LIFTS), "cardio": [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": 30}, row]}}).status_code == 200
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        assert client.get("/api/acwr").status_code == 200
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
