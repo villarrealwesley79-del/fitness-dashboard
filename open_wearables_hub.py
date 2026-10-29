@@ -22,13 +22,17 @@ import math
 import re
 from typing import Callable
 
-from recommendation_sources import is_whoop_recovery
+from recommendation_sources import whoop_recovery_value
 
 from wearable_fact_store import (
     WearableDailyFact,
+    _default_metric_domain,
     canonical_fact_date,
+    SOURCE_PREFERENCE,
     derived_fact_source_id,
+    fact_provider,
     list_recommendation_facts,
+    list_workout_events,
     upsert_daily_facts,
     upsert_wearable_source,
 )
@@ -285,28 +289,6 @@ def _provider_display_name(provider_id: str | None) -> str:
     return str(provider_id).replace("_", " ").strip().title()
 
 
-def _fact_metric_domain(fact: WearableDailyFact) -> str:
-    metric = fact.metric
-    if metric == "workout_load":
-        return "load"
-    if metric.startswith("workout_"):
-        return "training_history"
-    if metric.startswith("sleep_"):
-        return "sleep"
-    if metric in {"weight", "body_fat_percent", "muscle_mass", "body_mass_index", "body_temperature"}:
-        return "body"
-    if metric == "skin_temperature":
-        return "body"
-    if metric in {
-        "recovery_score", "heart_rate_variability", "resting_heart_rate", "blood_oxygen",
-        "respiratory_rate", "skin_temperature", "temperature_deviation",
-        "resting_heart_rate_average", "heart_rate_variability_sdnn_average",
-        "heart_rate_variability_rmssd_average",
-    }:
-        return "recovery"
-    return "activity"
-
-
 def _workout_category(label: object) -> str | None:
     text = str(label or "").strip().lower().replace("-", "_").replace(" ", "_")
     if not text:
@@ -376,7 +358,9 @@ def _fact_freshness(date_s: str, fetched_at: str) -> str:
         observed = datetime.fromisoformat(observed_text)
         fetched = datetime.fromisoformat(fetched_text)
         if observed.tzinfo is None:
-            observed = observed.astimezone()
+            # A timestamp without an offset is UTC (Open Wearables emits UTC);
+            # a bare date is a local calendar day.
+            observed = observed.replace(tzinfo=timezone.utc) if len(observed_text) > 10 else observed.astimezone()
         if fetched.tzinfo is None:
             fetched = fetched.astimezone()
         observed = observed.astimezone(timezone.utc)
@@ -435,156 +419,6 @@ def sync_count(payload):
         if isinstance(value, list):
             return len(value)
     return 1 if payload else 0
-
-
-def _workout_value(row: dict, *keys):
-    for key in keys:
-        if key in row and row[key] is not None:
-            return row[key]
-    return None
-
-
-def _workout_number(value):
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number) or number < 0:
-        return None
-    return int(number) if number.is_integer() else round(number, 2)
-
-
-def _workout_text(value):
-    # Only plain strings/numbers are labels; dicts and lists would stringify as repr noise.
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return None
-    return str(value).strip() or None
-
-
-def extract_workouts(payload) -> list[dict]:
-    """Project Open Wearables events into safe per-workout history rows.
-
-    Only the public fields needed by History and AI are copied. Provider raw
-    payloads, samples, user identifiers, and credentials never cross this
-    boundary.
-    """
-    workouts = []
-    for row in _authoritative_collection_rows(payload) or []:
-        start_time = _workout_value(
-            row,
-            "start_time",
-            "start_datetime",
-            "start",
-            "start_date",
-            "startDate",
-        )
-        # Same start/zone date rule as the stored workout facts, so History rows
-        # and facts agree on the local day.
-        date_s = _workout_local_date(_temporal_text(start_time), row.get("zone_offset"))
-        if date_s is None:
-            explicit_date = _temporal_text(_workout_value(row, "date", "day"))
-            date_s = explicit_date[:10] if explicit_date else None
-        if date_s is None:
-            continue
-
-        session_type = str(_workout_value(
-            row,
-            "type",
-            "activity_type",
-            "activity",
-            "sport_type",
-        ) or "workout")
-        activity_type = str(_workout_value(
-            row,
-            "name",
-            "title",
-            "activity_type",
-            "activity",
-            "sport_type",
-            "type",
-        ) or "Workout")
-
-        duration_seconds = _workout_number(_workout_value(row, "duration_seconds", "elapsed_time"))
-        duration_minutes = _workout_number(_workout_value(row, "duration_minutes", "duration_min"))
-        if duration_minutes is None and duration_seconds is not None:
-            duration_minutes = _workout_number(duration_seconds / 60)
-
-        calories = _workout_number(_workout_value(
-            row,
-            "calories_kcal",
-            "calories_burned",
-            "calories",
-            "energy_kcal",
-            "total_energy_kcal",
-            "energy_burned",
-        ))
-        if calories is None:
-            kilojoules = _workout_number(_workout_value(row, "kilojoules", "kilojoule"))
-            if kilojoules is not None:
-                calories = _workout_number(kilojoules * 0.239)
-
-        external_id = _workout_value(row, "id", "external_id", "workout_id", "event_id")
-        if external_id is None:
-            identity = json.dumps(
-                {
-                    "date": date_s,
-                    "start_time": start_time,
-                    "type": session_type,
-                    "duration_minutes": duration_minutes,
-                },
-                sort_keys=True,
-                default=str,
-            )
-            external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-        external_id = str(external_id)
-
-        source = row.get("source") if isinstance(row.get("source"), dict) else {}
-        provider_source = source.get("provider") or _workout_value(row, "provider", "provider_id")
-        device = source.get("device") or row.get("device")
-        notes = row.get("notes") if isinstance(row.get("notes"), str) else None
-        end_time = _workout_value(
-            row,
-            "end_time",
-            "end_datetime",
-            "end",
-            "end_date",
-            "endDate",
-        )
-
-        workouts.append({
-            "id": f"open_wearables:{external_id}",
-            "external_id": external_id,
-            "source": "open_wearables",
-            "provider": "Open Wearables",
-            "provider_source": _workout_text(provider_source),
-            "device": _workout_text(device),
-            "date": date_s,
-            "start_time": str(start_time) if start_time is not None else None,
-            "end_time": str(end_time) if end_time is not None else None,
-            "activity_type": activity_type,
-            "session_type": session_type,
-            "duration_minutes": duration_minutes,
-            "calories_burned": calories,
-            "avg_heart_rate": _workout_number(_workout_value(
-                row,
-                "avg_heart_rate_bpm",
-                "avg_heart_rate",
-                "average_heart_rate",
-                "avg_hr",
-                "heart_rate_avg",
-            )),
-            "max_heart_rate": _workout_number(_workout_value(
-                row,
-                "max_heart_rate_bpm",
-                "max_heart_rate",
-                "max_hr",
-                "heart_rate_max",
-            )),
-            "notes": notes,
-        })
-    return workouts
 
 
 def sync_error_code(key):
@@ -687,7 +521,7 @@ def store_wearable_facts(
     db_file: str,
     profile_key: str,
     activity_extractor: Callable[[object], list[dict]],
-    sleep_extractor: Callable[[object], dict | None],
+    sleep_extractor: Callable[[object], list[dict]],
     row_replacement_sources: Callable[[object], list[str]],
     now: Callable[[], datetime] = datetime.now,
 ) -> int:
@@ -748,9 +582,7 @@ def store_wearable_facts(
                 domain_dates[domain] = date_s
 
     facts = []
-    activity = activity_extractor(data.get("activity_summary"))
-    if activity:
-        latest = sorted(activity, key=lambda row: row.get("date") or datetime.min.date())[-1]
+    for latest in activity_extractor(data.get("activity_summary")) or []:
         date_s = latest["date"].strftime("%Y-%m-%d")
         activity_raw = latest.get("raw") if isinstance(latest.get("raw"), dict) else {}
         activity_provenance = {
@@ -783,9 +615,10 @@ def store_wearable_facts(
         if added_activity_fact:
             mark_replacement_sources(latest.get("raw"), date_s, "activity")
 
-    sleep = sleep_extractor(data.get("sleep"))
-    sleep_event_time = _temporal_text(sleep.get("event_time")) if sleep else None
-    if sleep and sleep_event_time:
+    for sleep in sleep_extractor(data.get("sleep")) or []:
+        sleep_event_time = _temporal_text(sleep.get("event_time"))
+        if not sleep_event_time:
+            continue
         date_s = _temporal_value(sleep_event_time).date().isoformat()
         sleep_raw = sleep.get("raw") if isinstance(sleep.get("raw"), dict) else {}
         observed_at = _temporal_text(sleep.get("observed_at") or sleep_event_time)
@@ -1217,14 +1050,14 @@ def store_wearable_facts(
                 if str(fact.source_id or "").strip()
                 else derived_fact_source_id(
                     fact.source_record_kind or "summary",
-                    fact.metric_domain or _fact_metric_domain(fact),
+                    fact.metric_domain or _default_metric_domain(fact.metric),
                     fact.observed_at,
                     fact.date,
                 )
             ),
             source_system="open_wearables",
             source_record_kind=fact.source_record_kind or "summary",
-            metric_domain=fact.metric_domain or _fact_metric_domain(fact),
+            metric_domain=fact.metric_domain or _default_metric_domain(fact.metric),
             capability_state="available",
             source_last_synced_at=fetched_at,
         )
@@ -1323,6 +1156,85 @@ def store_wearable_facts(
     return len({(fact.date, fact.provider_id, fact.metric, fact.source_id or "") for fact in facts})
 
 
+def _utc_instant(value) -> datetime | None:
+    parsed = _temporal_value(value)  # offset-less means UTC, as everywhere else
+    return parsed and (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+def workout_key(event: dict) -> tuple[str, object]:
+    """(category, UTC start): the same session recorded by two sources has the same key."""
+    category = event["category"] or str(event["original_label"] or "").strip().lower()
+    return category, _utc_instant(event["observed_at"]) or event["date"]
+
+
+def same_workout(a: tuple[str, object], b: tuple[str, object]) -> bool:
+    """Same category and a start within 5 minutes (same date when a start does not parse)."""
+    close = abs(a[1] - b[1]) <= timedelta(minutes=5) if isinstance(a[1], datetime) and isinstance(b[1], datetime) else a[1] == b[1]
+    return a[0] == b[0] and close
+
+
+def stored_workouts(db_file: str, profile_key: str, start: str | None = None) -> list[dict]:
+    """History rows from stored workout facts: no live fetch, so an outage cannot fail History.
+
+    A workout recorded by two providers (same category, starts within 5 minutes) is one row
+    whose source_label lists both; an archive row is hidden only by a live row from the same
+    provider that starts within 5 minutes (Health Auto Export and Open Wearables name one
+    session differently, so the category is ignored), so an archived morning run survives a live evening ride.
+    """
+    events = list_workout_events(db_file, profile_key, start)
+    live = [(e["provider"], workout_key(e)[1]) for e in events if e["via"] != "archive"]
+    order = SOURCE_PREFERENCE["activity"]
+    events.sort(key=lambda e: (order.index(e["provider"]) if e["provider"] in order else len(order), e["via"] == "archive"))
+    groups: list[tuple[tuple[str, object], list[dict]]] = []
+    for event in events:
+        key = workout_key(event)
+        if event["via"] == "archive" and any(p == event["provider"] and same_workout((key[0], t), key) for p, t in live):
+            continue  # its own live copy, whatever each source calls the session
+        for group_key, members in groups:
+            if not same_workout(group_key, key):
+                continue
+            same = [m for m in members if m["provider"] == event["provider"]]
+            if not same:
+                members.append(event)
+                break
+        else:
+            groups.append((key, [event]))
+    rows = []
+    for _key, members in groups:
+        first = members[0]
+        labels = []
+        for member in members:
+            label = _provider_display_name(member["provider"]) + (" (archive)" if member["via"] == "archive" else "")
+            if label not in labels:
+                labels.append(label)
+
+        def metric(name):
+            return next((m["metrics"][name] for m in members if name in m["metrics"]), None)
+
+        title = first["original_label"] or "Workout"
+        rows.append({
+            "id": f"open_wearables:{first['provider']}:{first['source_id']}",
+            "external_id": first["source_id"],
+            "source": "open_wearables",
+            "provider": "Open Wearables",
+            "provider_source": ", ".join(labels),
+            "source_label": " + ".join(labels),
+            "archive": all(m["via"] == "archive" for m in members),
+            "date": first["date"],
+            "start_time": first["observed_at"],
+            "end_time": None,
+            "activity_type": title,
+            "session_type": title,
+            "duration_minutes": metric("workout_duration"),
+            "calories_burned": metric("workout_active_calories"),
+            "avg_heart_rate": metric("workout_avg_heart_rate"),
+            "max_heart_rate": metric("workout_max_heart_rate"),
+            "imported_at": first["imported_at"],
+            "notes": None,
+        })
+    return sorted(rows, key=lambda r: (r["date"], r["start_time"] or ""), reverse=True)
+
+
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:
     query_args = {
         "profile_key": profile_key,
@@ -1357,21 +1269,18 @@ RECOVERY_RPE_CAP = 7.0
 
 
 def _latest_whoop_recovery(facts):
-    scores = []
-    for fact in facts:
-        if not is_whoop_recovery(fact):
-            continue
-        try:
-            value = float(fact.get("value"))
-        except (TypeError, ValueError):
-            continue
-        if 0 <= value <= 100:  # out-of-range scores are excluded, never clamped
-            scores.append((str(fact.get("date") or ""), value))
-    if not scores:
+    """The valid WHOOP recovery fact the guard reads: latest date, and the lowest score on that date."""
+    scored = [(str(f.get("date") or ""), whoop_recovery_value(f), f) for f in facts]
+    scored = [(day, value, fact) for day, value, fact in scored if value is not None]
+    if not scored:
         return None
-    latest = max(day for day, _ in scores)
+    latest = max(day for day, _, _ in scored)
     # Same-date duplicates (legacy and current provider rows) resolve to the more conservative score.
-    return min(value for day, value in scores if day == latest)
+    return min(((v, f) for day, v, f in scored if day == latest), key=lambda x: x[0])[1]
+
+
+def _provider_of(fact) -> str:
+    return fact_provider(fact.get("provider_id"), fact.get("source_provider"))
 
 
 def conservative_modifier(facts) -> dict:
@@ -1386,21 +1295,24 @@ def conservative_modifier(facts) -> dict:
         except (TypeError, ValueError):
             continue
         if fact.get("metric") == "sleep_duration" and value is not None:
-            sleep_values.append(value)
+            sleep_values.append((value, fact))
         elif fact.get("metric") == "active_minutes" and value is not None:
-            active_values.append(value)
-    sleep_min = min(sleep_values, default=None)
+            active_values.append((value, fact))
+    # The guard reads the lowest sleep and the highest activity across providers; keep the
+    # fact behind each so the source proof can name its provider.
+    sleep_min, sleep_fact = min(sleep_values, key=lambda v: v[0], default=(None, None))
     if sleep_min is not None and sleep_min < 360:
         applied.append("sleep_caution")
-        details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min")
+        details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min ({_provider_of(sleep_fact)})")
 
-    active_min = max(active_values, default=None)
+    active_min, active_fact = max(active_values, key=lambda v: v[0], default=(None, None))
     if active_min is not None and active_min >= 90:
         applied.append("activity_caution")
-        details.append(f"Open Wearables active minutes {int(round(active_min))}")
+        details.append(f"Open Wearables active minutes {int(round(active_min))} ({_provider_of(active_fact)})")
 
     rpe_cap = None
-    recovery = _latest_whoop_recovery(facts)
+    recovery_fact = _latest_whoop_recovery(facts)
+    recovery = whoop_recovery_value(recovery_fact)
     if recovery is not None and recovery < RECOVERY_CAUTION_BELOW:
         deload = recovery < RECOVERY_DOWNGRADE_BELOW
         applied.append("recovery_deload" if deload else "recovery_caution")
@@ -1412,6 +1324,9 @@ def conservative_modifier(facts) -> dict:
         "applied_modifiers": applied,
         "downgrade": bool(set(applied) - {"recovery_caution"}),
         "rpe_cap": rpe_cap,
+        "sleep_fact": sleep_fact,
+        "active_fact": active_fact,
+        "recovery_fact": recovery_fact,
         "detail": "; ".join(details) + " -> recommendation held conservative." if details else None,
     }
 

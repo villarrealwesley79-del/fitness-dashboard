@@ -63,9 +63,8 @@ def build_payload(
     apple_health_freshness: tuple,
     apple_health_sync_db_file: str,
     apple_health_workout_files: list[str],
-    cached_oura: dict,
-    oura_rows: list[dict] | None,
-    oura_db_file: str,
+    wearable_facts: list[dict] | None,
+    readiness: int | None = None,
 ) -> dict:
     apple_status, apple_last_data, apple_last_sync = apple_health_freshness
     return {
@@ -102,27 +101,12 @@ def build_payload(
             "sync_db": file_marker(apple_health_sync_db_file),
             "workout_files": [file_marker(path) for path in apple_health_workout_files[-3:]],
         },
-        "oura": {
-            "day": cached_oura.get("day"),
-            "readiness_score": cached_oura.get("readiness_score"),
-            "sleep_score": cached_oura.get("sleep_score"),
-            "hrv": cached_oura.get("hrv"),
-            "sleep_duration_min": cached_oura.get("sleep_duration_min"),
-            "resting_hr": cached_oura.get("resting_hr"),
-            "last_7_days": [
-                {
-                    "day": row.get("day"),
-                    "readiness_score": row.get("readiness_score"),
-                    "sleep_score": row.get("sleep_score"),
-                    "hrv": row.get("hrv"),
-                    "sleep_duration_min": row.get("sleep_duration_min"),
-                    "resting_hr": row.get("resting_hr"),
-                    "created_at": row.get("created_at"),
-                }
-                for row in (oura_rows or [])
-            ],
-            "db": file_marker(oura_db_file),
-        },
+        # Preferred sleep/recovery/activity facts: a new night or a changed value re-plans.
+        "readiness": readiness,
+        "wearable_facts": [
+            {key: fact.get(key) for key in ("date", "metric", "provider", "value", "freshness", "conflict_state")}
+            for fact in (wearable_facts or [])
+        ],
     }
 
 

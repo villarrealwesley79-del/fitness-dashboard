@@ -20,7 +20,7 @@ def _stub_advanced_analytics_inputs(
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "USER_SETTINGS", settings or {})
     monkeypatch.setattr(module, "calculate_volume", lambda *_args, **_kwargs: volume or {})
-    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(module, "_hrv_series", lambda *_a, **_k: [])
     monkeypatch.setattr(
         module,
         "calculate_sleep_debt",
@@ -308,17 +308,14 @@ def test_get_recent_hrv_trend_preserves_sparse_data_behavior(
     module = importlib.import_module("app")
     calls = []
 
-    def get_rows(db_path, start_date, end_date):
-        calls.append((db_path, start_date, end_date))
-        return [{"hrv": value} for value in hrv_values]
+    def hrv_series(days):
+        calls.append(days)
+        return hrv_values
 
-    monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
+    monkeypatch.setattr(module, "_hrv_series", hrv_series)
 
     assert module.get_recent_hrv_trend(minimum_samples=minimum_samples) == expected
-    assert len(calls) == 1
-    db_path, start_date, end_date = calls[0]
-    assert db_path == module.OURA_DB_FILE
-    assert date.fromisoformat(end_date) - date.fromisoformat(start_date) == timedelta(days=6)
+    assert calls == [7]
 
 
 @pytest.mark.parametrize(
@@ -360,7 +357,7 @@ def test_analytics_advanced_uses_detector_needed_flag(
         ([64.0, 64.0, 64.0, 60.0, 60.0, 60.0], "down", 34.0),
     ],
 )
-def test_analytics_advanced_maps_real_oura_hrv_trends(
+def test_analytics_advanced_maps_real_hrv_trends(
     monkeypatch, hrv_values, expected_trend, expected_fatigue
 ):
     module = importlib.import_module("app")
@@ -382,9 +379,9 @@ def test_analytics_advanced_maps_real_oura_hrv_trends(
 
     calls = []
 
-    def get_rows(db_path, start_date, end_date):
-        calls.append((db_path, start_date, end_date))
-        return [{"hrv": value} for value in hrv_values]
+    def hrv_series(days):
+        calls.append(days)
+        return hrv_values
 
     real_compute_hrv_trend = module.compute_hrv_trend
 
@@ -392,7 +389,7 @@ def test_analytics_advanced_maps_real_oura_hrv_trends(
         assert values == hrv_values
         return real_compute_hrv_trend(values)
 
-    monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
+    monkeypatch.setattr(module, "_hrv_series", hrv_series)
     monkeypatch.setattr(module, "compute_hrv_trend", record_compute_hrv_trend)
 
     response = module.app.test_client().get("/api/analytics/advanced")
@@ -401,14 +398,11 @@ def test_analytics_advanced_maps_real_oura_hrv_trends(
     payload = response.get_json()
     assert payload["factors"]["hrv_trend"] == expected_trend
     assert payload["fatigue_score"] == expected_fatigue
-    assert len(calls) == 1
-    db_path, start_date, end_date = calls[0]
-    assert db_path == module.OURA_DB_FILE
-    assert date.fromisoformat(end_date) - date.fromisoformat(start_date) == timedelta(days=6)
+    assert calls == [7]
 
 
 @pytest.mark.parametrize("failure", ["lookup", "trend"])
-def test_analytics_advanced_uses_unknown_hrv_when_oura_lookup_or_trend_fails(
+def test_analytics_advanced_uses_unknown_hrv_when_lookup_or_trend_fails(
     monkeypatch, failure
 ):
     module = importlib.import_module("app")
@@ -433,20 +427,11 @@ def test_analytics_advanced_uses_unknown_hrv_when_oura_lookup_or_trend_fails(
 
         def get_rows(*_args, **_kwargs):
             lookup_calls.append(True)
-            raise RuntimeError("Oura lookup failed")
+            raise RuntimeError("fact lookup failed")
 
-        monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
+        monkeypatch.setattr(module, "_hrv_series", get_rows)
     else:
-        monkeypatch.setattr(
-            module,
-            "get_oura_daily_range",
-            lambda *_args, **_kwargs: [
-                {"hrv": 60.0},
-                {"hrv": 60.0},
-                {"hrv": 60.0},
-                {"hrv": 60.0},
-            ],
-        )
+        monkeypatch.setattr(module, "_hrv_series", lambda *_args, **_kwargs: [60.0, 60.0, 60.0, 60.0])
         compute_inputs = []
 
         def fail_compute_hrv_trend(values):
@@ -468,7 +453,7 @@ def test_analytics_advanced_uses_unknown_hrv_when_oura_lookup_or_trend_fails(
 
 
 @pytest.mark.parametrize("hrv_values", [[], [60.0, 61.0, 62.0]])
-def test_analytics_advanced_uses_unknown_hrv_for_sparse_oura_data(
+def test_analytics_advanced_uses_unknown_hrv_for_sparse_data(
     monkeypatch, hrv_values
 ):
     module = importlib.import_module("app")
@@ -487,11 +472,7 @@ def test_analytics_advanced_uses_unknown_hrv_for_sparse_oura_data(
         "detect_deload_need",
         lambda *_args, **_kwargs: {"needed": False, "weeks_since_deload": 0},
     )
-    monkeypatch.setattr(
-        module,
-        "get_oura_daily_range",
-        lambda *_args, **_kwargs: [{"hrv": value} for value in hrv_values],
-    )
+    monkeypatch.setattr(module, "_hrv_series", lambda *_args, **_kwargs: list(hrv_values))
 
     response = module.app.test_client().get("/api/analytics/advanced")
 

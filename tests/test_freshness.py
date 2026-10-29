@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import importlib
 import json
 import logging
@@ -40,22 +40,22 @@ def test_classify_freshness_missing(fitness_app):
     [
         (
             82,
-            {"oura": {"status": "fresh"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "fresh"}, "apple_health": {"status": "fresh"}},
             "high",
         ),
         (
             72,
-            {"oura": {"status": "aging"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "aging"}, "apple_health": {"status": "fresh"}},
             "medium",
         ),
         (
             88,
-            {"oura": {"status": "stale"}, "apple_health": {"status": "fresh"}},
+            {"wearable_facts": {"status": "stale"}, "apple_health": {"status": "fresh"}},
             "low",
         ),
         (
             88,
-            {"oura": {"status": "missing"}, "apple_health": {"status": "missing"}},
+            {"wearable_facts": {"status": "missing"}, "apple_health": {"status": "missing"}},
             "low",
         ),
     ],
@@ -68,11 +68,11 @@ def test_confidence_level_from_wearable_freshness(
 
 def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, monkeypatch):
     freshness = {
-        "oura": {
+        "wearable_facts": {
             "status": "fresh",
             "last_data_point": "2026-05-18",
             "last_sync_attempt": "2026-05-18T07:00:00",
-            "source": "live",
+            "source": "open_wearables",
         },
         "apple_health": {
             "status": "fresh",
@@ -80,19 +80,7 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
             "last_sync_attempt": "2026-05-18T07:00:00",
         },
     }
-
-    monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: {
-            "readiness_score": 82,
-            "sleep_score": 78,
-            "hrv": 41,
-        },
-    )
-    monkeypatch.setattr(
-        fitness_app, "get_oura_daily_range", lambda *_args, **_kwargs: [{"hrv": 41}]
-    )
+    seed_readiness(fitness_app, monkeypatch, readiness=82, hrv=41)
     monkeypatch.setattr(
         fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "stable"
     )
@@ -123,27 +111,53 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     assert "freshness" in payload
     assert "confidence_level" in payload
     assert payload["confidence_level"] == "high"
-    assert payload["recommendation_sources"]["source_proof"]["oura"] == {
-        "used_for_recommendation": True,
-        "fields_used": ["readiness_score", "sleep_debt_minutes"],
+    proof = payload["recommendation_sources"]["source_proof"]
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert proof["recovery"] == {
+        "provider": "oura",
+        "via": "open_wearables",
+        "date": today,
+        "freshness": "fresh",
+        "used_for_recommendation": False,
+        "fields_used": [],
         "modifier_applied": False,
-        "ignored_reason": None,
+        "ignored_reason": "not_used",  # one HRV sample is no trend, and a recovery score is not readiness
+        "conflict_state": None,
     }
+    # Sleep debt is read, but no sleep fact is stored: the proof says so instead of naming a provider.
+    assert (proof["sleep"]["provider"], proof["sleep"]["freshness"]) == (None, "missing")
+    assert proof["sleep"]["ignored_reason"] == "missing_data"
+    assert "oura" not in proof
 
 
 def _freshness_payload():
     return {
-        "oura": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
+        "wearable_facts": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
         "apple_health": {"status": "missing", "last_data_point": None, "last_sync_attempt": None},
     }
 
 
-def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_row):
+def seed_readiness(module, monkeypatch, readiness=None, hrv=None, provider="oura"):
+    """Pin readiness (it is a sleep estimate now) and store today's HRV as an Open Wearables fact."""
+    from datetime import date
+    from wearable_fact_store import WearableDailyFact, upsert_daily_facts
+
+    monkeypatch.setattr(module, "_readiness_with_basis", lambda: (readiness, "sleep_estimate" if readiness is not None else None))
+    today = date.today().isoformat()
+    upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
+        WearableDailyFact(
+            date=today, provider_id=provider, source_label=provider, metric="heart_rate_variability", value=float(hrv),
+            source_provider=provider, source_system="open_wearables", source_id="recovery",
+            observed_at=f"{today}T06:00:00Z", used_for_recommendation=True,
+        )
+    ] if hrv is not None else [], profile_key=module._open_wearables_profile_key())
+
+
+def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, readiness=None, hrv=None):
     monkeypatch.setattr(fitness_app, "WORKOUTS", [])
     monkeypatch.setattr(fitness_app, "SORENESS_DATA", [])
     monkeypatch.setattr(fitness_app, "RECOVERY_DATA", [])
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: oura_row)
-    monkeypatch.setattr(fitness_app, "get_oura_daily_range", lambda *_args, **_kwargs: [])
+    seed_readiness(fitness_app, monkeypatch, readiness, hrv)
     monkeypatch.setattr(fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "unknown")
     monkeypatch.setattr(
         fitness_app,
@@ -153,7 +167,11 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
     monkeypatch.setattr(
         fitness_app,
         "calculate_sleep_debt",
-        lambda *_args, **_kwargs: {"debt_minutes": 0, "status": "ok"},
+        lambda *_args, **_kwargs: {
+            "debt_minutes": 0, "status": "ok",
+            "source": {"provider": "oura", "via": "open_wearables", "date": date.today().isoformat(),
+                       "freshness": "fresh", "conflict_state": None},
+        },
     )
     monkeypatch.setattr(
         fitness_app,
@@ -168,51 +186,53 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
     )
 
 
-def test_recommendation_smart_reports_stale_oura_inputs_it_still_consumes(fitness_app, monkeypatch):
-    _stub_smart_recommendation_dependencies(
-        monkeypatch,
-        fitness_app,
-        oura_row={"readiness_score": 20, "sleep_score": 30, "hrv": 10},
-    )
-    stale = _freshness_payload()
-    stale["oura"] = {
-        "status": "stale",
-        "last_data_point": "2026-05-01",
-        "last_sync_attempt": "2026-05-01T07:00:00",
-    }
-    monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: stale)
+def test_recommendation_smart_stale_facts_are_not_used_and_say_why(fitness_app, monkeypatch):
+    from datetime import date, timedelta
+    from wearable_fact_store import WearableDailyFact, upsert_daily_facts
+
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
+    old = (date.today() - timedelta(days=6)).isoformat()
+    upsert_daily_facts(fitness_app.WEARABLE_FACTS_DB_FILE, [WearableDailyFact(
+        date=old, provider_id="oura", source_label="Oura", metric="recovery_score", value=20.0,
+        source_provider="oura", source_system="open_wearables", source_id="recovery", observed_at=f"{old}T06:00:00Z",
+    )], profile_key=fitness_app._open_wearables_profile_key())
+
+    payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
+
+    assert payload["readiness"] is None  # a six-day-old score is not today's readiness
+    recovery = payload["recommendation_sources"]["source_proof"]["recovery"]
+    assert (recovery["provider"], recovery["freshness"], recovery["date"]) == ("oura", "stale", old)
+    assert recovery["used_for_recommendation"] is False
+    assert recovery["ignored_reason"] == "stale_source"
+
+
+def test_recommendation_smart_low_readiness_changes_the_recommendation_and_is_attributed(fitness_app, monkeypatch):
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=20)
 
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
 
     assert payload["recommendation"] == "recovery"
-    assert payload["recommendation_sources"]["source_proof"]["oura"] == {
-        "used_for_recommendation": True,
-        "fields_used": ["readiness_score"],
-        "modifier_applied": True,
-        "ignored_reason": None,
-    }
+    sleep = payload["recommendation_sources"]["source_proof"]["sleep"]
+    assert sleep["used_for_recommendation"] is True
+    assert sleep["modifier_applied"] is True
+    assert sleep["fields_used"] == ["readiness_estimate"]  # readiness is the sleep estimate, from Oura here
 
 
 def test_recommendation_smart_discloses_sparse_hrv_trend_when_it_changes_recommendation(fitness_app, monkeypatch):
-    _stub_smart_recommendation_dependencies(
-        monkeypatch,
-        fitness_app,
-        oura_row={"readiness_score": 80, "sleep_score": 78, "hrv": 41},
-    )
-    monkeypatch.setattr(fitness_app, "get_oura_daily_range", lambda *_args, **_kwargs: [{"hrv": 41}])
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=80, hrv=41)
     monkeypatch.setattr(fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "declining")
 
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
 
     assert payload["recommendation"] == "recovery"
-    assert "hrv_trend" in payload["recommendation_sources"]["source_proof"]["oura"]["fields_used"]
+    assert "hrv_trend" in payload["recommendation_sources"]["source_proof"]["recovery"]["fields_used"]
 
 
 def test_recommendation_smart_uses_cache_only_weather_empty_cache(fitness_app, monkeypatch):
     _stub_smart_recommendation_dependencies(
         monkeypatch,
         fitness_app,
-        oura_row={"readiness_score": 82, "sleep_score": 78, "hrv": 41},
+        readiness=82,
     )
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})
     monkeypatch.setattr(
@@ -232,7 +252,7 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
     _stub_smart_recommendation_dependencies(
         monkeypatch,
         fitness_app,
-        oura_row={"readiness_score": 82, "sleep_score": 78, "hrv": 41},
+        readiness=82,
     )
     monkeypatch.setattr(
         fitness_app,
@@ -266,7 +286,7 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
 
 
 def test_recommendation_smart_does_not_claim_out_of_window_apple_health_workouts(fitness_app, monkeypatch):
-    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
     monkeypatch.setattr(
         fitness_app,
         "_recommendation_workouts_with_apple_health",
@@ -363,8 +383,8 @@ def test_weather_api_returns_same_normalized_fields_from_cache(fitness_app, monk
     }
 
 
-def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_app, monkeypatch):
-    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
+def test_recommendation_smart_with_no_stored_facts_does_not_refetch_inside_the_gate(fitness_app, monkeypatch):
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})
     monkeypatch.setattr(
         fitness_app,
@@ -372,11 +392,12 @@ def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_a
         lambda *_args, **_kwargs: pytest.fail("/api/recommendation/smart must not fetch live weather"),
     )
 
-    class FailingOuraClient:
-        def __init__(self):
-            pytest.fail("/api/recommendation/smart must not fetch live Oura data")
-
-    monkeypatch.setattr(fitness_app, "OuraClient", FailingOuraClient)
+    monkeypatch.setattr(
+        fitness_app,
+        "fetch_open_wearables_data",
+        lambda *_a, **_k: pytest.fail("a gated refresh must not fetch twice"),
+    )
+    fitness_app._WEARABLE_REFRESH_STATE["at"] = fitness_app.time.monotonic()
 
     response = fitness_app.app.test_client().get("/api/recommendation/smart")
 
@@ -414,39 +435,16 @@ def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch,
     monkeypatch.setenv("DEBUG_TIMING", "1")
     caplog.set_level(logging.INFO, logger=fitness_app.app.logger.name)
     fitness_app.app.logger.setLevel(logging.WARNING)
-    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})
-    monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: {
-            "readiness_score": 78,
-            "sleep_score": 85,
-            "hrv": 42,
-            "steps": 8500,
-            "activity_score": 88,
-            "resting_hr": 52,
-            "temperature_deviation": 0.1,
-            "sleep_duration_min": 452,
-            "sleep_deep_min": 80,
-            "sleep_rem_min": 92,
-            "sleep_light_min": 270,
-            "sleep_awake_min": 10,
-        },
-    )
-    monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: 78)
-
-    oura_sleep_sync = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(oura_sleep_sync, "calculate_bedtime_variance", lambda *_args, **_kwargs: None)
+    seed_readiness(fitness_app, monkeypatch, readiness=78, hrv=42)
 
     client = fitness_app.app.test_client()
     for path in (
         "/api/dashboard",
-        "/api/oura/status",
+        "/api/wearables/today",
         "/api/recommendation/smart",
-        "/api/oura/sleep-summary",
+        "/api/sleep/summary",
     ):
         response = client.get(path)
         assert response.status_code == 200, response.get_data(as_text=True)
@@ -454,9 +452,9 @@ def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch,
     messages = [record.getMessage() for record in caplog.records]
     for path in (
         "/api/dashboard",
-        "/api/oura/status",
+        "/api/wearables/today",
         "/api/recommendation/smart",
-        "/api/oura/sleep-summary",
+        "/api/sleep/summary",
     ):
         assert any(f"DEBUG_TIMING method=GET path={path} status=200 duration_ms=" in m for m in messages)
     assert fitness_app.app.logger.getEffectiveLevel() <= logging.INFO
@@ -465,7 +463,7 @@ def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch,
 def test_debug_timing_logs_are_disabled_by_default(fitness_app, monkeypatch, caplog):
     monkeypatch.delenv("DEBUG_TIMING", raising=False)
     caplog.set_level(logging.INFO, logger=fitness_app.app.logger.name)
-    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})
 
     response = fitness_app.app.test_client().get("/api/recommendation/smart")
@@ -476,11 +474,11 @@ def test_debug_timing_logs_are_disabled_by_default(fitness_app, monkeypatch, cap
 
 def test_dashboard_route_shape_without_server_or_cookie(fitness_app, monkeypatch):
     freshness = {
-        "oura": {
+        "wearable_facts": {
             "status": "missing",
             "last_data_point": None,
             "last_sync_attempt": None,
-            "source": "cached",
+            "source": "open_wearables",
         },
         "apple_health": {
             "status": "missing",

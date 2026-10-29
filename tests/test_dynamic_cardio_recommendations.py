@@ -226,17 +226,13 @@ def test_dynamic_cardio_labels_count_toward_followup_fatigue(fitness_app, activi
 
 
 def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeypatch):
-    monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: {"readiness_score": 90},
-    )
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (90, "recovery_score"))
     monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: 90)
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "fresh"},
+            "wearable_facts": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
         },
     )
@@ -258,12 +254,12 @@ def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeyp
 
 
 def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (None, None))
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "missing"},
+            "wearable_facts": {"status": "missing"},
             "apple_health": {"status": "missing"},
         },
     )
@@ -278,12 +274,12 @@ def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app,
 
 
 def test_dashboard_recomp_command_uses_null_for_unavailable_readiness(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (None, None))
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "missing"},
+            "wearable_facts": {"status": "missing"},
             "apple_health": {"status": "missing"},
         },
     )
@@ -299,12 +295,12 @@ def test_dashboard_recomp_command_uses_null_for_unavailable_readiness(fitness_ap
 
 
 def test_dashboard_recomp_command_preserves_real_zero_readiness(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: {"readiness_score": 0})
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (0, "recovery_score"))
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "fresh"},
+            "wearable_facts": {"status": "fresh"},
             "apple_health": {"status": "missing"},
         },
     )
@@ -320,17 +316,13 @@ def test_dashboard_recomp_command_preserves_real_zero_readiness(fitness_app, mon
 
 
 def test_dashboard_uses_final_smart_signal_for_visible_cardio(fitness_app, monkeypatch):
-    monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: {"readiness_score": 90},
-    )
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (90, "recovery_score"))
     monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: 90)
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "fresh"},
+            "wearable_facts": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
         },
     )
@@ -345,17 +337,13 @@ def test_dashboard_uses_final_smart_signal_for_visible_cardio(fitness_app, monke
 
 
 def test_dashboard_uses_cached_weather_without_blocking_fetch(fitness_app, monkeypatch):
-    monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: {"readiness_score": 90},
-    )
+    monkeypatch.setattr(fitness_app, "_readiness_with_basis", lambda: (90, "recovery_score"))
     monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: 90)
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "fresh"},
+            "wearable_facts": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
         },
     )
@@ -386,18 +374,14 @@ def test_dashboard_uses_cached_weather_without_blocking_fetch(fitness_app, monke
 def test_dashboard_recomputes_plan_when_readiness_changes(fitness_app, monkeypatch):
     readiness = {"value": None}
     monkeypatch.setattr(
-        fitness_app,
-        "get_oura_daily",
-        lambda *_args, **_kwargs: (
-            {"readiness_score": readiness["value"]} if readiness["value"] is not None else None
-        ),
+        fitness_app, "_readiness_with_basis", lambda: (readiness["value"], "recovery_score")
     )
     monkeypatch.setattr(fitness_app, "_get_oura_readiness_today", lambda: readiness["value"])
     monkeypatch.setattr(
         fitness_app,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
-            "oura": {"status": "fresh"},
+            "wearable_facts": {"status": "fresh"},
             "apple_health": {"status": "fresh"},
         },
     )

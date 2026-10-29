@@ -66,7 +66,7 @@ def test_push_subscription_rejects_missing_secret_keys(monkeypatch, tmp_path):
 def test_push_reminder_preview_surfaces_stale_wearable(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
-        "oura": {"status": "stale", "last_data_point": "2026-05-17", "last_sync_attempt": "2026-05-17T07:00:00"},
+        "wearable_facts": {"status": "stale", "last_data_point": "2026-05-17", "last_sync_attempt": "2026-05-17T07:00:00"},
         "apple_health": {"status": "fresh", "last_data_point": "2026-05-18", "last_sync_attempt": "2026-05-18T07:00:00"},
     })
     client = module.app.test_client()

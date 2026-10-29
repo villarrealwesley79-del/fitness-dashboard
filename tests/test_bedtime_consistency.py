@@ -8,31 +8,21 @@ def _sleep_record(timestamp):
 
 
 def test_bedtime_consistency_wraps_around_midnight(monkeypatch):
-    module = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(
-        module,
-        "get_sleep_range",
-        lambda *_args, **_kwargs: [
-            _sleep_record("2026-07-10T23:50:00-05:00"),
-            _sleep_record("2026-07-12T00:10:00-05:00"),
-        ],
-    )
+    module = importlib.import_module("app")
 
-    assert module.calculate_bedtime_variance("unused.sqlite3") == 10
+    assert module._bedtime_variance_from_rows([
+        _sleep_record("2026-07-10T23:50:00-05:00"),
+        _sleep_record("2026-07-12T00:10:00-05:00"),
+    ]) == 10
 
 
 def test_bedtime_consistency_matches_ordinary_nearby_times(monkeypatch):
-    module = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(
-        module,
-        "get_sleep_range",
-        lambda *_args, **_kwargs: [
-            _sleep_record("2026-07-10T22:30:00-05:00"),
-            _sleep_record("2026-07-11T23:00:00-05:00"),
-        ],
-    )
+    module = importlib.import_module("app")
 
-    assert module.calculate_bedtime_variance("unused.sqlite3") == 15
+    assert module._bedtime_variance_from_rows([
+        _sleep_record("2026-07-10T22:30:00-05:00"),
+        _sleep_record("2026-07-11T23:00:00-05:00"),
+    ]) == 15
 
 
 @pytest.mark.parametrize(
@@ -65,31 +55,17 @@ def test_bedtime_consistency_matches_ordinary_nearby_times(monkeypatch):
 def test_bedtime_consistency_handles_degenerate_or_invalid_inputs(
     monkeypatch, records, expected
 ):
-    module = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(module, "get_sleep_range", lambda *_args, **_kwargs: records)
+    module = importlib.import_module("app")
 
-    assert module.calculate_bedtime_variance("unused.sqlite3") == expected
+    assert module._bedtime_variance_from_rows(records) == expected
 
 
-def test_sleep_summary_names_circular_standard_deviation(monkeypatch, tmp_path):
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SECRET_KEY", "fit-337-test-secret")
-    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit-337-health-token")
-    fitness_app = importlib.import_module("app")
-    fitness_app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
-    monkeypatch.setattr(fitness_app, "OURA_DB_FILE", str(tmp_path / "oura.sqlite3"))
-    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(fitness_app, "get_oura_daily_range", lambda *_args, **_kwargs: [])
+def test_sleep_summary_names_circular_standard_deviation(isolated_app, monkeypatch):
+    monkeypatch.setattr(isolated_app, "_bedtime_variance_from_rows", lambda *_args, **_kwargs: 10)
 
-    sleep_sync = importlib.import_module("oura_sleep_sync")
-    monkeypatch.setattr(sleep_sync, "get_latest_sleep", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(sleep_sync, "get_sleep_range", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(sleep_sync, "calculate_bedtime_variance", lambda *_args, **_kwargs: 10)
-
-    response = fitness_app.app.test_client().get("/api/oura/sleep-summary")
+    response = isolated_app.app.test_client().get("/api/sleep/summary")
 
     assert response.status_code == 200
     consistency = response.get_json()["consistency"]
     assert consistency["bedtime_circular_std_dev_min"] == 10
     assert consistency["bedtime_variance_min"] == 10
-

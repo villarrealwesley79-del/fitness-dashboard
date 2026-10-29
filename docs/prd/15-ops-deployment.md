@@ -1,7 +1,7 @@
 # Ops & Deployment — PRD
 
 > **Sources:** `Dockerfile`, `.dockerignore`, `Procfile`, `runtime.txt`, `pyproject.toml`, `requirements.txt`, `scripts/install-launchd-agents.sh`, `scripts/check-apple-health-staleness.sh`, `scripts/worktree-server-guard.sh`, `scripts/install-worktree-guard.sh`, `scripts/whoop_sync.py`, `scripts/remove_synthetic_history_rows.py`, `scripts/smoke_branded_lookup_coverage.py`, `support/self_test.sh`, `docs/RELEASE_RUNBOOK.md`, `docs/REPO_HYGIENE.md`, `docs/AGENT_WORKTREES.md`, `.githooks/post-checkout`, `.githooks/pre-push`, `tests/test_docker_context_secret_hygiene.py`, `tests/test_fit183_runtime_paths.py`, `tests/test_worktree_server_guard.py`, `tests/test_whoop_sync.py`, `tests/test_synthetic_history_cleanup.py`, `tests/test_smoke_branded_lookup_coverage.py`, `tests/test_pytest_ci_contract.py`, `tests/test_whoop_ui_contract.py`, `README.md`, `docs/CURRENT_STATE.md`
-> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/oura/status`, `/api/oura/trends`, `/api/apple-health/sync/status`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, `/api/apple-health/sync`, `/api/apple-health/sync/setup-url`, WHOOP/Open Wearables routes during release checks.
+> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/wearables/today`, `/api/wearables/trends`, `/api/apple-health/sync/status`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, `/api/apple-health/sync`, `/api/apple-health/sync/setup-url`, WHOOP/Open Wearables routes during release checks.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
@@ -192,8 +192,8 @@ Ops does not own production API routes, but it verifies the following:
 | GET | `/api/settings` | Auth required | Smoke + FD loop | None | JSON settings | Real |
 | GET | `/api/history` | Auth required | Smoke | None | JSON recent history | Real |
 | GET | `/api/history-all` | Auth required | Smoke | None | JSON full history/cardio | Real |
-| GET | `/api/oura/status` | Auth required | Smoke | None | JSON Oura status | Real integration/cache |
-| GET | `/api/oura/trends` | Auth required | Smoke | None | JSON trend series | Real integration/cache |
+| GET | `/api/wearables/today` | Auth required | Smoke | None | JSON Oura status | Real integration/cache |
+| GET | `/api/wearables/trends` | Auth required | Smoke | None | JSON trend series | Real integration/cache |
 | GET | `/api/apple-health/sync/status` | Auth required | Smoke/release | None | JSON sync status | Real local SQLite |
 | GET | `/api/weather` | Auth required | Smoke | None | JSON weather/degraded state | Real/degraded depending env |
 | GET | `/api/recommendation/smart` | Auth required | Smoke | None | JSON recommendation | Real deterministic/AI-wrapped |
@@ -204,7 +204,7 @@ Ops does not own production API routes, but it verifies the following:
 
 ## 6. Data Model & Persistence
 
-Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `oura_daily.sqlite3`, `whoop.sqlite3`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
+Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
 
 Launchd plists are written under `~/Library/LaunchAgents`:
 

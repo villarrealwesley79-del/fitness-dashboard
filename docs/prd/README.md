@@ -33,8 +33,6 @@ Runtime data is local by default. The public repo intentionally excludes owner d
 - `nutritionix_client.py` - Nutritionix natural-language and item lookup client.
 - `open_food_facts_client.py` - Open Food Facts search/product client with locale and timeout rules.
 - `open_wearables_adapter.py` - Open Wearables status normalization, provider payload normalization, base URL validation, and error redaction.
-- `oura_client.py` - Oura API client and Oura daily SQLite cache.
-- `oura_sleep_sync.py` - Oura sleep SQLite table, sync, latest/range reads, and bedtime-variance helpers.
 - `personal_vocab.py` - Personal food vocabulary match thresholds and fuzzy matching.
 - `recommendation_sources.py` - Open Wearables recommendation-source projection.
 - `runtime_config.py` - `DATA_DIR` path resolution and public base URL normalization.
@@ -58,7 +56,7 @@ Frontend:
 Data locations:
 
 - JSON files through `data_path(...)`: `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `open_wearables_config.json`.
-- SQLite files through `data_path(...)`: `auth.db`, `fitness_data.db`, `oura_daily.sqlite3`, `whoop.sqlite3`, `wearable_facts.sqlite3`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`.
+- SQLite files through `data_path(...)`: `auth.db`, `fitness_data.db`, `whoop.sqlite3`, `wearable_facts.sqlite3`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`.
 - Protected/local material: `.flask-secret`, `.health-sync-token`, `.whoop-client-id`, WHOOP protected material under `WHOOP_PROTECTED_MATERIAL_DIR` or a derived protected-material file path.
 - Browser-local stores: active workout draft and sync queue in `localStorage`; meal queue metadata/photos in IndexedDB; adjust-intent draft in `sessionStorage`.
 
@@ -72,7 +70,6 @@ Data locations:
 | Meal logging: text and barcode | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) | Meal composer text path, barcode lookup, pending review, food logs, personal vocab, refresh events. |
 | Photo food logging and vision | [05-photo-food-logging-vision.md](05-photo-food-logging-vision.md) | Multi-photo capture/upload, local VLM estimation, image validation, privacy retention, manual review. |
 | Nutrition data sources | [06-nutrition-data-sources.md](06-nutrition-data-sources.md) | Nutritionix, USDA, Open Food Facts, H-E-B, branded lookup cache, nutrition history, source provenance. |
-| Oura integration | [07-oura-integration.md](07-oura-integration.md) | Oura daily cache, sleep sync, readiness/trends/status, recommendation recovery source. |
 | Apple Health integration | [08-apple-health-integration.md](08-apple-health-integration.md) | Health Auto Export token webhook, setup URL, legacy HealthKit JSON exports, sync freshness. |
 | Open Wearables integration | [10-open-wearables-integration.md](10-open-wearables-integration.md) | Hub setup, provider catalog, cloud sign-in gates, phone invites, metadata-only sync, normalized facts. |
 | AI coach and recommendations | [11-ai-coach-recommendations.md](11-ai-coach-recommendations.md) | LM Studio health/metrics, adjust plan, analyze workout, fact query, suggestion approval/rejection. |
@@ -96,7 +93,7 @@ Data locations:
 | Body tab | `#tab-body` | Weight/body-fat cards, food-context interpretation, target progress, 90-day trends, measurements, 14-day nutrition trend, body logging. | [02-daily-brief-dashboard.md](02-daily-brief-dashboard.md), [14-data-layer-persistence.md](14-data-layer-persistence.md), [16-progress-analytics-body.md](16-progress-analytics-body.md) |
 | Stats tab | `#tab-stats` | Range-filtered totals, volume, RPE, time, muscle recovery, volume-by-muscle, progress insights. | [03-workout-planning-execution.md](03-workout-planning-execution.md), [16-progress-analytics-body.md](16-progress-analytics-body.md) |
 | Settings - coaching setup | `#tab-settings [data-group=coaching-setup]` | Goal, profile, duration, sessions/week, equipment, AI coach status. | [01-auth-and-account.md](01-auth-and-account.md), [03-workout-planning-execution.md](03-workout-planning-execution.md), [11-ai-coach-recommendations.md](11-ai-coach-recommendations.md) |
-| Settings - data sources | `#tab-settings [data-group=data-sources]` | Open Wearables, Oura, Apple Health, Weather. | [07-oura-integration.md](07-oura-integration.md), [08-apple-health-integration.md](08-apple-health-integration.md), [10-open-wearables-integration.md](10-open-wearables-integration.md) |
+| Settings - data sources | `#tab-settings [data-group=data-sources]` | Open Wearables, Apple Health, Weather. | [08-apple-health-integration.md](08-apple-health-integration.md), [10-open-wearables-integration.md](10-open-wearables-integration.md) |
 | Settings - notifications | `#tab-settings [data-group=notifications]` | Web Push support state, enable/test/disable actions, active alert preview. | [12-push-notifications.md](12-push-notifications.md) |
 | Settings - maintenance | `#tab-settings [data-group=maintenance]` | Backup export/import, units, account sign-out. | [14-data-layer-persistence.md](14-data-layer-persistence.md), [01-auth-and-account.md](01-auth-and-account.md) |
 | Swap Exercise modal | `#modal-swap` | Same-muscle alternatives and free-text swap resolution. | [03-workout-planning-execution.md](03-workout-planning-execution.md) |

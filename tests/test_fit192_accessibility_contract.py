@@ -156,7 +156,7 @@ sandbox.__fitSet.getOpenWearablesStatus(async () => ({}));
 sandbox.__fitSet.getWearableSources(async () => ([]));
 sandbox.__fitSet.api(async (path) => path === '/api/freshness' ? { freshness: {} } : {});
 sandbox.__fitSet.updateSetting((value) => selected.push(value.training_goal));
-['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
+['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
 await e.renderSettings();
 const options = host.children;
 let prevented = false;
@@ -172,7 +172,7 @@ process.stdout.write(JSON.stringify({
 """,
         mocks=[
             "getSettings", "getOuraStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
-            "renderOpenWearablesDetail", "renderFreshnessChips", "renderOuraFreshnessDetail",
+            "renderOpenWearablesDetail", "renderFreshnessChips",
             "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderPushSection",
         ],
     )

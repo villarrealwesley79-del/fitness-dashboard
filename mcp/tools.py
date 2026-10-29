@@ -16,7 +16,7 @@ CALENDAR_NOTE = (
     " This server only reads. To protect training time, use your own calendar "
     "connector to block it; nothing here writes."
 )
-SOURCES = ("open_wearables", "oura", "whoop", "apple_health")  # food was dropped from scope
+SOURCES = ("open_wearables", "wearable_facts", "apple_health")  # food was dropped from scope
 
 
 def _pick(src: Any, keys: tuple[str, ...]) -> dict:
@@ -34,7 +34,7 @@ def _since(rows: list[dict], days: int) -> list[dict]:
 
 def _freshness(block: Any) -> dict:
     block = block if isinstance(block, dict) else {}
-    # source/superseded_by say whose timestamps a node shows (Open Wearables can stand in for oura/apple_health).
+    # source/superseded_by say whose timestamps a node shows (Open Wearables can stand in for apple_health).
     out = {s: _pick(block.get(s), ("status", "last_data_point", "last_sync_attempt", "source", "superseded_by")) for s in SOURCES}
     hub = block.get("open_wearables")
     out["open_wearables"]["providers"] = _rows(

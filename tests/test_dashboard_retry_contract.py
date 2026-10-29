@@ -46,8 +46,8 @@ process.stdout.write(JSON.stringify(calls));
     assert [call["timeoutMs"] for call in output] == [30000, 30000, 30000, 30000]
     assert [call["path"] for call in output] == [
         "/api/dashboard",
-        "/api/oura/status",
-        "/api/oura/sleep-summary",
+        "/api/wearables/today",
+        "/api/sleep/summary",
         "/api/recommendation/smart",
     ]
 
@@ -520,7 +520,7 @@ def test_next_workout_cache_invalidation_is_kept_in_backend_mutation_paths():
     assert "LAST_WORKOUT_RECOMMENDATION = None" in settings_body
     assert "global LAST_WORKOUT_RECOMMENDATION" in equipment_body
     assert "LAST_WORKOUT_RECOMMENDATION = None" in equipment_body
-    for marker in ["def add_workout():", "def add_soreness():", "def add_cardio():", "def add_recovery():", "def sync_oura_sleep():"]:
+    for marker in ["def add_workout():", "def add_soreness():", "def add_cardio():", "def add_recovery():"]:
         body = app_py.split(marker, 1)[1].split("\n\n@app.route", 1)[0]
         assert "global LAST_WORKOUT_RECOMMENDATION" in body
         assert "LAST_WORKOUT_RECOMMENDATION = None" in body
@@ -538,7 +538,7 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert "def _workout_recommendation_fingerprint():" in app_py
     assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
     assert "day=today_s" in app_py
-    assert "get_oura_daily_range(OURA_DB_FILE" in app_py
+    assert "_preferred_facts(_FINGERPRINT_FACT_METRICS" in app_py
     assert "_open_wearables_workout_inputs_live()" in app_py
     assert "open_wearables_configured=_open_wearables_workout_inputs_live()" in app_py
     assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
@@ -549,7 +549,7 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert '"day": day' in fingerprint_py
-    assert '"oura": {' in fingerprint_py and '"weather": {' in fingerprint_py
+    assert '"wearable_facts": [' in fingerprint_py and '"weather": {' in fingerprint_py
     assert '"open_wearables": {' in fingerprint_py and '"apple_health": {' in fingerprint_py
     assert "app-loader.js?v=20260716-fit392-rpe" in template
     assert "app.js?v=20260716-fit392-rpe" in loader

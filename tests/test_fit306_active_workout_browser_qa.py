@@ -126,8 +126,8 @@ def test_browser_executes_production_active_workout_states(tmp_path):
     try:
         run_global("install-browser", "chromium")
         run("open", "about:blank")
-        run("route", "**/api/oura/sleep-summary", "--body", "{}", "--content-type", "application/json")
-        run("route", "**/api/oura/status", "--body", '{"connected":false}', "--content-type", "application/json")
+        run("route", "**/api/sleep/summary", "--body", "{}", "--content-type", "application/json")
+        run("route", "**/api/wearables/today", "--body", '{"connected":false}', "--content-type", "application/json")
         run("resize", "390", "844")
         init_script = (
             "() => { if (window.name.startsWith('fit306-draft:')) { "

@@ -893,13 +893,13 @@
         // failure) for non-dashboard callers (renderVitals, renderSettings).
         // timeoutMs makes a hung endpoint reject after 30s instead of leaving
         // the chip silent forever.
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        try { state.oura = await api('/api/wearables/today' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
         catch { state.oura = null; }
         return state.oura;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        try { state.ouraSleep = await api('/api/sleep/summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
         catch { state.ouraSleep = null; }
         return state.ouraSleep;
     }
@@ -921,7 +921,7 @@
     }
     async function getOuraTrends(force = false) {
         if (!force && state.ouraTrends) return state.ouraTrends;
-        try { state.ouraTrends = await api('/api/oura/trends'); }
+        try { state.ouraTrends = await api('/api/wearables/trends'); }
         catch { state.ouraTrends = null; }
         return state.ouraTrends;
     }
@@ -1008,20 +1008,17 @@
     }
 
 
-    function formatOuraChip(oura, ago) {
-        if (!oura || oura.status === 'unknown' || oura.status == null) {
-            return { cls: 'unknown', label: 'Oura · —' };
+    function formatWearablesChip(facts, ago) {
+        if (!facts || facts.status === 'unknown' || facts.status == null) {
+            return { cls: 'unknown', label: 'Wearables · —' };
         }
-        if (oura.status === 'missing') {
-            return { cls: 'stale', label: 'Oura · no data' };
+        if (facts.status === 'missing') {
+            return { cls: 'stale', label: 'Wearables · no data' };
         }
-        // Real Oura state: combine source (cached/live) + relative last-data-point age
-        const sourceLabel = oura.source === 'live' ? 'live' : 'cached';
-        const ageLabel = ago(oura.last_data_point) || 'today';
-        const label = 'Oura · ' + sourceLabel + ' · ' + ageLabel;
-        if (oura.status === 'fresh')  return { cls: 'ok',    label };
-        if (oura.status === 'aging')  return { cls: 'warn',  label };
-        if (oura.status === 'stale')  return { cls: 'stale', label };
+        const label = 'Wearables · ' + (ago(facts.last_data_point) || 'today');
+        if (facts.status === 'fresh')  return { cls: 'ok',    label };
+        if (facts.status === 'aging')  return { cls: 'warn',  label };
+        if (facts.status === 'stale')  return { cls: 'stale', label };
         return { cls: 'unknown', label };
     }
 
@@ -1132,11 +1129,10 @@
     }
 
     const DASHBOARD_FRESHNESS_SLOTS = [
-        { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
+        { id: 'reco-fresh-wearables', key: 'wearable_facts', render: formatWearablesChip },
         { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
     ];
     const SETTINGS_FRESHNESS_SLOTS = [
-        { id: 'oura-connect-state',  key: 'oura',         render: formatOuraChip,  rowId: 'settings-row-oura' },
         { id: 'apple-connect-state', key: 'apple_health', render: formatAppleChip, rowId: 'settings-row-apple' },
     ];
 
@@ -1235,6 +1231,26 @@
         }).join(', ') + '.';
     }
 
+    // "Sources: sleep Oura · recovery Oura · activity WHOOP via Open Wearables · 07:12"
+    function buildSourcesLine(proof, syncedAt) {
+        if (!proof) return '';
+        const parts = ['sleep', 'recovery', 'activity']
+            .filter(function (domain) { return proof[domain] && proof[domain].provider; })
+            .map(function (domain) {
+                const node = proof[domain];
+                const archive = node.via === 'archive' ? ' (archive)' : '';
+                return `${domain} ${sourceDisplayName(node.provider)}${archive}`;
+            });
+        if (!parts.length) return '';
+        const lastLive = parts.map(function (part) { return part.indexOf('(archive)') < 0; }).lastIndexOf(true);
+        if (lastLive >= 0) parts[lastLive] += ' via Open Wearables'; // archive rows were not fetched from Open Wearables
+        const when = syncedAt ? new Date(syncedAt) : null;
+        if (when && !isNaN(when.getTime())) {
+            parts.push('checked ' + when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+        }
+        return 'Sources: ' + parts.join(' · ');
+    }
+
     function buildWearableSignalsSummary(wearables) {
         if (!wearables.length) return 'Wearable freshness has not loaded yet.';
         return wearables.map(function (entry) {
@@ -1291,7 +1307,7 @@
         );
         let wearableSources = normalizeWearableSources((dash && dash.wearable_sources) || []);
         if (!wearableSources.length && freshness) {
-            wearableSources = ['oura', 'apple_health']
+            wearableSources = ['wearable_facts', 'apple_health']
                 .filter(function (key) { return freshness[key]; })
                 .map(function (key) {
                     const node = freshness[key];
@@ -1303,12 +1319,17 @@
                     };
                 });
         }
+        const proofSources = [reco, dash]
+            .map(function (src) { return src && src.recommendation_sources && src.recommendation_sources.source_proof; })
+            .find(Boolean);
+        const factsFreshness = freshness && freshness.wearable_facts;
+        const sourcesLine = buildSourcesLine(proofSources, factsFreshness && factsFreshness.last_sync_attempt);
         const summary = $('reco-sources-summary');
         const note = $('reco-sources-note');
         const openBtn = $('btn-reco-sources');
         const drawerSummary = $('reco-sources-drawer-summary');
 
-        if (summary) summary.textContent = buildRecommendationSourcesSummary(recommendationSources);
+        if (summary) summary.textContent = sourcesLine || buildRecommendationSourcesSummary(recommendationSources);
         if (note) note.textContent = buildWearableSignalsSummary(wearableSources);
         if (drawerSummary) drawerSummary.textContent = summary ? summary.textContent : 'Recommendation source detail is not available yet.';
         if (openBtn) openBtn.disabled = !recommendationSources.length && !wearableSources.length;
@@ -1413,7 +1434,6 @@
 
     function applyOpenWearablesDirectSourceVisibility(status = state.openWearablesStatus) {
         [
-            { provider: 'oura', rowId: 'settings-row-oura', detailId: 'oura-detail' },
             { provider: 'apple_health', rowId: 'settings-row-apple', detailId: 'apple-detail' },
         ].forEach((entry) => {
             const hidden = openWearablesDirectSourceReplaced(entry.provider, status);
@@ -2039,7 +2059,7 @@
         const freshness = (reco && reco.freshness) || (dash && dash.freshness) || null;
         const openWearablesSource = ((dash && dash.recommendation_sources) || (reco && reco.recommendation_sources) || {}).open_wearables;
         const wearableStatuses = [
-            freshness && freshness.oura && freshness.oura.status,
+            freshness && freshness.wearable_facts && freshness.wearable_facts.status,
             freshness && freshness.apple_health && freshness.apple_health.status,
             // WHOOP arrives only via Open Wearables: count the hub only when it supplied usable facts.
             openWearablesSource && (openWearablesSource.used_for_recommendation ? 'fresh' : 'missing'),
@@ -2053,7 +2073,7 @@
         if (wearableAllMissing) {
             recoTitle = 'Rest day — no recent wearable data';
         } else if (wearableStale) {
-            const lastDayIso = freshness && freshness.oura && freshness.oura.last_data_point;
+            const lastDayIso = freshness && freshness.wearable_facts && freshness.wearable_facts.last_data_point;
             let daysOld = null;
             if (lastDayIso) {
                 const t = new Date(lastDayIso).getTime();
@@ -2191,7 +2211,7 @@
         if (whyEl) {
             let whyText = null;
             if (wearableAllMissing) {
-                whyText = 'No recent wearable data — showing a conservative default. Sync Oura or Apple Health for a personalized recommendation.';
+                whyText = 'No recent wearable data — showing a conservative default. Sync your wearables for a personalized recommendation.';
             } else if (wearableStale) {
                 whyText = ((reco && reco.reasoning) ? reco.reasoning + '. ' : '') + 'Confidence is lowered because wearable data is stale.';
             } else if (reco && reco.reasoning) {
@@ -2280,12 +2300,12 @@
             if ($('insight-body')) $('insight-body').textContent = '';
         }
 
-        // Sparkline: sleep scores from Oura trend
+        // Sparkline: nightly sleep hours from the stored sleep trend
         const sleepTrendRows = sleep && sleep.trend_data ? sleep.trend_data : [];
         // trend_data is already vetted server-side (valid full nights kept), so no excluded_dates filter here.
-        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null
+        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.duration_min != null
             && (!dashboardSleepInconsistent || d.date !== sleep.data_quality.observed_at));
-        const sleepSeries = safeSleepTrendRows.map((d) => d.score);
+        const sleepSeries = safeSleepTrendRows.map((d) => d.duration_min / 60);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
 
         // FIT-128/129: per-card retry chips. Each chip surfaces when its
@@ -2421,8 +2441,8 @@
         const totalCal = oura && oura.active_calories ? Math.round(oura.active_calories + 1600) : null;
         $('v-total-cal').textContent = fmtInt(totalCal);
         $('v-total-cal-goal').textContent = 'Est. target 2,300';
-        const activityScore = oura && oura.activity_score;
-        $('v-active-min').textContent = activityScore != null ? Math.round(activityScore * 0.9) : '--';
+        const activeMinutes = oura && oura.active_minutes;
+        $('v-active-min').textContent = activeMinutes != null ? Math.round(activeMinutes) : '--';
         $('v-active-min-goal').textContent = 'of 80 min';
 
         // Sparks from trends
@@ -2442,7 +2462,7 @@
             && !excludedSleepDates.has(s.day)
             && (!sleepInconsistent || s.day !== sleep.data_quality.observed_at));
         sparkline($('spark-steps'), series.map((s) => s.steps), { color: '#22c55e' });
-        sparkline($('spark-active-min'), series.map((s) => s.activity_score), { color: '#fbbf24' });
+        sparkline($('spark-active-min'), series.map((s) => s.active_minutes), { color: '#fbbf24' });
         sparkline($('spark-sleep'), safeSleepSeries.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
 
         // Sleep details
@@ -2457,7 +2477,7 @@
         const last = sleep ? sleep.last_night : statusNight;
         if (sleepInconsistent) {
             $('v-sleep-dur').textContent = '--';
-            $('v-sleep-dur-sub').textContent = 'Sleep data inconsistent · Check Oura sync';
+            $('v-sleep-dur-sub').textContent = 'Sleep data inconsistent · Check wearable sync';
             $('v-sleep-score').textContent = '--';
             $('v-sleep-score-sub').textContent = sleep.data_quality.observed_at || '';
         } else if (last) {
@@ -2833,7 +2853,7 @@
             provider: 'Open Wearables',
             original_label: label,
             canonical_category: w.canonical_category || canonicalHistoryCategory(label, 'open_wearables'),
-            source_label: 'Open Wearables',
+            source_label: w.source_label || 'Open Wearables',
         };
     }
 
@@ -3136,7 +3156,8 @@
             return;
         }
 
-        visible.slice(0, 40).forEach((w) => {
+        const shownLimit = state.historyShown || 40;
+        visible.slice(0, shownLimit).forEach((w) => {
             const row = document.createElement('div');
             row.className = 'w-row';
             row.tabIndex = 0;
@@ -3151,7 +3172,7 @@
                 row.innerHTML = `
                     <div class="w-date">${escapeHtml(fmtDate(w.date))}</div>
                     <div>
-                        <div class="w-summary"><span class="src-tag src-open-wearables">OPEN WEARABLES</span>${escapeHtml(title)}</div>
+                        <div class="w-summary"><span class="src-tag src-open-wearables">${escapeHtml(String(w.source_label || 'Open Wearables').toUpperCase())}</span>${escapeHtml(title)}</div>
                         <div class="w-meta">${escapeHtml(meta) || '—'}</div>
                     </div>
                     <div class="w-volume open-wearables-volume">${escapeHtml(formatOptionalWorkoutMetric(w.duration_minutes, 'min', { omitMissing: true }) || '')}</div>
@@ -3215,6 +3236,18 @@
             }
             listHost.appendChild(row);
         });
+        if (visible.length > shownLimit) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'btn btn-ghost btn-sm';
+            more.id = 'btn-history-show-more';
+            more.textContent = `Show more (${visible.length - shownLimit} older)`;
+            more.addEventListener('click', () => {
+                state.historyShown = shownLimit + 40;
+                renderHistory();
+            });
+            listHost.appendChild(more);
+        }
     }
 
     function historyFilterKey(w) {
@@ -4024,12 +4057,11 @@
     }
 
     async function renderSettings() {
-        // FIT-16: settings + Oura first. Oura refresh upserts today's
-        // row, so the dashboard freshness block (which we use below to
-        // drive the integration chips + detail panels) must be read
-        // AFTER that upsert lands — parallel fetches race and can show
-        // "Cached · stale" right after a successful live refresh.
-        const [st, oura, openWearables, wearableSources] = await Promise.all([
+        // FIT-16: refresh the wearable facts first. The freshness block (which
+        // drives the integration chips below) must be read AFTER that refresh
+        // lands — parallel fetches race and can show "stale" right after a
+        // successful live refresh.
+        const [st, , openWearables, wearableSources] = await Promise.all([
             getSettings(),
             getOuraStatus(true, true),
             getOpenWearablesStatus(true),
@@ -4047,7 +4079,6 @@
         } catch {
             freshness = null;
         }
-        const ouraFreshness = freshness && freshness.oura;
         const appleFreshness = freshness && freshness.apple_health;
         renderOpenWearablesDetail(openWearables, wearableSources);
         const host = $('settings-goals');
@@ -4124,7 +4155,6 @@
         // matches the dashboard reco-card exactly. Detail panels below each
         // chip carry the richer cached/live + sync nuance.
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
-        renderOuraFreshnessDetail(oura, ouraFreshness);
         // FIT-111: populate the four settings group header chips so the
         // user gets a glance-level signal per section. Reads live chip
         // state from the DOM, so renderPushSection also calls it after its
@@ -4799,72 +4829,6 @@
         applyOpenWearablesDirectSourceVisibility(status);
     }
 
-    function renderOuraFreshnessDetail(oura, freshness) {
-        const detail = $('oura-detail');
-        if (!detail) return;
-        const hasFreshness = freshness && freshness.last_data_point;
-
-        if ((!oura || !oura.source) && !hasFreshness) {
-            // Genuinely no data — no today-row AND no historical
-            // record_date the server knows about.
-            _setDetail('oura-detail-daily', 'Not connected');
-            _setDetail('oura-detail-sleep', '—');
-            _setDetail('oura-detail-source', '—');
-            return;
-        }
-
-        // Latest daily: combine date + the headline readiness/HRV pair.
-        // Fall back to the freshness block's last_data_point when the
-        // today-row is missing — that surfaces honest stale-cache state
-        // ("data through 2026-05-15") instead of misreporting as
-        // disconnected.
-        const dailyParts = [];
-        if (oura && oura.date) dailyParts.push(oura.date);
-        else if (hasFreshness) dailyParts.push(`through ${freshness.last_data_point}`);
-        const dailyStats = [];
-        if (oura && oura.readiness != null) dailyStats.push(`readiness ${oura.readiness}`);
-        if (oura && oura.hrv != null) dailyStats.push(`HRV ${oura.hrv}`);
-        if (oura && oura.resting_hr != null) dailyStats.push(`RHR ${oura.resting_hr}`);
-        if (dailyStats.length) dailyParts.push(dailyStats.join(' · '));
-        else if (hasFreshness && freshness.status) dailyParts.push(`(${freshness.status})`);
-        _setDetail('oura-detail-daily', dailyParts.length ? dailyParts.join(' — ') : 'No daily row');
-
-        // Latest sleep: duration formatted as Xh Ym + score if present.
-        // When today's row is missing but freshness reports a historical
-        // record_date, surface that fact (with a pointer to Vitals which
-        // owns the historical detail view) instead of misleading
-        // "No sleep row" copy that ignores the cached evidence.
-        const sleepParts = [];
-        if (oura && oura.sleep_duration_min != null) {
-            const h = Math.floor(oura.sleep_duration_min / 60);
-            const m = oura.sleep_duration_min % 60;
-            sleepParts.push(`${h}h ${m}m`);
-        }
-        if (oura && oura.sleep_score != null) sleepParts.push(`score ${oura.sleep_score}`);
-        let sleepText;
-        if (sleepParts.length) sleepText = sleepParts.join(' · ');
-        else if (hasFreshness) sleepText = `Cached through ${freshness.last_data_point} — see Vitals for detail`;
-        else sleepText = 'No sleep row';
-        _setDetail('oura-detail-sleep', sleepText);
-
-        // Source: distinguish a real API pull from a cached DB read.
-        // ``api`` == fresh live fetch; ``db`` == served from local cache.
-        // When only the freshness block is available, label as cached
-        // and surface the freshness status so the user can tell why
-        // today's row is missing.
-        let sourceText;
-        if (oura && oura.source === 'api') sourceText = 'Live (fresh API pull)';
-        else if (oura && oura.source === 'db') sourceText = 'Cached (local SQLite)';
-        else if (oura && oura.source) sourceText = oura.source;
-        else if (hasFreshness) sourceText = `Cached (${freshness.status})`;
-        else sourceText = '—';
-        const warnings = [];
-        if (oura && oura.warning) warnings.push(oura.warning);
-        if (hasFreshness && freshness.status === 'stale') warnings.push('Data is stale (≥48h)');
-        if (warnings.length) sourceText += ` · ${warnings.join(' · ')}`;
-        _setDetail('oura-detail-source', sourceText);
-    }
-
     function renderAppleHealthFreshnessDetail(ah, freshness) {
         const detail = $('apple-detail');
         if (!detail) return;
@@ -5198,63 +5162,6 @@
             const message = apiErrorMessage(e, 'Save failed');
             if (Object.keys(navyContext).length) setBodyNavyError(message);
             toast(message, 'err');
-        }
-    }
-
-    function _ouraSyncErrorDetails(err) {
-        if (err && (err.apiErrorCode || err.apiErrorMessage)) {
-            return {
-                code: String(err.apiErrorCode || 'oura_sync_failed'),
-                message: String(err.apiErrorMessage || 'Oura sync failed'),
-            };
-        }
-        const raw = String((err && err.message) || err || '');
-        const jsonStart = raw.indexOf('{');
-        if (jsonStart >= 0) {
-            try {
-                const parsed = JSON.parse(raw.slice(jsonStart));
-                const serverError = parsed && parsed.error;
-                if (serverError) {
-                    return {
-                        code: String(serverError.code || 'oura_sync_failed'),
-                        message: String(serverError.message || 'Oura sync failed'),
-                    };
-                }
-            } catch {}
-        }
-        return { code: 'oura_sync_failed', message: 'Oura sync failed' };
-    }
-
-    function renderOuraSyncResult(payload, err = null) {
-        const row = $('oura-detail-sync-row');
-        const value = $('oura-detail-sync-result');
-        if (!row || !value) return;
-        row.hidden = false;
-        if (err) {
-            const detail = _ouraSyncErrorDetails(err);
-            value.textContent = `${detail.code} · ${detail.message}`;
-            return;
-        }
-        const latestDays = Array.isArray(payload && payload.latest_days)
-            ? payload.latest_days.filter(Boolean)
-            : [];
-        const rangeEnd = payload && payload.synced_through || 'unknown end';
-        const count = Number(payload && payload.latest_records || 0);
-        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} latest saved record${count === 1 ? '' : 's'} · saved days ${latestDays.join(', ') || 'none'}`;
-    }
-
-    async function syncOura() {
-        toast('Syncing Oura…');
-        try {
-            const result = await api('/api/oura/sync-sleep', { method: 'POST' });
-            renderOuraSyncResult(result);
-            invalidateCaches();
-            toast('Oura synced');
-            loadTab(state.currentTab);
-        } catch (e) {
-            console.error(e);
-            renderOuraSyncResult(null, e);
-            toast(apiErrorMessage(e, 'Oura sync failed'), 'err');
         }
     }
 
@@ -7253,7 +7160,6 @@
             await flushSyncQueue();
             await renderSyncQueueModal();
         });
-        $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
         $('btn-open-wearables-setup') && $('btn-open-wearables-setup').addEventListener('click', openOpenWearablesSetupModal);
         $('btn-open-wearables-bootstrap') && $('btn-open-wearables-bootstrap').addEventListener('click', handleOpenWearablesPrimarySetupAction);
         $('btn-open-wearables-portal') && $('btn-open-wearables-portal').addEventListener('click', () => openOpenWearablesPortal());

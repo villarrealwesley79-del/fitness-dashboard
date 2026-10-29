@@ -1,7 +1,7 @@
 # Daily Brief Dashboard — PRD
 
 > **Sources:** `README.md`; `docs/VISION.md`; `docs/PRD.md`; `docs/CURRENT_STATE.md`; `templates/index.html`; `static/js/app.js`; `static/js/app-loader.js`; `static/js/sw.js`; `app.py`; `auth.py`; `tests/test_dashboard_render_contract.py`; `tests/test_dashboard_retry_contract.py`; `tests/test_fit166_ai_coach_headline_contract.py`; `tests/test_fit177_ai_coach_headline_announcement.py`; `tests/test_fit178_ai_coach_headline_runtime.py`; `tests/test_fit139_refresh_events.py`; `tests/test_fit139_refresh_ui.py`; `tests/test_fit152_linechart_nonnegative_y.py`; `tests/test_fit192_accessibility_contract.py`; route inventory scratchpad; existing open issue scratchpad.
-> **Routes:** `/`, `/api/dashboard`, `/api/recommendation/smart`, `/api/next-workout`, `/api/freshness`, `/api/vitals`, `/api/oura/status`, `/api/oura/trends`, `/api/oura/sleep-summary`, `/api/whoop/status`, `/api/wearable-sources`, `/api/food-log-refresh-events`, `/api/food-log-refresh-events/<event_id>/ack`, `/api/workout-adaptation-events`, `/api/workout-adaptation-events/<event_id>/ack`, `/manifest.json`, `/sw.js`.
+> **Routes:** `/`, `/api/dashboard`, `/api/recommendation/smart`, `/api/next-workout`, `/api/freshness`, `/api/vitals`, `/api/wearables/today`, `/api/wearables/trends`, `/api/sleep/summary`, `/api/whoop/status`, `/api/wearable-sources`, `/api/food-log-refresh-events`, `/api/food-log-refresh-events/<event_id>/ack`, `/api/workout-adaptation-events`, `/api/workout-adaptation-events/<event_id>/ack`, `/manifest.json`, `/sw.js`.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
@@ -18,15 +18,15 @@ Recommendation-engine internals belong to PRD 11. This PRD documents what the us
 | --- | --- | --- | --- | --- |
 | App shell | `/`, `templates/index.html` | Authenticated PWA shell with 8 tabs and bottom nav. | Server-rendered HTML plus deferred `app-loader.js` and `app.js`. | Authenticated shell, login redirect, reload-required 401, offline 503 shell from service worker. |
 | Greeting | Dashboard top | Friendly day entry point. | Client local clock. | Morning/afternoon/evening copy [TBC: exact greeting variants are client-only and not asserted in tests]. |
-| Readiness card | Dashboard card | Shows readiness gauge plus HRV, resting HR, sleep duration. | `/api/oura/status`, fallback readiness from `/api/dashboard.recomp_command.readiness`. | Placeholder, loaded, retry chip, no gauge when readiness absent. |
+| Readiness card | Dashboard card | Shows readiness gauge plus HRV, resting HR, sleep duration. | `/api/wearables/today`, fallback readiness from `/api/dashboard.recomp_command.readiness`. | Placeholder, loaded, retry chip, no gauge when readiness absent. |
 | AI Recommendation card | Dashboard card | Shows today's plan headline, confidence, intensity/focus, time, avoid list, source attribution, primary actions. | `/api/dashboard`, `/api/recommendation/smart`, freshness nodes. | Placeholder, loaded, stale/missing wearable copy, source conflict banner, retry chip. |
 | Freshness chips | Recommendation card | Shows whether WHOOP, Oura, Apple Health, and Food are trustworthy today. | `/api/dashboard.freshness`, `/api/recommendation/smart.freshness`, merged WHOOP status. | Fresh, aging/stale/missing, pending food review, over/under food target. |
 | Recommendation sources strip/drawer | Recommendation card and modal | Explains which wearable/recommendation sources were used, stale, missing, or conflicted. | `recommendation_sources`, `wearable_sources`, WHOOP status. | Waiting, populated, conflict visible, modal drawer. |
 | Today's macros card | Dashboard card | Shows calories/macros and food-driven context for the daily plan. | `/api/dashboard.nutrition_today` plus food-log refresh events. | Empty, loaded totals, pending review, over/under target, offline meal composer state. |
 | Workout adaptation notice | Dashboard passive notice | Confirms an applied same-day food-driven workout update. | `/api/workout-adaptation-events`. | Hidden, applied update card, collapsed details, dismiss/ack retry. |
-| Today at a glance | Dashboard grid | Steps, active calories, sleep, weight. | `/api/oura/status` for steps, active calories, and sleep plus `/api/dashboard.body_stats` for weight. | Placeholder or loaded values. |
-| Insight card | Dashboard card | Short coaching insight plus sparkline. | `/api/oura/sleep-summary`, `/api/recommendation/smart`. | Gathering placeholder, loaded, retry chip, stale reset. |
-| Quick trends | Closed-by-default `<details>` | Secondary readiness and volume charts. | `/api/oura/trends`, `/api/history-all`. | Hidden/collapsed, not enough data, chart with takeaway. |
+| Today at a glance | Dashboard grid | Steps, active calories, sleep, weight. | `/api/wearables/today` for steps, active calories, and sleep plus `/api/dashboard.body_stats` for weight. | Placeholder or loaded values. |
+| Insight card | Dashboard card | Short coaching insight plus sparkline. | `/api/sleep/summary`, `/api/recommendation/smart`. | Gathering placeholder, loaded, retry chip, stale reset. |
+| Quick trends | Closed-by-default `<details>` | Secondary readiness and volume charts. | `/api/wearables/trends`, `/api/history-all`. | Hidden/collapsed, not enough data, chart with takeaway. |
 | AI coach status | Header popover and Settings headline | Indicates local model health. | `/api/ai/health`, `/api/ai/metrics`. | Checking, primary ready, fallback active, offline. Detailed behavior belongs to PRD 11. |
 
 ## 3. Field Inventory
@@ -116,7 +116,7 @@ Recommendation-engine internals belong to PRD 11. This PRD documents what the us
 Trigger -> User opens `/` or switches to Dash tab.  
 Behavior -> Server returns `index.html` with `Cache-Control: no-store`; `app-loader.js` starts the async app bundle once the DOM is ready: immediately when `document.readyState` is no longer `loading`, otherwise on one-shot `DOMContentLoaded`; `renderDashboard()` paints existing cached state immediately, then starts independent fetches for dashboard, Oura status, smart recommendation, and Oura sleep.
 Validation -> Each card keeps placeholders until its own data arrives; stale fetch completions are generation-guarded.  
-API -> `/api/dashboard`, `/api/oura/status`, `/api/recommendation/smart`, `/api/oura/sleep-summary`; trends/history load independently.  
+API -> `/api/dashboard`, `/api/wearables/today`, `/api/recommendation/smart`, `/api/sleep/summary`; trends/history load independently.  
 Success -> Cards repaint as data arrives; quick trends paint separately.  
 Failure -> Failed readiness/recommendation/insight slices show their retry chips without blocking other cards.
 
@@ -125,7 +125,7 @@ Failure -> Failed readiness/recommendation/insight slices show their retry chips
 Trigger -> User clicks `readiness-retry`, `reco-retry`, or `insight-retry`.  
 Behavior -> The relevant sentinel generation increments and that slice is refetched.  
 Validation -> Older pending requests cannot re-show the chip after a newer retry has succeeded.  
-API -> Readiness uses `/api/oura/status`; recommendation uses `/api/dashboard` and/or `/api/recommendation/smart`; insight uses `/api/oura/sleep-summary`.  
+API -> Readiness uses `/api/wearables/today`; recommendation uses `/api/dashboard` and/or `/api/recommendation/smart`; insight uses `/api/sleep/summary`.  
 Success -> Retry chip hides and card repaints.  
 Failure -> Chip remains visible and keyboard-accessible.
 
@@ -175,9 +175,9 @@ Failure -> Offline state is visible.
 | GET | `/api/next-workout` | Required | Start Workout / Workout tab | `active_workout_open`, `completed_sets` optional | next_workout, workout_adaptation_events, recommendation_sources | Real |
 | GET | `/api/freshness` | Required | Settings/status freshness | none | `{freshness}` only; side-effect-free | Real |
 | GET | `/api/vitals` | Required | Vitals tab | none | vitals/body/activity payload | Real |
-| GET | `/api/oura/status` | Required | Readiness card/settings | `refresh=true` optional | Oura connection/cache/readiness status | Real |
-| GET | `/api/oura/trends` | Required | Quick trends | none | trend rows | Real |
-| GET | `/api/oura/sleep-summary` | Required | Insight/readiness | none | sleep summary | Real |
+| GET | `/api/wearables/today` | Required | Readiness card/settings | `refresh=true` optional | Oura connection/cache/readiness status | Real |
+| GET | `/api/wearables/trends` | Required | Quick trends | none | trend rows | Real |
+| GET | `/api/sleep/summary` | Required | Insight/readiness | none | sleep summary | Real |
 | GET | `/api/whoop/status` | Required | Freshness/source merge | none | WHOOP connection/freshness | Real |
 | GET | `/api/wearable-sources` | Required | Source attribution | none | `sources` array | Real |
 | GET | `/api/food-log-refresh-events` | Required | Passive food refresh notices | `unacknowledged`, `since`, `limit` | events/count | Real |
@@ -201,7 +201,7 @@ Pre-boot dashboard HTML can show empty/default copy such as "No food logged toda
 | Recovery JSON | `DATA_DIR/data_recovery.json` | Recovery bonus. | Sauna/cold plunge/etc. |
 | Body JSON | `DATA_DIR/data_body.json` | Weight/body trend in glance and body stats. | Local date strings. |
 | Nutrition JSON/SQLite food logs | `DATA_DIR/data_nutrition.json`, SQLite food log tables | Macro card, nutrition context, adaptation windows. | Accepted logs count; pending review does not. |
-| Oura SQLite | `DATA_DIR/oura_daily.sqlite3` | Readiness, HRV, sleep, freshness. | Daily cache and trend range. |
+| Wearable facts | `DATA_DIR/wearable_facts.sqlite3` | Readiness, HRV, sleep, freshness. | Preferred provider per domain; see 10-open-wearables-integration.md. |
 | WHOOP SQLite | `DATA_DIR/whoop.sqlite3` | WHOOP freshness/source modifiers. | Normalized facts; token material handled outside normal responses. |
 | Open Wearables config/facts | `DATA_DIR/open_wearables_config.json`, `DATA_DIR/wearable_facts.sqlite3` | Source attribution and readiness guards. | Sync responses are metadata-only. |
 | Service worker cache | Browser Cache Storage | App shell update behavior. | Old caches deleted; no app shell/API cache retained. |

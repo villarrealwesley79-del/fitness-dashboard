@@ -63,7 +63,6 @@ Backend-only consumers include recommendation generation, AI fact context, Apple
 | --- | --- | --- | --- |
 | Fitness data | `fitness_data.db` | `data_store.py` | Food logs, structured body/cardio/nutrition/recovery data, meal review, adaptation events, lookup caches, push subscriptions, settings table. |
 | Auth | `auth.db` | `auth.py` | Local users, password hashes, and owner guard. |
-| Oura cache | `oura_daily.sqlite3` | Oura integration | Oura daily readiness/sleep/HRV cache. |
 | Apple Health sync | `apple_health_sync.db` or env override | Apple Health integration | Health Auto Export records/events used for freshness and load. |
 | WHOOP | `whoop.sqlite3` | `whoop_store.py` | WHOOP connection, OAuth states, records, daily facts, sync runs. |
 | Wearable facts | `wearable_facts.sqlite3` | `wearable_fact_store.py` | Public coaching-safe daily facts and wearable sources, profile-scoped. |
@@ -229,7 +228,6 @@ Retention is mostly indefinite. JSON history, SQLite logs, wearable facts, food 
 | `BODY_FILE` | `DATA_DIR/data_body.json` |
 | `SLEEP_FILE` | `DATA_DIR/data_sleep.json` |
 | `NUTRITION_FILE` | `DATA_DIR/data_nutrition.json` |
-| `OURA_DB_FILE` | `DATA_DIR/oura_daily.sqlite3` |
 | `WHOOP_DB_FILE` | `DATA_DIR/whoop.sqlite3` |
 | `WEARABLE_FACTS_DB_FILE` | `DATA_DIR/wearable_facts.sqlite3` |
 | `OPEN_WEARABLES_CONFIG_FILE` | `DATA_DIR/open_wearables_config.json` |

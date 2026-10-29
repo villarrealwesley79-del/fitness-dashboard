@@ -115,7 +115,7 @@ bash support/self_test.sh
 Run the same smoke against a Tailnet URL by changing `BASE_URL`. If you
 already have a session cookie and do not want the script to log in, pass
 `COOKIE=<session-cookie-value>` instead of the username/password pair. The smoke
-checks authenticated dashboard, settings, history, Oura, Apple Health sync
+checks authenticated dashboard, settings, history, wearables, Apple Health sync
 status, smart recommendation, a safe rejected workout write path, and
 the existing file-descriptor leak regression.
 
@@ -126,7 +126,6 @@ paths for debugging, but the script owns and removes those files during cleanup.
 Optional integrations use environment variables such as:
 
 ```bash
-OURA_API_TOKEN=
 HEALTH_SYNC_TOKEN=
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=
 FITNESS_DASHBOARD_NO_LOGIN=
