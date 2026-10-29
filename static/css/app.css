@@ -1,7 +1,7 @@
 .reco-source-strip {
     margin-top: 14px;
     padding-top: 14px;
-    border-top: 1px solid rgba(51,65,85,0.4);
+    border-top: 1px solid var(--hairline);
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -56,7 +56,7 @@
 .reco-source-list-empty {
     padding: 12px;
     border-radius: 12px;
-    border: 1px dashed rgba(71,85,105,0.7);
+    border: 1px dashed var(--hairline);
     color: var(--fg-dim);
     font-size: 12px;
     line-height: 1.45;
@@ -65,8 +65,8 @@
 .reco-source-item {
     padding: 12px;
     border-radius: 14px;
-    border: 1px solid rgba(51,65,85,0.45);
-    background: rgba(15,23,42,0.6);
+    border: 1px solid var(--hairline);
+    background: var(--card);
 }
 
 .reco-source-item-head {
@@ -120,10 +120,10 @@
 }
 
 .ow-intake-section {
-    border: 1px solid rgba(51,65,85,0.55);
+    border: 1px solid var(--hairline);
     border-radius: 14px;
     padding: 14px;
-    background: rgba(15,23,42,0.42);
+    background: var(--card);
 }
 
 .ow-intake-section-head {
@@ -149,15 +149,15 @@
 }
 
 .ow-intake-status.ok {
-    color: #bbf7d0;
+    color: var(--good);
 }
 
 .ow-intake-status.warn {
-    color: #fde68a;
+    color: var(--warn);
 }
 
 .ow-intake-status.err {
-    color: #fecaca;
+    color: var(--error);
 }
 
 .ow-intake-actions {
@@ -180,9 +180,9 @@
     gap: 12px;
     margin-top: 14px;
     padding: 14px;
-    border: 1px solid rgba(59,130,246,0.38);
+    border: 1px solid var(--hairline);
     border-radius: 12px;
-    background: rgba(15,23,42,0.58);
+    background: var(--card);
 }
 
 .open-wearables-pairing-card strong {
@@ -204,9 +204,9 @@
 }
 
 .open-wearables-provider-btn {
-    border: 1px solid rgba(96,165,250,0.32);
+    border: 1px solid var(--hairline);
     border-radius: 10px;
-    background: rgba(37,99,235,0.14);
+    background: var(--tint);
     color: var(--fg-1);
     min-height: 40px;
     padding: 9px 10px;
@@ -220,21 +220,21 @@
 
 .open-wearables-provider-btn:not(:disabled):hover,
 .open-wearables-provider-btn.is-selected {
-    border-color: rgba(96,165,250,0.72);
-    background: rgba(37,99,235,0.28);
+    border-color: var(--hairline);
+    background: var(--tint);
     color: var(--fg-0);
 }
 
 .open-wearables-provider-btn.is-unavailable {
-    border-color: rgba(234,179,8,0.42);
-    background: rgba(113,63,18,0.18);
+    border-color: var(--warn-line);
+    background: var(--warn-tint);
     color: var(--fg-1);
 }
 
 .open-wearables-provider-btn.is-unavailable::after {
     content: attr(data-status-label);
     display: block;
-    color: #fde68a;
+    color: var(--warn);
     font-size: 10px;
     font-weight: 700;
     margin-top: 3px;
@@ -251,9 +251,9 @@
 .open-wearables-mobile-invite {
     display: grid;
     gap: 10px;
-    border: 1px solid rgba(96,165,250,0.32);
+    border: 1px solid var(--hairline);
     border-radius: 12px;
-    background: rgba(15,23,42,0.42);
+    background: var(--card);
     padding: 12px;
 }
 
@@ -287,7 +287,7 @@
     display: block;
     overflow-wrap: anywhere;
     border-radius: 8px;
-    background: rgba(2,6,23,0.62);
+    background: var(--card);
     color: var(--fg-0);
     padding: 8px;
     font-size: 12px;
@@ -314,7 +314,6 @@
     color: var(--fg-dim);
     font-size: 11px;
     font-weight: 700;
-    text-transform: uppercase;
 }
 
 .open-wearables-setup-field .select-inline {
@@ -328,7 +327,7 @@
     gap: 10px;
     align-items: baseline;
     padding: 10px 0;
-    border-top: 1px solid rgba(51,65,85,0.35);
+    border-top: 1px solid var(--hairline);
 }
 
 .open-wearables-setup-list li:first-child {

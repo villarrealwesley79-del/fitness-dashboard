@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20261029-nocal';
+        script.src = '/static/js/app.js?v=20261030-w9';
         script.async = true;
         document.body.appendChild(script);
     }

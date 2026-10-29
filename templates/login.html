@@ -5,36 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% if register %}Register{% else %}Login{% endif %} — Fitness Dashboard</title>
   <style>
+    /* Daily Rhythm tokens (DESIGN.md); this page does not load style.css. */
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0d1117; color: #e6edf3;
+      font-family: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+      background: #f7f1e8; color: #1c1b1a;
       display: flex; align-items: center; justify-content: center;
-      min-height: 100vh;
+      min-height: 100vh; padding: 16px;
     }
     .card {
-      background: #161b22; border: 1px solid #30363d;
-      border-radius: 12px; padding: 2rem; width: 100%; max-width: 360px;
+      background: #ffffff; border: 1px solid #e1dcd3;
+      border-radius: 24px; padding: 24px; width: 100%; max-width: 380px;
     }
-    h1 { font-size: 1.4rem; margin-bottom: 1.5rem; color: #58a6ff; }
-    label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 4px; }
-    input[type="text"], input[type="password"] {
-      width: 100%; padding: 0.55rem 0.75rem;
-      background: #0d1117; border: 1px solid #30363d;
-      border-radius: 6px; color: #e6edf3; font-size: 1rem; margin-bottom: 1rem;
+    h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 2rem; margin-bottom: 24px; }
+    label { display: block; font-size: 0.9rem; font-weight: 600; color: #4a4741; margin-bottom: 4px; }
+    input[type="text"], input[type="password"], input[type="email"] {
+      width: 100%; min-height: 48px; padding: 0.6rem 0.75rem;
+      background: #ffffff; border: 1px solid #cfc7ba;
+      border-radius: 12px; color: #1c1b1a; font-size: 1rem; margin-bottom: 16px;
     }
-    input:focus { outline: none; border-color: #58a6ff; }
+    input:focus { border-color: #1c1b1a; }
+    :focus-visible { outline: 2px solid #1c1b1a; outline-offset: 2px; }
     button {
-      width: 100%; padding: 0.65rem;
-      background: #238636; color: #fff;
-      border: none; border-radius: 6px; font-size: 1rem; cursor: pointer;
+      width: 100%; min-height: 48px; padding: 0.65rem;
+      background: #1c1b1a; color: #fff;
+      border: none; border-radius: 999px; font-size: 1rem; font-weight: 700; cursor: pointer;
     }
-    button:hover { background: #2ea043; }
-    .flash { background: #3d1f1f; border: 1px solid #f85149;
-             border-radius: 6px; padding: 0.5rem 0.75rem;
-             color: #f85149; font-size: 0.85rem; margin-bottom: 1rem; }
-    .toggle { text-align: center; margin-top: 1rem; font-size: 0.85rem; color: #8b949e; }
-    .toggle a { color: #58a6ff; text-decoration: none; }
+    button:hover { background: #4a4741; }
+    .flash { background: rgba(180,45,26,0.08); border: 1px solid rgba(180,45,26,0.4);
+             border-radius: 12px; padding: 0.5rem 0.75rem;
+             color: #b42d1a; font-size: 0.9rem; margin-bottom: 16px; }
+    .toggle { text-align: center; margin-top: 16px; font-size: 0.9rem; color: #4a4741; }
+    .toggle a { color: #1c1b1a; text-decoration: underline; text-underline-offset: 2px; display: inline-block; padding: 14px 4px; }
+    .optional { color: #4a4741; font-weight: 400; }
   </style>
 </head>
 <body>
@@ -56,7 +59,7 @@
       <input id="username" name="username" type="text" autocomplete="username" required>
 
       {% if register %}
-      <label for="email">Email <span style="color:#8b949e;font-weight:400">(optional)</span></label>
+      <label for="email">Email <span class="optional">(optional)</span></label>
       <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com">
       {% endif %}
 
