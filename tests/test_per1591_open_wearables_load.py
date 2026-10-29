@@ -478,3 +478,33 @@ def test_add_workout_rejects_a_non_list_sets_and_stores_nothing(app_module, sets
     body = {"date": day(1), "session_type": "push", "exercises": [{"machine": "Bench", "sets": sets}]}
     assert app_module.app.test_client().post("/api/add-workout", json=body).status_code == 400
     assert app_module.WORKOUTS == []
+
+
+RANK = {"recovery": 0, "moderate": 1, "intensity": 2}
+
+
+def _plan_snapshot(module):
+    acwr = module.calculate_acwr(module.WORKOUTS)
+    smart = module.app.test_client().get("/api/recommendation/smart").get_json()["recommendation"]
+    return acwr["acwr"], module._training_recommendation_from_factors(None, acwr_data=acwr)[0], smart
+
+
+@pytest.mark.parametrize("logged, twin", [(120, 15), (60, 45), (45, 44), (30, 60)])
+def test_a_shorter_watch_copy_of_a_logged_run_never_lowers_caution(app_module, logged, twin):
+    """Another watch session already turns the minutes series on; the watch then also records the logged run, but saw less
+    of it. The run still counts once, with the longer duration, so the ratio and plan never drop (and a longer watch copy counts)."""
+    app_module.WORKOUTS[:] = [{**lift(20), "duration_minutes": 10}]
+    app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": logged, "intensity": 5}]
+    store(app_module, 10, "Cycling", 40, hour=7)
+    before = _plan_snapshot(app_module)
+    store(app_module, 2, "Running", twin, hour=7)
+    after = _plan_snapshot(app_module)
+    assert after[0] >= before[0] and RANK[after[1]] <= RANK[before[1]] and RANK[after[2]] <= RANK[before[2]], (before, after)
+    if logged == 120:
+        assert before == after == (2.118, "recovery", "recovery")
+
+
+def test_a_non_finite_logged_duration_still_counts_its_watch_copy(app_module):
+    app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": float("inf"), "intensity": 5}]
+    store(app_module, 2, "Running", 30, hour=7)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 30
