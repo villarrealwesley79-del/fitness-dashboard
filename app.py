@@ -2246,7 +2246,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
 
 _WEARABLE_REFRESH_SECONDS = 15 * 60
 _WEARABLE_REFRESH_STATE = {"at": None}
-_WEARABLE_REFRESH_LOCK = threading.Lock()  # concurrent requests wait for the fetch in progress instead of reading old facts
+_WEARABLE_REFRESH_LOCK = threading.Lock()  # a second caller waits at most 2 s for the fetch in progress, then reads the stored facts
 _WEARABLE_BACKFILL_CHUNK_DAYS = 28
 
 
@@ -4358,12 +4358,13 @@ def compute_hrv_trend(hrv_values):
 _HRV_METRICS = ("heart_rate_variability", "sleep_hrv_rmssd", "sleep_hrv_sdnn")
 
 
-def _hrv_facts(days=7):
+def _hrv_facts(days=7, drop_short=True):
     """HRV facts oldest first, from one provider and one metric so RMSSD and SDNN are never mixed.
 
     The first provider in the recovery preference with at least 4 samples wins; fewer
     everywhere falls back to the most preferred one. A series whose newest fact is stale is
-    skipped, so a fresh fallback provider fills the gap; all stale returns [].
+    skipped, so a fresh fallback provider fills the gap; all stale returns []. A sub-hour-only
+    day's sleep HRV is left out unless keeping it turns the trend 'declining'.
     """
     preference = SOURCE_PREFERENCE["recovery"]
     metrics = set(_HRV_METRICS) | {"sleep_duration"}  # sleep_duration brings in the night's fragment exclusion
@@ -4372,13 +4373,18 @@ def _hrv_facts(days=7):
     for provider in [*preference, *sorted(seen - set(preference))]:  # each provider's whole series, not the dates it won
         for _day, by_metric in sorted(_preferred_facts(metrics, days=days, provider=provider).items()):
             # a date whose only sleep is a sub-hour record (strap on briefly) has no night HRV
-            short = (by_metric.get("sleep_duration") or {}).get("value", MIN_NIGHT_SLEEP_MIN) < MIN_NIGHT_SLEEP_MIN
+            short = drop_short and (by_metric.get("sleep_duration") or {}).get("value", MIN_NIGHT_SLEEP_MIN) < MIN_NIGHT_SLEEP_MIN
             for metric, fact in by_metric.items():
                 if metric in _HRV_METRICS and not (short and metric.startswith("sleep_")):
                     series.setdefault((provider, metric), []).append(fact)
     ranked = sorted(series, key=lambda k: (preference.index(k[0]) if k[0] in preference else len(preference), _HRV_METRICS.index(k[1])))
     live = [k for k in ranked if series[k][-1]["freshness"] != "stale"]
-    return next((series[k] for k in live if len(series[k]) >= 4), series[live[0]] if live else [])
+    chosen = next((series[k] for k in live if len(series[k]) >= 4), series[live[0]] if live else [])
+    if drop_short and compute_hrv_trend([f["value"] for f in chosen]) != "declining":
+        with_short = _hrv_facts(days, drop_short=False)  # a short day's HRV may make the plan more cautious, never less
+        if compute_hrv_trend([f["value"] for f in with_short]) == "declining":
+            return with_short
+    return chosen
 
 
 def _hrv_series(days=7):
