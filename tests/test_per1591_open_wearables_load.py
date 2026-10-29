@@ -596,3 +596,19 @@ def test_fatigue_also_takes_the_longer_watch_duration_for_workout_linked_cardio(
     app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": 15, "workout_id": "w1"}]
     store(app_module, 1, "Running", 60, hour=7)
     assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [60.0]
+
+
+@pytest.mark.parametrize("alias", [{"duration_min": 120}, {"duration_minutes": 0, "duration_min": 120}, {"duration_minutes": None, "duration_min": 120}])
+def test_a_shorter_watch_copy_never_replaces_a_longer_duration_min_logged_run(app_module, alias):
+    # get_cardio_muscle_impact reads duration_minutes or duration_min; an imported backup row can carry only the alias
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "intensity": 5, **alias}]
+    tonnage_wins(app_module)
+    store(app_module, 1, "Running", 30, hour=7)
+    assert app_module._cardio_with_open_wearables() == app_module.CARDIO_DATA
+    _source_routes(app_module, used=False)  # the run lowered nothing and added nothing, so it is not credited
+
+
+def test_a_longer_watch_run_still_replaces_a_shorter_duration_min_logged_run(app_module):
+    app_module.CARDIO_DATA[:] = [{"date": day(1), "activity_type": "Outdoor Run", "duration_min": 20, "intensity": 5}]
+    store(app_module, 1, "Running", 60, hour=7)
+    assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [60.0]
