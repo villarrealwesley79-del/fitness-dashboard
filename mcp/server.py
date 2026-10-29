@@ -61,7 +61,7 @@ class VendorCIMDProxy(OAuthProxy):
         self._cimd_hosts = tuple(h.lower() for h in cimd_hosts)
 
     def _fetchable(self, client_id: str) -> bool:
-        """True only for a plain-ASCII URL on a vendor host and port 443 that IDNA can encode.
+        """True only for a plain-ASCII URL on an allowed host (or any host if `*`) and port 443 that IDNA can encode.
 
         FastMCP's fetcher raises on a bad port, a bad DNS label or a control character, which would be
         a 500 and a traceback in the log; this refuses them first.
@@ -76,7 +76,8 @@ class VendorCIMDProxy(OAuthProxy):
                 return False
         except ValueError:  # includes UnicodeError
             return False
-        return any(host == h or host.endswith("." + h) for h in self._cimd_hosts)
+        # `*` = any host (owner choice). FastMCP's SSRF layer still refuses non-public addresses.
+        return bool(host) and ("*" in self._cimd_hosts or any(host == h or host.endswith("." + h) for h in self._cimd_hosts))
 
     async def get_client(self, client_id: str):
         if self._cimd_manager is None or not self._cimd_manager.is_cimd_client_id(client_id):

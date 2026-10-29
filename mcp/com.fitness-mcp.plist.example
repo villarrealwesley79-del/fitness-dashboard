@@ -25,6 +25,7 @@
     <key>MCP_STORAGE_ENCRYPTION_KEY_FILE</key><string>/Users/REPLACE_USER/.fitness-mcp/storage-key</string>
     <key>MCP_BOT_TOKEN_SHA256</key><string>REPLACE_WITH_SHA256_OF_BOT_TOKEN</string>
     <key>MCP_EXTRA_REDIRECT_URIS</key><string></string>
+    <!-- MCP_EXTRA_CIMD_HOSTS: comma-separated hosts; * = any domain (redirect URIs stay allowlisted) -->
     <key>MCP_EXTRA_CIMD_HOSTS</key><string></string>
     <key>MCP_LOG_FILE</key><string>/Users/REPLACE_USER/Library/Logs/fitness-mcp.log</string>
     <key>FASTMCP_LOG_LEVEL</key><string>ERROR</string>
