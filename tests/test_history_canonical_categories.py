@@ -36,5 +36,3 @@ def test_history_endpoints_emit_canonical_category(monkeypatch):
 
     assert payload["workouts"][0]["canonical_category"] == "strength_training"
     assert payload["workouts"][0]["original_label"] == "Lifted"
-
-

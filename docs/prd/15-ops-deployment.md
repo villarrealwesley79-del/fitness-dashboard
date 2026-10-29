@@ -1,7 +1,7 @@
 # Ops & Deployment — PRD
 
 > **Sources:** `Dockerfile`, `.dockerignore`, `Procfile`, `runtime.txt`, `pyproject.toml`, `requirements.txt`, `scripts/install-launchd-agents.sh`, `scripts/worktree-server-guard.sh`, `scripts/install-worktree-guard.sh`, `scripts/whoop_sync.py`, `scripts/remove_synthetic_history_rows.py`, `scripts/smoke_branded_lookup_coverage.py`, `support/self_test.sh`, `docs/RELEASE_RUNBOOK.md`, `docs/REPO_HYGIENE.md`, `docs/AGENT_WORKTREES.md`, `.githooks/post-checkout`, `.githooks/pre-push`, `tests/test_docker_context_secret_hygiene.py`, `tests/test_fit183_runtime_paths.py`, `tests/test_worktree_server_guard.py`, `tests/test_whoop_sync.py`, `tests/test_synthetic_history_cleanup.py`, `tests/test_smoke_branded_lookup_coverage.py`, `tests/test_pytest_ci_contract.py`, `tests/test_whoop_ui_contract.py`, `README.md`, `docs/CURRENT_STATE.md`
-> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/wearables/today`, `/api/wearables/trends`, `/api/apple-health/sync/status`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, `/api/apple-health/sync`, `/api/apple-health/sync/setup-url`, WHOOP/Open Wearables routes during release checks.
+> **Routes:** No primary app routes owned. Consumes and verifies `/`, `/login`, `/api/dashboard`, `/api/settings`, `/api/history`, `/api/history-all`, `/api/wearables/today`, `/api/wearables/trends`, `/api/weather`, `/api/recommendation/smart`, `/api/ai/health`, `/api/complete-workout`, WHOOP/Open Wearables routes during release checks.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
@@ -178,7 +178,7 @@ Ops does not own production API routes, but it verifies the following:
 
 ## 6. Data Model & Persistence
 
-Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
+Runtime storage is governed by `runtime_config.DATA_DIR`. When `DATA_DIR` is set, JSON stores and SQLite stores live under that directory; otherwise they live next to the app. Key runtime files include `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json`, `wearable_facts.sqlite3`, `open_wearables_config.json`, `fitness_data.db`, `auth.db`, `ai_coach_cache.sqlite3`, and `whoop_sync.lock`.
 
 Launchd plists are written under `~/Library/LaunchAgents`:
 
@@ -216,7 +216,7 @@ The smoke test creates temporary cookie/body files with mode `0600` and deletes 
 
 ## 8. Integration Points
 
-Ops touches all major app systems indirectly. Auth is required for smoke. Apple Health drives the staleness watchdog and rollback checks. Oura, weather, recommendations, and AI health are smoke-test dependencies. WHOOP has a standalone sync CLI and release checks. Open Wearables has release checks around metadata-only sync, provider gates, and invitation codes. Docker and Procfile depend on access-log redaction because OAuth and health routes can include sensitive query strings.
+Ops touches all major app systems indirectly. Auth is required for smoke. Oura, weather, recommendations, and AI health are smoke-test dependencies. WHOOP has a standalone sync CLI and release checks. Open Wearables has release checks around metadata-only sync, provider gates, and invitation codes. Docker and Procfile depend on access-log redaction because OAuth and health routes can include sensitive query strings.
 
 The worktree guard is an agent/developer safety integration. It protects product/runtime truth by preventing a live server from continuing to serve one branch's Python code while templates or route contracts are switched underneath it.
 
@@ -269,7 +269,6 @@ Coverage gaps:
 - No test starts real launchd agents; installer is tested through dry-run output.
 - No test runs `support/self_test.sh` end to end against a live authenticated server.
 - No test proves Docker container startup with mounted `/data`.
-- No test proves staleness watchdog behavior against malformed/missing SQLite tables beyond script inspection [TBC].
 - No test enforces that release rollback commands were followed; runbook is procedural.
 - No test proves launchd app job uses gunicorn; it intentionally runs `python app.py`, while Docker/Procfile use gunicorn.
 
@@ -282,7 +281,7 @@ Coverage gaps:
 - **Problem:** Existing tests assert selected strings in dry-run output, but they do not parse the generated plist XML or validate all launchd keys for both agents.
 - **Why it matters:** A malformed plist can leave the owner runtime down even when string checks pass.
 - **Acceptance criteria:**
-  - Parse generated app and staleness plist XML from dry-run output.
+  - Parse the generated app plist XML from dry-run output.
   - Assert required launchd keys, ProgramArguments, env vars, logs, RunAtLoad, KeepAlive/StartInterval.
   - Cover install and reinstall action output.
 - **Duplicate-of:** none
@@ -342,7 +341,7 @@ Coverage gaps:
 - **Problem:** Operators currently combine `launchctl`, `lsof`, `curl`, logs, and smoke scripts manually to understand runtime health.
 - **Why it matters:** A single status command would reduce mistakes during release and rollback.
 - **Acceptance criteria:**
-  - Provide a read-only status script that reports launchd loaded/running state, listener PID, data dir, last staleness log line, and smoke prerequisites.
+  - Provide a read-only status script that reports launchd loaded/running state, listener PID, data dir, and smoke prerequisites.
   - Do not print secrets, session cookies, or token-bearing URLs.
   - Tests cover output redaction and missing-service states.
 - **Duplicate-of:** none
@@ -355,6 +354,6 @@ Coverage gaps:
 - **Why it matters:** Small quoting or portability errors can break the local runtime controls.
 - **Acceptance criteria:**
   - Add a documented shell static check using an existing available tool or a no-new-dependency alternative.
-  - Cover launchd installer, staleness checker, worktree guard, install guard, pre-push hook, post-checkout hook, and self-test.
+  - Cover launchd installer, worktree guard, install guard, pre-push hook, post-checkout hook, and self-test.
   - Document any intentionally ignored warnings.
 - **Duplicate-of:** none

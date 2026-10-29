@@ -1172,24 +1172,6 @@ def _parse_iso_to_local_datetime(iso_str):
     return dt.astimezone().replace(tzinfo=None)
 
 
-def _local_date_from_iso(iso_str):
-    """Return the server-local YYYY-MM-DD for an ISO timestamp, or None.
-
-    See ``_parse_iso_to_local_datetime`` for the parsing/TZ rules.
-    """
-    dt = _parse_iso_to_local_datetime(iso_str)
-    return dt.date().isoformat() if dt is not None else None
-
-
-def _local_iso_from_iso(iso_str):
-    """Return a naive server-local ISO timestamp for an ISO input, or None.
-
-    See ``_parse_iso_to_local_datetime`` for the parsing/TZ rules.
-    """
-    dt = _parse_iso_to_local_datetime(iso_str)
-    return dt.isoformat(timespec="seconds") if dt is not None else None
-
-
 def _fit95_number(value, default=0.0):
     try:
         if value is None or value == "":

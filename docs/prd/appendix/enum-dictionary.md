@@ -1,6 +1,6 @@
 # Enum Dictionary
 
-> **Sources:** `app.py`, `auth.py`, `meal_log_policy.py`, `meal_estimate_schema.py`, `meal_text_parser.py`, `branded_food_lookup.py`, `data_store.py`, `workout_adaptation.py`, `whoop_recommendations.py`, `whoop_store.py`, `whoop_client.py`, `wearable_fact_store.py`, `recommendation_sources.py`, `local_vision_adapter.py`, `lm_studio_adapter.py`, `open_wearables_adapter.py`, `apple_health_parser.py`, `health_ingest.py`, `runtime_config.py`, `static/js/app.js`, `static/js/sw.js`
+> **Sources:** `app.py`, `auth.py`, `meal_log_policy.py`, `meal_estimate_schema.py`, `meal_text_parser.py`, `branded_food_lookup.py`, `data_store.py`, `workout_adaptation.py`, `whoop_recommendations.py`, `whoop_store.py`, `whoop_client.py`, `wearable_fact_store.py`, `recommendation_sources.py`, `local_vision_adapter.py`, `lm_studio_adapter.py`, `open_wearables_adapter.py`, `runtime_config.py`, `static/js/app.js`, `static/js/sw.js`
 > **Routes:** Cross-app constants and status vocabulary consumed by multiple routes.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -310,7 +310,7 @@ Wearable fact store:
 | --- | --- | --- |
 | `DATA_DIR` | Env override or app directory. | `runtime_config.py:11` |
 | `data_workouts.json`, `data_soreness.json`, `data_settings.json`, `data_cardio.json`, `data_recovery.json`, `data_baselines.json`, `data_body.json`, `data_sleep.json`, `data_nutrition.json` | JSON-backed local stores. | `app.py:200` |
-| `whoop.sqlite3`, `wearable_facts.sqlite3`, `fitness_data.db`, `apple_health_sync.db`, `ai_coach_cache.sqlite3` | SQLite local stores/caches. | `app.py:209`, `data_store.py:24`, `apple_health_parser.py:78`, `app.py:8978` |
+| `whoop.sqlite3`, `wearable_facts.sqlite3`, `fitness_data.db`, `ai_coach_cache.sqlite3` | SQLite local stores/caches. | `app.py:209`, `data_store.py:24`, `app.py:8978` |
 | Backup version | `1.1` | Exported backup schema version. | `app.py:15161` |
 | Backup filename | `fitness_backup_YYYY-MM-DD.json` | Export filename pattern. | `app.py:15185` |
 | Forbidden WHOOP backup fields | `access_token`, `refresh_token`, `token_ref`, `material_ref`, `raw`, `raw_json`, `payload`, `provider_payload`, `client_secret` | Import rejection fields. | `app.py:15216` |

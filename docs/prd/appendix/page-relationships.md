@@ -1,6 +1,6 @@
 # Page Relationships
 
-> **Sources:** `templates/index.html`, `static/js/app.js`, `static/js/sw.js`, `app.py`, `auth.py`, `apple_health_parser.py`, `data_store.py`, `workout_adaptation.py`
+> **Sources:** `templates/index.html`, `static/js/app.js`, `static/js/sw.js`, `app.py`, `auth.py`, `data_store.py`, `workout_adaptation.py`
 > **Routes:** Navigation, modal, refresh, and data-coupling relationships across the app shell.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -66,7 +66,7 @@ flowchart TD
 On boot, `static/js/app.js` renders only the initial hash-selected tab. Dashboard is the default initial tab and fetches:
 
 - `/api/dashboard`, `/api/wearables/today`, `/api/recommendation/smart`, `/api/sleep/summary`, `/api/wearables/trends`, and `/api/history-all`.
-- Other tabs lazy-load and cache their data on first visit; the union of per-tab endpoints includes `/api/next-workout`, `/api/vitals`, `/api/whoop/status`, `/api/open-wearables/status`, `/api/wearable-sources`, `/api/insights`, `/api/apple-health/workouts`, `/api/body-history`, `/api/settings`, `/api/analytics/advanced`, `/api/muscle-fatigue`, and `/api/exercises`.
+- Other tabs lazy-load and cache their data on first visit; the union of per-tab endpoints includes `/api/next-workout`, `/api/vitals`, `/api/whoop/status`, `/api/open-wearables/status`, `/api/wearable-sources`, `/api/insights`, `/api/body-history`, `/api/settings`, `/api/analytics/advanced`, `/api/muscle-fatigue`, and `/api/exercises`.
 - Dashboard, next workout, Oura status/sleep, WHOOP status, Open Wearables status, wearable sources, and smart recommendation use a 30-second timeout where configured.
 - AI status uses `/api/ai/health` and `/api/ai/metrics`, with a 60-second refresh interval after boot.
 - Push state reads `/api/push/subscriptions`, `/api/push/reminders/preview`, and `/api/push/vapid-public-key` only when the push card is rendered/interacted with.

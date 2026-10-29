@@ -9,7 +9,7 @@ Auth values used below:
 - `session/owner`: Requires Flask session and owner user in default single-owner mode.
 - `public`: Allowlisted before login.
 - `token`: External caller authenticated by a shared token instead of browser session.
-- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected. `/api/apple-health/sync` is exempt.
+- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected.
 - `dead/legacy`: Route or page exists in code/templates but appears dev-only, legacy, or not wired.
 
 ## App Shell, Auth, Account, Public, PWA
