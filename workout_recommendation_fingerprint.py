@@ -52,8 +52,9 @@ def build_payload(
     wearable_facts: list[dict] | None,
     readiness: int | None = None,
     schedule_fit: dict | None = None,
+    open_wearables_load: list | None = None,
 ) -> dict:
-    return {
+    payload = {
         "auth_scope": auth_scope,
         "day": day,
         "workouts_count": len(workouts or []),
@@ -85,6 +86,9 @@ def build_payload(
             for fact in (wearable_facts or [])
         ],
     }
+    if open_wearables_load:  # watch sessions that count toward load (PER-1591); absent when none, so today's hashes hold
+        payload["open_wearables_load"] = open_wearables_load
+    return payload
 
 
 def fingerprint_payload(payload: dict) -> str:

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
 from contextvars import ContextVar
+import collections
 import copy
 import csv
 import io
@@ -541,15 +542,28 @@ def _normalize_cardio_type(value):
 
 
 def _canonical_cardio_fatigue_type(value):
-    activity = _normalize_cardio_type(value)
+    activity = " ".join(re.split(r"[\s_-]+", _normalize_cardio_type(value)))  # Open Wearables names: indoor_cycling, Trail-Running
     aliases = {
         "bike": "cycling",
+        "indoor cycling": "cycling",
+        "cycling stationary": "cycling",
+        "stationary cycling": "cycling",
+        "mountain biking": "cycling",
         "rower": "rowing",
+        "rowing machine": "rowing",
         "treadmill incline walk": "treadmill",
         "treadmill run": "treadmill",
+        "running treadmill": "treadmill",
         "outdoor run": "running",
+        "trail running": "running",
         "outdoor walk": "walking",
         "walk": "walking",
+        "hiking": "walking",
+        "stair climbing": "stairmaster",
+        "stair climbing machine": "stairmaster",
+        "pool swimming": "swimming",
+        "open water swimming": "swimming",
+        "trail hiking": "walking", "cyclocross": "cycling", "e biking": "cycling", "swimming pool": "swimming", "swimming open water": "swimming",
     }
     return aliases.get(activity, activity)
 
@@ -1178,7 +1192,7 @@ def _fit95_number(value, default=0.0):
         if value is None or value == "":
             return default
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: an imported integer too large for a float
         return default
 
 
@@ -1331,7 +1345,7 @@ def calculate_progression_status(workouts):
             if not sets:
                 continue
             machine = exercise.get("machine") or exercise.get("exercise") or exercise.get("name")
-            if not machine:
+            if not machine or not isinstance(machine, str):
                 continue
             valid_e1rms = []
             for s in sets:
@@ -1457,20 +1471,22 @@ def calculate_volume(workouts, weeks=4):
     return muscle_volume
 
 
+# Mapping of cardio activities to affected muscles with fatigue factors
+CARDIO_MUSCLE_IMPACT = {
+    "stairmaster": {"quads": 2, "glutes": 2, "calves": 1.5, "hamstrings": 1},
+    "treadmill": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+    "running": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+    "basketball": {"quads": 2, "calves": 2, "core": 1, "hamstrings": 1},
+    "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
+    "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
+    "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
+    "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1},
+    "walking": {"quads": 1, "hamstrings": 0.5, "calves": 1, "glutes": 0.5}
+}
+
+
 def get_cardio_muscle_impact(cardio_data, muscle, days=2):
     """Calculate cardio impact on a specific muscle group."""
-    # Mapping of cardio activities to affected muscles with fatigue factors
-    CARDIO_MUSCLE_IMPACT = {
-        "stairmaster": {"quads": 2, "glutes": 2, "calves": 1.5, "hamstrings": 1},
-        "treadmill": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
-        "running": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
-        "basketball": {"quads": 2, "calves": 2, "core": 1, "hamstrings": 1},
-        "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
-        "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
-        "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
-        "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1},
-        "walking": {"quads": 1, "hamstrings": 0.5, "calves": 1, "glutes": 0.5}
-    }
     cutoff = datetime.now() - timedelta(days=days)
     total_impact = 0
 
@@ -2740,8 +2756,9 @@ def generate_next_workout(
     default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
 
     readiness_scores = {}
+    cardio_rows = _cardio_with_open_wearables()
     for muscle in default_muscles:
-        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA, workouts)
+        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, cardio_rows, workouts)
 
     available_muscles = [
         m
@@ -2772,7 +2789,7 @@ def generate_next_workout(
     for w in workouts[:6]:  # Look back 6 sessions
         for ex in w.get("exercises", []):
             machine = ex.get("machine")
-            if machine and machine not in recent_exercises:
+            if machine and isinstance(machine, str) and machine not in recent_exercises:
                 recent_exercises[machine] = w["date"]
 
     def pick_exercise(muscle):
@@ -3006,13 +3023,16 @@ def calculate_personal_records(workouts: list) -> dict:
     for workout in workouts:
         for exercise in workout.get("exercises", []):
             machine = exercise.get("machine")
-            if not machine:
-                continue  # rows stored before the route validated the name
+            if not machine or not isinstance(machine, str):
+                continue  # rows stored before the route validated the name, or by /api/complete-workout, which takes any truthy value
             if machine not in exercise_prs:
                 exercise_prs[machine] = {"all_time": 0, "all_time_date": "", "recent_30": 0, "recent_30_date": ""}
 
-            for s in exercise.get("sets", []):
-                e1rm = calculate_e1rm(s["weight_lbs"], s["reps"])
+            for s in exercise.get("sets") or []:
+                nums = _set_numbers(s)
+                if not nums:
+                    continue
+                e1rm = calculate_e1rm(*nums)
                 if e1rm > exercise_prs[machine]["all_time"]:
                     exercise_prs[machine]["all_time"] = round(e1rm, 1)
                     exercise_prs[machine]["all_time_date"] = workout["date"]
@@ -3270,12 +3290,12 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         return {}
 
     total_sessions = len(workouts)
-    total_sets = sum(len(e.get("sets", [])) for w in workouts for e in w.get("exercises", []))
+    total_sets = sum(len(e.get("sets") or []) for w in workouts for e in w.get("exercises", []))
     total_volume = sum(
-        s["weight_lbs"] * s["reps"]
+        _set_volume(s)
         for w in workouts
         for e in w.get("exercises", [])
-        for s in e.get("sets", [])
+        for s in e.get("sets") or []
     )
 
     # Exercise frequency
@@ -3283,7 +3303,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     for w in workouts:
         for e in w.get("exercises", []):
             machine = e.get("machine")
-            if not machine:
+            if not machine or not isinstance(machine, str):
                 continue
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
 
@@ -3324,23 +3344,139 @@ def _parse_iso_date_or_datetime(s: str | None):
             return None
 
 
-def calculate_acwr(workouts: list) -> dict:
-    """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
+def _set_numbers(s):
+    """(weight_lbs, reps) as floats, or None when the set is not a dict with finite numeric weight and reps (a bool is not a number)."""
+    if not isinstance(s, dict):
+        return None
+    pair = (s.get("weight_lbs"), s.get("reps"))
+    try:
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pair):
+            return None
+        return float(pair[0]), float(pair[1])
+    except OverflowError:  # an imported integer too large for a float
+        return None
 
-    Load definition: sum over all sets of (1 * reps * weight), plus
-    duration-derived load for cardio-style app workouts.
-    Acute: sum of last 7 days.
-    Chronic: average 7-day load over the last 28 days (uses available days if < 28).
+
+def _set_volume(s):
+    """reps x weight of a set, 0 when the set has no numeric weight or reps (stored by /api/complete-workout, which does not check them)."""
+    nums = _set_numbers(s)
+    return nums[0] * nums[1] if nums else 0.0
+
+
+def _acwr_window(daily: dict, today):
+    """Acute (last 7 days) and weekly-average chronic (last 28) load of one {date: load} series; None when it is empty."""
+    if not daily:
+        return None
+    acute = sum(v for d, v in daily.items() if d >= today - timedelta(days=6))
+    observed_days = min(28, (today - min(daily)).days + 1)
+    chronic = sum(daily.values()) / max(1, observed_days) * 7.0
+    return {"ratio": acute / chronic if chronic > 0 else 0.0, "acute": acute, "chronic": chronic}
+
+
+def _open_wearables_fold(workouts):
+    """(kept, folded): stored Open Wearables sessions of the last 28 days that add load.
+
+    Same fold as History's mergeStrengthHistorySources: each logged workout absorbs at most one
+    strength session on its date, in History's row order. folded maps a date to every absorbed
+    session in that order, so slot k belongs to the date's k-th logged workout (a session without a
+    positive duration adds no load, but keeps its slot, as in History).
+    Reads the fact store only; if it is unreadable, nothing is added.
+    """
+    try:
+        start = (datetime.now().date() - timedelta(days=27)).isoformat()
+        rows = open_wearables_hub.stored_workouts(WEARABLE_FACTS_DB_FILE, _open_wearables_profile_key(), start)
+    except (sqlite3.Error, OSError, ValueError):
+        return [], {}
+    absorbable = collections.Counter(w["date"] for w in workouts if isinstance(w.get("date"), str) and w["date"])  # an imported list date is unhashable
+    kept, folded = [], collections.defaultdict(list)
+    for row in rows:
+        row = normalize_history_item(row, source="open_wearables")
+        loads = math.isfinite(_fit95_number(row.get("duration_minutes"))) and _fit95_number(row.get("duration_minutes")) > 0
+        if row["canonical_category"] == "strength_training" and absorbable[row["date"]] > 0:
+            absorbable[row["date"]] -= 1
+            folded[row["date"]].append(row)
+        elif loads:
+            kept.append(row)
+    return kept, folded
+
+
+def _open_wearables_load_sessions(workouts):
+    """Sessions left after the strength fold (cardio already hand-logged is still here; see _unlogged_watch_cardio)."""
+    return _open_wearables_fold(workouts)[0]
+
+
+def _open_wearables_fingerprint_sessions(workouts):
+    """Kept and folded sessions: everything calculate_acwr can read, so a change in either re-plans."""
+    kept, folded = _open_wearables_fold(workouts)
+    return kept + [s for sessions in folded.values() for s in sessions]
+
+
+def _split_watch_cardio(sessions):
+    """Non-strength sessions as (not recorded by CARDIO_DATA, {id(entry): the session it records}).
+
+    Each logged entry covers one same-date, same-type session, the closest duration first.
+    """
+    cardio = [s for s in sessions if s["canonical_category"] != "strength_training"]
+    matched = {}
+    for c in (c for c in CARDIO_DATA if isinstance(c, dict)):  # an imported non-object row matches nothing
+        key = (c.get("date"), _canonical_cardio_fatigue_type(c.get("activity_type")))
+        same = [s for s in cardio if (s["date"], _canonical_cardio_fatigue_type(s["activity_type"])) == key]
+        if same:
+            matched[id(c)] = min(same, key=lambda s: abs(s["duration_minutes"] - _fit95_number(c.get("duration_minutes"))))
+            cardio.remove(matched[id(c)])
+    return cardio, matched
+
+
+def _unlogged_watch_cardio(sessions):
+    return _split_watch_cardio(sessions)[0]
+
+
+def _watch_cardio_row(s):
+    return {"date": s["date"], "activity_type": s["activity_type"], "duration_minutes": s["duration_minutes"]}
+
+
+def _cardio_fatigue_inputs():
+    """(CARDIO_DATA plus watch cardio, in its shape, for cardio fatigue; the watch sessions among them).
+
+    Like calculate_acwr: sessions dated after today are ignored, and a hand-logged run the watch
+    also recorded takes the longer duration (a non-finite logged one stays as it is).
+    """
+    today = datetime.now().date().isoformat()
+    unlogged, matched = _split_watch_cardio([s for s in _open_wearables_load_sessions(WORKOUTS) if s["date"] <= today])
+    rows, used = [], list(unlogged)
+    for c in CARDIO_DATA:
+        twin = matched.get(id(c))
+        logged = _fit95_number(c.get("duration_minutes") or c.get("duration_min"))  # the reader's own alias
+        # the reader's intensity default; at intensity <= 0 more minutes would lower fatigue, and a non-finite read stays
+        if twin and _fit95_number(c.get("intensity"), 5) > 0 and math.isfinite(logged) and twin["duration_minutes"] > logged:
+            rows.append({**c, "duration_minutes": twin["duration_minutes"]})
+            used.append(twin)
+        else:
+            rows.append(c)
+    return rows + [_watch_cardio_row(s) for s in unlogged], used
+
+
+def _cardio_with_open_wearables():
+    return _cardio_fatigue_inputs()[0]
+
+
+def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
+    """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts and stored watch sessions.
+
+    Two series run through the same windows (acute: last 7 days; chronic: average 7-day load
+    over the last 28 days, using the available days if fewer):
+      tonnage: sum over all sets of (reps * weight), plus duration-derived load for
+               cardio-style app workouts. Unchanged from before watch sessions counted.
+      minutes: logged workout and cardio durations plus the Open Wearables sessions that survive the
+               History fold (a hand-logged run the watch also recorded counts once, with the longer of the logged and watch durations).
+               It is dropped unless a watch session is counted in it.
+    The reported ratio is the higher of the two. Only the ratio acts on the plan: above 1.5
+    forces recovery and 1.3 or more downgrades once (_training_recommendation_from_factors);
+    nothing raises volume on a low ratio, so a higher ratio is never less cautious. Ties
+    go to tonnage.
     """
     today = datetime.now().date()
-    if not workouts:
-        return {
-            "acwr": 0.0,
-            "acute_load": 0,
-            "chronic_load": 0,
-            "risk": "detraining",
-            "message": "No workouts logged yet; ACWR unavailable."
-        }
+    start_28 = today - timedelta(days=27)
 
     def workout_load(w: dict) -> float:
         total = 0.0
@@ -3360,47 +3496,76 @@ def calculate_acwr(workouts: list) -> dict:
             total = _workout_duration_minutes(w)
         return total
 
-    # Build daily loads for the last 28 days
-    start_28 = today - timedelta(days=27)
-    daily = {}
-    min_seen = None
-    for w in workouts:
-        d_s = w.get("date")
+    def in_window(date_s):
         try:
-            d = datetime.strptime(d_s, "%Y-%m-%d").date()
+            d = datetime.strptime(date_s, "%Y-%m-%d").date()
         except Exception:
-            continue
-        if d < start_28 or d > today:
-            continue
-        if min_seen is None or d < min_seen:
-            min_seen = d
-        daily[d] = daily.get(d, 0.0) + workout_load(w)
+            return None
+        return d if start_28 <= d <= today else None
 
-    if not daily:
+    daily, daily_minutes = {}, {}
+    if wearable_sessions is None:
+        kept, folded = _open_wearables_fold(workouts)
+        unlogged, matched = _split_watch_cardio(kept)
+        sessions = [s for s in kept if s["canonical_category"] == "strength_training"] + unlogged
+    else:
+        kept, folded, sessions, matched = wearable_sessions, {}, wearable_sessions, {}
+    counted = []  # watch sessions whose minutes are in the series
+
+    def add_minutes(d, minutes):
+        if d and math.isfinite(minutes) and minutes > 0:
+            daily_minutes[d] = min(1440.0, daily_minutes.get(d, 0.0) + minutes)  # a day has 1440 minutes; keeps window sums finite
+
+    for w in workouts:
+        d = in_window(w.get("date"))
+        if d:
+            daily[d] = daily.get(d, 0.0) + workout_load(w)
+        minutes = _workout_duration_minutes(w)
+        slot = folded[w["date"]].pop(0) if isinstance(w.get("date"), str) and folded.get(w["date"]) else None  # every workout takes its slot, as in History
+        if d and not minutes and slot and _fit95_number(slot.get("duration_minutes")) > 0:  # logged without a duration: the watch's own
+            counted.append(slot)
+            minutes = slot["duration_minutes"]
+        add_minutes(d, minutes)
+    for c in (c for c in CARDIO_DATA if isinstance(c, dict)):  # an imported non-object row has no minutes
+        d, twin, minutes = in_window(c.get("date")), matched.get(id(c)), _fit95_number(c.get("duration_minutes"))
+        logged = minutes if math.isfinite(minutes) else 0.0
+        if d and twin:  # the watch recorded this run too: count it once, with the longer duration, so a short watch record never lowers the load
+            counted.append(twin)
+            minutes = max(_fit95_number(twin.get("duration_minutes")), logged)
+        if c.get("workout_id"):  # completed-workout cardio is already in its WORKOUTS row: only the watch's extra minutes count
+            minutes -= logged
+        add_minutes(d, minutes)
+    for s in sessions:
+        d = in_window(s.get("date"))
+        if d:
+            counted.append(s)
+            add_minutes(d, _fit95_number(s.get("duration_minutes")))
+    if not counted:  # no watch session counted: the minutes series would only restate what is logged
+        daily_minutes = {}
+
+    series = {"tonnage": _acwr_window(daily, today), "minutes": _acwr_window(daily_minutes, today)}
+    used = "minutes" if series["minutes"] and (not series["tonnage"] or series["minutes"]["ratio"] > series["tonnage"]["ratio"]) else "tonnage"
+    acwr_series = {
+        **{k: v and {"acwr": round(v["ratio"], 3), "acute_load": int(round(v["acute"])), "chronic_load": int(round(v["chronic"]))} for k, v in series.items()},
+        "used": used,
+    }
+    if used == "minutes":
+        acwr_series["watch_providers"] = sorted({str(s["provider_source"]) for s in counted if s.get("provider_source")})
+        acwr_series["watch_observed_at"] = max((str(s["start_time"]) for s in counted if s.get("start_time")), default=None)
+    chosen = series[used]
+    if not chosen:
         return {
             "acwr": 0.0,
             "acute_load": 0,
             "chronic_load": 0,
             "risk": "detraining",
-            "message": "No workouts in the last 28 days; ACWR indicates detraining."
+            "message": "No workouts logged yet; ACWR unavailable." if not workouts else "No workouts in the last 28 days; ACWR indicates detraining.",
+            "acwr_series": acwr_series,
         }
 
-    # Acute = last 7 days sum (inclusive)
-    start_7 = today - timedelta(days=6)
-    acute_total = sum(v for d, v in daily.items() if d >= start_7)
-
-    # Chronic = average weekly load over last 28 days
-    observed_days = min(28, (today - (min_seen or start_28)).days + 1)
-    chronic_total = sum(daily.values())
-    chronic_weekly_avg = (chronic_total / max(1, observed_days)) * 7.0
-
-    acute_i = int(round(acute_total))
-    chronic_i = int(round(chronic_weekly_avg))
-
-    if chronic_weekly_avg <= 0:
-        acwr = 0.0
-    else:
-        acwr = float(acute_total / chronic_weekly_avg)
+    acwr = chosen["ratio"]
+    acute_i = int(round(chosen["acute"]))
+    chronic_i = int(round(chosen["chronic"]))
 
     # Risk bands
     if acwr < 0.8:
@@ -3422,6 +3587,7 @@ def calculate_acwr(workouts: list) -> dict:
         "chronic_load": chronic_i,
         "risk": risk,
         "message": msg,
+        "acwr_series": acwr_series,
     }
 
 
@@ -4309,6 +4475,7 @@ def _workout_recommendation_fingerprint():
         wearable_facts=wearable_facts,
         readiness=_readiness_with_basis()[0],
         schedule_fit={"status": fit["status"], "plan_minutes": fit["plan_minutes"]},
+        open_wearables_load=[[r["date"], r["activity_type"], r["duration_minutes"]] for r in _open_wearables_fingerprint_sessions(WORKOUTS)],
     )
 
 
@@ -4365,6 +4532,7 @@ def api_next_workout():
                 freshness,
                 open_wearables_facts,
                 open_wearables_modifier,
+                watch_load=_watch_load_source(calculate_acwr(WORKOUTS)),
             ),
             "wearable_sources": _wearable_sources_payload(freshness),
         },
@@ -4450,12 +4618,13 @@ def api_dashboard():
     improving = sum(1 for d in progression.values() if d["status"] == "On Track")
     total_exercises = len(progression)
 
-    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)["score"] for m in volume.keys()]
+    cardio_rows = _cardio_with_open_wearables()
+    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, cardio_rows, WORKOUTS)["score"] for m in volume.keys()]
     avg_readiness = sum(readiness_scores) / len(readiness_scores) if readiness_scores else 7
 
     muscle_data = []
     for muscle, data in volume.items():
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, cardio_rows, WORKOUTS)
         muscle_data.append({
             "muscle": muscle.title(),
             "sets": data["sets"],
@@ -4665,6 +4834,7 @@ def api_dashboard():
             freshness,
             open_wearables_facts,
             open_wearables_modifier,
+            watch_load=_watch_load_source(acwr),
         ),
     })
 
@@ -4809,9 +4979,13 @@ def add_workout():
         return api_error("Each exercise must include machine", 400, code="invalid_field")  # readers index ["machine"]
 
     for exercise in exercises:
-        for set_row in (exercise.get("sets") if isinstance(exercise, dict) else None) or []:
-            if isinstance(set_row, dict):
-                _normalize_set_rpe(set_row)  # a missing rpe_observed is false
+        sets = exercise.get("sets", [])  # null or 0 is not a list: 400, never stored
+        if not isinstance(sets, list) or not all(_set_numbers(set_row) for set_row in sets):
+            return api_error("Each set must be an object with numeric weight_lbs and reps", 400, code="invalid_field")
+
+    for exercise in exercises:
+        for set_row in exercise.get("sets") or []:
+            _normalize_set_rpe(set_row)  # a missing rpe_observed is false
 
     entry = {
         "date": date_s,
@@ -7625,12 +7799,33 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
     )
 
 
-def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None):
+def _watch_load_source(acwr_data):
+    """The Open Wearables load claim for the source list: set when watch minutes act on the plan, through the ACWR ratio
+    (the minutes series is the one used) or through muscle readiness (a watch session reached cardio fatigue)."""
+    acwr_series = (acwr_data or {}).get("acwr_series") or {}
+    ratio = acwr_series.get("used") == "minutes"
+    muscles = {m for impact in CARDIO_MUSCLE_IMPACT.values() for m in impact}
+    fatigue = [s for s in _cardio_fatigue_inputs()[1] if any(get_cardio_muscle_impact([_watch_cardio_row(s)], m) for m in muscles)]  # inside its window, a known activity
+    if not (ratio or fatigue):
+        return None
+    providers = {str(s["provider_source"]) for s in fatigue if s.get("provider_source")} | set(acwr_series.get("watch_providers") or [])
+    observed = [str(s["start_time"]) for s in fatigue if s.get("start_time")] + [acwr_series.get("watch_observed_at")]
+    return {
+        "providers": sorted(providers),
+        "observed_at": max((o for o in observed if o), default=None),
+        "modifier_applied": ratio and float(acwr_data.get("acwr") or 0) >= 1.3,  # the band that downgrades or forces recovery
+        "ratio": ratio,
+        "muscle_readiness": bool(fatigue),
+    }
+
+
+def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None, watch_load=None):
     open_wearables_modifier = open_wearables_modifier or {}
     open_wearables_source = build_open_wearables_recommendation_source(
         freshness.get("open_wearables"),
         facts=open_wearables_facts,
         modifier=open_wearables_modifier,
+        load=watch_load or (source_inputs or {}).get("open_wearables_load"),
     )
     payload = {"open_wearables": open_wearables_source}
     if source_inputs is not None:
@@ -8799,7 +8994,7 @@ def smart_recommendation_api():
     if (recommendation_sleep_debt.get('debt_minutes') or 0) > 0:
         reason_bits.append(f"Sleep debt {recommendation_sleep_debt.get('debt_minutes')} min ({recommendation_sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
-        reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
+        reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')}{', training minutes' if (acwr_data.get('acwr_series') or {}).get('used') == 'minutes' else ''})")
     if recent:
         worst = max(recent, key=lambda s: s.get("soreness_level") or 0)
         ts = _parse_soreness_timestamp(worst)
@@ -8969,8 +9164,10 @@ def smart_recommendation_api():
     wearable_rules = _wearable_factor_rules(
         recommendation_readiness, recovery_bonus, recommendation_hrv_trend, recommendation_sleep_debt,
     )
+    watch_load = _watch_load_source(acwr_data)
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
+        "open_wearables_load": watch_load,
         "domain_sources": domain_sources,
         "domain_fields": domain_fields,
         "domain_modifier_applied": {
@@ -9038,7 +9235,7 @@ def _calculate_progressive_overload(workouts):
             continue
         for ex in w.get("exercises", []) or []:
             name = ex.get("machine") or ex.get("exercise")
-            if name not in history_by_ex:
+            if not isinstance(name, str) or name not in history_by_ex:
                 continue
             top_set = None
             for s in ex.get("sets", []) or []:
@@ -9125,11 +9322,11 @@ def workout_history():
     _backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x["date"], reverse=True):
-        total_sets = sum(len(e.get("sets", [])) for e in w.get("exercises", []))
+        total_sets = sum(len(e.get("sets") or []) for e in w.get("exercises", []))
         total_volume = sum(
-            s["weight_lbs"] * s["reps"]
+            _set_volume(s)
             for e in w.get("exercises", [])
-            for s in e.get("sets", [])
+            for s in e.get("sets") or []
         )
         history_row = {
             "id": w.get("id"),
@@ -9159,11 +9356,11 @@ def all_history():
     # Process workouts
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True):
-        total_sets = sum(len(e.get("sets", [])) for e in w.get("exercises", []))
+        total_sets = sum(len(e.get("sets") or []) for e in w.get("exercises", []))
         total_volume = sum(
-            s.get("weight_lbs", 0) * s.get("reps", 0)
+            _set_volume(s)
             for e in w.get("exercises", [])
-            for s in e.get("sets", [])
+            for s in e.get("sets") or []
         )
         history_row = {
             "id": w.get("id"),
@@ -9854,12 +10051,16 @@ def export_markdown():
 
     for workout in sorted(WORKOUTS, key=lambda x: x["date"]):
         for exercise in workout.get("exercises", []):
-            machine = exercise["machine"]
-            for idx, s in enumerate(exercise.get("sets", [])):
-                volume = s["weight_lbs"] * s["reps"]
+            machine = exercise.get("machine")
+            if not isinstance(machine, str):
+                continue
+            for idx, s in enumerate(exercise.get("sets") or []):
+                nums = _set_numbers(s)
+                if not nums:
+                    continue
                 notes = s.get("notes", "")
                 set_number = s.get("set_number") or idx + 1
-                lines.append(f"| {workout['date']} | {machine} | {set_number} | {s['reps']} | {s['weight_lbs']} | {volume} | {notes} |")
+                lines.append(f"| {workout['date']} | {machine} | {set_number} | {s['reps']} | {s['weight_lbs']} | {nums[0] * nums[1]} | {notes} |")
 
     lines.append("")
     lines.append("---")
@@ -10106,8 +10307,9 @@ def muscle_fatigue():
     ]
 
     fatigue_data = {}
+    cardio_rows = _cardio_with_open_wearables()
     for muscle in all_muscles:
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, cardio_rows, WORKOUTS)
 
         # Calculate fatigue level (inverse of readiness)
         # 10 = fully recovered (green), 0 = extremely fatigued (red)
