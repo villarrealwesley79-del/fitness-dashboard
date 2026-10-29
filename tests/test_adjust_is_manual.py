@@ -146,6 +146,29 @@ def test_time_box_note_is_honest_when_one_exercise_exceeds_it(monkeypatch, tmp_p
     assert "shortest plan" in trimmed
 
 
+def test_time_box_note_suggests_no_cardio_when_cardio_keeps_the_plan_over_the_box(monkeypatch, tmp_path):
+    def long_first_with_cardio(plan):
+        plan["exercises"][0]["target_sets"] = 12
+        plan["cardio"] = {"type": "Rower", "duration_minutes": 20, "zone": 2, "intensity": "easy"}
+        return plan
+
+    client = _make_client(monkeypatch, tmp_path, long_first_with_cardio)
+    response = _adjust(client, {"constraint": "10 minutes", "intent": {"duration_cap_min": 10}})
+
+    trimmed = next(n for n in response.get_json()["applied_notes"] if n.startswith("Trimmed:"))
+    assert "20 min is cardio" in trimmed and '"No cardio" would shorten it' in trimmed
+
+
+def test_no_cardio_lowers_the_estimated_minutes_by_the_cardio_it_removes(monkeypatch, tmp_path):
+    client = _make_client(monkeypatch, tmp_path, lambda plan: {
+        **plan, "estimated_minutes": 65,
+        "cardio": {"type": "Rower", "duration_minutes": 20, "zone": 2, "intensity": "easy"}})
+    payload = _adjust(client, {"constraint": "No cardio today", "intent": {"drop_cardio": True}}).get_json()
+
+    assert payload["recommendation"]["cardio"] is None
+    assert payload["recommendation"]["estimated_minutes"] == 45
+
+
 def test_time_box_counts_included_cardio(monkeypatch, tmp_path):
     def with_cardio(plan):
         plan["exercises"] = plan["exercises"] * 2  # 4 exercises

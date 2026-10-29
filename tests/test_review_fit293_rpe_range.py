@@ -62,7 +62,9 @@ process.stdout.write(JSON.stringify({{
   error,
 }}));
 """
-    return run_app_js(["paintDashboardFromState", "state"], scenario)
+    out = run_app_js(["paintDashboardFromState", "state"], scenario)
+    assert out["error"] is None, out  # PER-1588: a JS error must fail the test, not hide in the output
+    return out
 
 
 def test_card_labels_range_as_target_intensity():

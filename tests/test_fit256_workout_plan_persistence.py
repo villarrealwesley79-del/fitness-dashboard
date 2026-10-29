@@ -564,7 +564,7 @@ def test_dashboard_regeneration_rereads_concurrent_winner_across_fingerprint(
     assert durable["plan"]["_user_customized"] is True
 
 
-def test_next_workout_delete_race_returns_conflict_without_losing_payload(
+def test_next_workout_delete_race_serves_generated_plan_like_dashboard(
     monkeypatch,
     tmp_path,
 ):
@@ -586,10 +586,11 @@ def test_next_workout_delete_race_returns_conflict_without_losing_payload(
     monkeypatch.setattr(module, "save_current_workout_plan", save_then_delete)
     response = client.get("/api/next-workout")
 
-    assert response.status_code == 409
+    # PER-1588: read-only view serves the generated plan, like /api/dashboard.
+    assert response.status_code == 200
     payload = response.get_json()
-    assert payload["error"]["code"] == "workout_plan_conflict"
-    assert "next_workout" not in payload
+    assert payload["next_workout"]["id"] == "losing-generated-plan"
+    assert "_fit233_current_plan_absent" not in payload["next_workout"]
     assert data_store.get_current_workout_plan(1) is None
 
 

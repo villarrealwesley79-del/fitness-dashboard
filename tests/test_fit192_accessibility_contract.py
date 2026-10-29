@@ -209,12 +209,6 @@ def test_core_log_and_settings_controls_have_programmatic_labels():
         if tag == "label" and attrs.get("for")
     }
     expected_targets = {
-        "log-date",
-        "log-exercise",
-        "log-sets",
-        "log-reps",
-        "log-weight",
-        "log-notes",
         "cardio-date",
         "cardio-type",
         "cardio-duration",
@@ -331,10 +325,10 @@ def test_modal_markup_exposes_dialog_semantics_and_labels():
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/css/style.css?v=20261028-w4c-apple-via-ow" in html
-    assert "/static/js/app-loader.js?v=20261028-w4c-apple-via-ow" in html
-    assert "/static/js/app.js?v=20261028-w4c-apple-via-ow" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in sw
+    assert "/static/css/style.css?v=20261029-w7d" in html
+    assert "/static/js/app-loader.js?v=20261029-w7d" in html
+    assert "/static/js/app.js?v=20261029-w7d" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20261029-w7d" in sw
 
 
 def test_settings_hash_route_and_reco_sources_modal_aria_state():

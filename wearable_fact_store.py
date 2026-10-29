@@ -1026,6 +1026,8 @@ def preferred_daily_facts(
         provider = fact_provider(row["provider_id"], row["source_provider"])
         if only_provider and provider != only_provider:
             continue
+        if row["freshness"] == "unknown" and row["source_system"] != "archive":
+            continue  # the mapper writes unknown for invalid or future timestamps; archive rows are exempt by source_system
         preference = SOURCE_PREFERENCE.get(_default_metric_domain(row["metric"]), [])
         rank = (
             preference.index(provider) if provider in preference else len(preference),

@@ -70,6 +70,8 @@ html, body {
     overscroll-behavior-y: none;
 }
 
+html { scroll-padding-bottom: calc(80px + var(--safe-bottom)); } /* keyboard focus must not land under the fixed tab bar */
+
 body {
     background:
         radial-gradient(1200px 700px at 90% -10%, rgba(124,58,237,0.22) 0%, transparent 60%),
@@ -952,7 +954,7 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 
 .segmented {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     background: var(--bg-card);
     border: 1px solid var(--border-1);
     border-radius: 12px;
@@ -1025,27 +1027,6 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .form-field textarea { min-height: 64px; resize: vertical; }
 
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-
-.rpe-row {
-    display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: 4px;
-}
-.rpe-row button {
-    background: var(--bg-0);
-    border: 1px solid var(--border-2);
-    color: var(--fg-dim);
-    padding: 8px 0;
-    border-radius: 8px;
-    font-size: 12px;
-    font-weight: 700;
-    min-width: 0;
-}
-.rpe-row button.active {
-    background: linear-gradient(135deg, var(--accent-blue-2), var(--accent-purple-2));
-    color: #fff;
-    border-color: var(--accent-blue);
-}
 
 .summary-card {
     background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(34,197,94,0.06)), var(--grad-card);
@@ -2331,7 +2312,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     position: fixed;
     left: 0; right: 0;
     bottom: calc(80px + var(--safe-bottom));
-    z-index: 80;
+    z-index: 200; /* above every modal (max 130) so a 409 or swap message shows over the active workout */
     pointer-events: none;
     display: flex;
     flex-direction: column;
@@ -2350,7 +2331,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     animation: toast-in .2s ease-out;
     max-width: 90%;
     text-align: center;
-    pointer-events: auto;
+    pointer-events: none; /* a plain message must not swallow taps on the modal buttons it now floats over */
 }
 .toast.ok { border-color: rgba(34,197,94,0.4); color: #a7f3d0; }
 .toast.err { border-color: rgba(239,68,68,0.45); color: #fecaca; }
@@ -2360,6 +2341,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     gap: 12px;
     padding: 8px 8px 8px 16px;
     border-color: rgba(248,113,113,0.45);
+    pointer-events: auto; /* the Undo button must stay tappable */
 }
 .toast-undo-text { color: var(--fg-0); }
 /* FIT-97 AC1 / FIT-124: tappable variant. Container has no role; focus
@@ -2481,7 +2463,9 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     cursor: text;
 }
 .set-rpe-cell > span {
-    font-size: 9px;
+    font-size: 11px;
+    line-height: 1.1;
+    max-width: 5.5em;
     font-weight: 700;
     letter-spacing: 0.04em;
     color: var(--fg-dim);

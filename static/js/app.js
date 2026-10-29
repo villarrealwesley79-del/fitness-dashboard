@@ -22,7 +22,6 @@
         analytics: null,
         muscleFatigue: null,
         nextWorkout: null,
-        exercises: null,
         openWearablesStatus: null,
         wearableSources: null,
         openWearablesUi: {
@@ -57,6 +56,10 @@
     let selectedGoalToRestoreFocus = null;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
     let nextWorkoutRenderGen = 0;
+    // PER-1248: only the newest request per cache key may write it, and invalidateCaches()
+    // supersedes every in-flight one, so a slow older response never lands over newer data.
+    const fetchSeq = {};
+    const startFetch = (key) => { const n = fetchSeq[key] = (fetchSeq[key] || 0) + 1; return () => fetchSeq[key] === n; };
 
     // --- helpers -------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -165,21 +168,6 @@
 
     async function handleUnauthorizedResponse(res) {
         if (!res || res.status !== 401) return;
-        let reloadRequired = false;
-        try {
-            const body = await res.clone().json();
-            reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
-        } catch {
-            reloadRequired = false;
-        }
-        if (reloadRequired) {
-            if (activeWorkoutHasProgress()) {
-                toast('Update ready after workout. Refresh when finished.', 'warn');
-                throw new Error('reload required after workout');
-            }
-            window.location.reload();
-            throw new Error('reload required');
-        }
         window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
         throw new Error('unauthorized');
     }
@@ -870,15 +858,29 @@
     // --- loaders (cached) ----------------------------------------
     async function getDashboard(force = false) {
         if (!force && state.dashboard) return state.dashboard;
-        state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
-        if (state.dashboard && state.dashboard.next_workout) state.nextWorkout = state.dashboard.next_workout;
-        return state.dashboard;
+        const current = startFetch('dashboard');
+        try {
+            const payload = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            if (current()) {
+                state.dashboard = payload;
+                if (payload && payload.next_workout) state.nextWorkout = payload.next_workout;
+            }
+            return payload;
+        } catch (err) {
+            if (current()) { // a failed refresh must not leave the old plan under a failure chip
+                if (state.dashboard && state.nextWorkout === state.dashboard.next_workout) state.nextWorkout = null;
+                state.dashboard = null;
+            }
+            throw err;
+        }
     }
     async function getNextWorkout(force = false) {
         if (!force && state.nextWorkout) return state.nextWorkout;
+        const current = startFetch('nextWorkout');
         const payload = await api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
-        state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
-        return state.nextWorkout;
+        const next = payload && payload.next_workout ? payload.next_workout : null;
+        if (current()) state.nextWorkout = next; // a superseded or invalidated response must not land in state
+        return next;
     }
     async function getVitals(force = false) {
         if (!force && state.vitals) return state.vitals;
@@ -893,15 +895,21 @@
         // failure) for non-dashboard callers (renderVitals, renderSettings).
         // timeoutMs makes a hung endpoint reject after 30s instead of leaving
         // the chip silent forever.
-        try { state.oura = await api('/api/wearables/today' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.oura = null; }
-        return state.oura;
+        const current = startFetch('oura');
+        let payload = null;
+        try { payload = await api('/api/wearables/today' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch {}
+        if (current()) state.oura = payload;
+        return payload;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/sleep/summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.ouraSleep = null; }
-        return state.ouraSleep;
+        const current = startFetch('ouraSleep');
+        let payload = null;
+        try { payload = await api('/api/sleep/summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch {}
+        if (current()) state.ouraSleep = payload;
+        return payload;
     }
     async function getOpenWearablesStatus(force = false) {
         if (!force && state.openWearablesStatus) return state.openWearablesStatus;
@@ -921,15 +929,21 @@
     }
     async function getOuraTrends(force = false) {
         if (!force && state.ouraTrends) return state.ouraTrends;
-        try { state.ouraTrends = await api('/api/wearables/trends'); }
-        catch { state.ouraTrends = null; }
-        return state.ouraTrends;
+        const current = startFetch('ouraTrends');
+        let payload = null;
+        try { payload = await api('/api/wearables/trends'); }
+        catch {}
+        if (current()) state.ouraTrends = payload;
+        return payload;
     }
     async function getReco(force = false) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.reco = null; }
-        return state.reco;
+        const current = startFetch('reco');
+        let payload = null;
+        try { payload = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch {}
+        if (current()) state.reco = payload;
+        return payload;
     }
     async function getInsights(force = false) {
         if (!force && state.insights) return state.insights;
@@ -976,16 +990,8 @@
         catch { state.muscleFatigue = null; }
         return state.muscleFatigue;
     }
-    async function getExercises(force = false) {
-        if (!force && state.exercises) return state.exercises;
-        try {
-            const r = await api('/api/exercises');
-            state.exercises = r && r.exercises ? r.exercises : Array.isArray(r) ? r : [];
-        } catch { state.exercises = []; }
-        return state.exercises;
-    }
-
     function invalidateCaches() {
+        for (const key in fetchSeq) fetchSeq[key] += 1;
         state.dashboard = state.vitals = state.oura = state.ouraSleep = null;
         state.ouraTrends = state.reco = state.insights = state.history = null;
         state.body = state.settings = state.analytics = state.muscleFatigue = state.nextWorkout = null;
@@ -1927,9 +1933,11 @@
         const sleepP = getOuraSleep().then(v  => settle(v != null, 'ouraSleepError'));
 
         // Independent trend + history charts paint as soon as their own data lands.
-        getOuraTrends().then(paintReadinessTrendChart, () => paintReadinessTrendChart(null));
+        // A superseded render's late charts never repaint over the newer render's.
+        const ifCurrent = (paint) => (value) => { if (gen === dashboardRenderGen) paint(value); };
+        getOuraTrends().then(ifCurrent(paintReadinessTrendChart), ifCurrent(() => paintReadinessTrendChart(null)));
         if (state.history) paintVolumeChart(state.history);
-        else getHistory().then(paintVolumeChart, () => paintVolumeChart(null));
+        else getHistory().then(ifCurrent(paintVolumeChart), ifCurrent(() => paintVolumeChart(null)));
 
         // Awaited last so callers (e.g. settings flow at line ~4187) still know when
         // the four primary cards have all attempted to load.
@@ -2473,6 +2481,8 @@
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';
+            $('nw-duration').textContent = '— min'; // a rest day must not keep the last plan's chips
+            $('nw-rpe').textContent = 'RPE —';
             $('nw-exercise-list').innerHTML = '<div class="empty">No exercises scheduled.</div>';
             return;
         }
@@ -2717,19 +2727,8 @@
 
     // --- Log -----------------------------------------------------
     async function prepareLog() {
-        const dateInputs = ['log-date', 'cardio-date', 'recovery-date'];
+        const dateInputs = ['cardio-date', 'recovery-date'];
         dateInputs.forEach((id) => { if ($(id) && !$(id).value) $(id).value = today(); });
-
-        const select = $('log-exercise');
-        if (select && select.options.length <= 1) {
-            const list = await getExercises();
-            list.forEach((ex) => {
-                const opt = document.createElement('option');
-                const name = typeof ex === 'string' ? ex : (ex.name || ex.exercise || ex.machine);
-                opt.value = name; opt.textContent = name;
-                select.appendChild(opt);
-            });
-        }
 
         // today's summary
         const hist = await getHistory();
@@ -3344,7 +3343,7 @@
                     <span>${escapeHtml(set.set_number || '')}</span>
                     <span>${escapeHtml(set.weight_lbs ?? 0)} lb</span>
                     <span>${escapeHtml(set.reps ?? 0)} reps</span>
-                    <span>${set.rpe ? `RPE ${escapeHtml(set.rpe)}` : 'RPE —'}</span>
+                    <span>${set.rpe && set.rpe_observed === true ? `RPE ${escapeHtml(set.rpe)}` : 'RPE —'}</span>
                     ${set.notes ? `<div class="workout-set-note">${escapeHtml(set.notes)}</div>` : ''}
                 </div>
             `).join('');
@@ -3499,11 +3498,15 @@
 
     async function restoreDeletedWorkout(entry) {
         try {
-            await api('/api/restore-history', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'workout', entry }),
-            });
+            try {
+                await api('/api/restore-history', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'workout', entry }),
+                });
+            } catch (err) {
+                if (!/^409 /.test(err.message)) throw err; // 409: the row is already back
+            }
             state.history = null;
             await renderHistory();
             toast('Workout restored', 'ok');
@@ -3863,7 +3866,7 @@
         const avgVol = workouts.length ? totalVol / workouts.length : 0;
         const rpeList = [];
         workouts.forEach((w) => (w.exercises || []).forEach((e) => (e.sets || []).forEach((s) => {
-            if (s.rpe != null) rpeList.push(Number(s.rpe));
+            if (s.rpe != null && s.rpe_observed === true) rpeList.push(Number(s.rpe));
         })));
         const avgRpe = rpeList.length ? rpeList.reduce((a, b) => a + b, 0) / rpeList.length : 0;
 
@@ -4712,29 +4715,6 @@
     }
 
     // --- Logging actions -----------------------------------------
-    async function logStrength() {
-        const payload = {
-            date: $('log-date').value || today(),
-            exercise: $('log-exercise').value,
-            sets: Number($('log-sets').value || 0),
-            reps: Number($('log-reps').value || 0),
-            weight: Number($('log-weight').value || 0),
-            rpe: Number($('log-rpe').value || 0),
-            notes: $('log-notes').value || '',
-        };
-        if (!payload.exercise) return toast('Pick an exercise', 'err');
-        try {
-            await api('/api/add-workout', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            toast('Set logged');
-            invalidateCaches();
-            prepareLog();
-        } catch (e) { console.error(e); toast('Log failed', 'err'); }
-    }
-
     async function logCardio() {
         const payload = {
             date: $('cardio-date').value || today(),
@@ -4892,6 +4872,20 @@
         }
     }
 
+    // Left/right tape fields post as "left/right"; null when only one side is filled.
+    function bodySidedTapePayload() {
+        const out = {};
+        for (const field of ['arms', 'legs']) {
+            const read = (id) => (($(id) || {}).value || '').trim();
+            const left = read(`body-log-${field}-l`);
+            const right = read(`body-log-${field}-r`);
+            if (!left && !right) continue;
+            if (!left || !right) return null;
+            out[field] = `${left}/${right}`;
+        }
+        return out;
+    }
+
     async function logBody() {
         if (bodyNavyCalculationPending) return;
         const navyContext = bodyNavyContextPayload();
@@ -4900,6 +4894,9 @@
             body_fat_pct: Number($('body-log-bf').value) || null,
             ...navyContext,
         };
+        const sides = bodySidedTapePayload();
+        if (sides === null) return toast('Enter both left and right', 'err');
+        Object.assign(payload, sides);
         if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
         try {
@@ -5236,8 +5233,14 @@
         return Boolean(
             event
             && event.isTrusted === true
-            && ['click', 'input', 'change'].includes(event.type)
+            && ['input', 'change'].includes(event.type)
         );
+    }
+
+    // Text plus aria so target vs logged is never colour-only; focus or tap never confirms.
+    function rpeStateText(observed) { return observed ? 'logged' : 'target'; }
+    function rpeAriaLabel(sidx, observed) {
+        return `RPE for set ${sidx + 1}, ${observed ? 'logged value' : 'prescribed target, not confirmed; change it to log your own'}`;
     }
 
     function buildLoggedSets(ex, previousSets) {
@@ -5681,8 +5684,8 @@
                         <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
                         <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
                         <label class="set-rpe-cell${set.rpe_observed ? ' observed' : ''}">
-                            <span>RPE</span>
-                            <input type="number" data-field="rpe" inputmode="decimal" min="1" max="10" step="0.5" value="${escapeHtml(set.rpe)}" aria-label="RPE for set ${sidx + 1}; tap to confirm prescribed value">
+                            <span>RPE ${rpeStateText(set.rpe_observed)}</span>
+                            <input type="number" data-field="rpe" inputmode="decimal" min="1" max="10" step="0.5" value="${escapeHtml(set.rpe)}" aria-label="${rpeAriaLabel(sidx, set.rpe_observed)}">
                         </label>
                         <label class="set-done-cell" aria-label="mark set done">
                             <input type="checkbox" data-field="done"${set.done ? ' checked' : ''}>
@@ -5750,14 +5753,18 @@
         qsa('.set-row', body).forEach((row) => {
             qsa('input', row).forEach((input) => {
                 if (input.dataset.field === 'rpe') {
-                    ['click', 'input', 'change'].forEach((eventName) => {
+                    ['input', 'change'].forEach((eventName) => {
                         input.addEventListener(eventName, (event) => {
                             updateLoggedSetFromRow(row, {
                                 rpeObserved: rpeInteractionObserves(event) ? true : null,
                             });
                             const set = state.activeWorkout.exercises[Number(row.dataset.ex)].logged_sets[Number(row.dataset.set)];
                             const cell = input.closest('.set-rpe-cell');
-                            if (cell) cell.classList.toggle('observed', Boolean(set.rpe_observed));
+                            if (cell) {
+                                cell.classList.toggle('observed', Boolean(set.rpe_observed));
+                                cell.firstElementChild.textContent = `RPE ${rpeStateText(set.rpe_observed)}`;
+                                input.setAttribute('aria-label', rpeAriaLabel(Number(row.dataset.set), set.rpe_observed));
+                            }
                         });
                     });
                     return;
@@ -6802,14 +6809,6 @@
             });
         });
 
-        // RPE selector
-        qsa('#rpe-row button').forEach((b) => {
-            b.addEventListener('click', () => {
-                qsa('#rpe-row button').forEach((x) => x.classList.toggle('active', x === b));
-                $('log-rpe').value = b.dataset.rpe;
-            });
-        });
-
         // Range chips
         qsa('#history-range-chips .chip-btn').forEach((c) => {
             c.addEventListener('click', () => {
@@ -6827,7 +6826,6 @@
         });
 
         // Log buttons
-        $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
         $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
         const bodyWeightInput = $('body-log-weight');

@@ -13,9 +13,9 @@ def _workout(date, sets):
     return {"date": date, "exercises": [{"machine": "Chest Press", "sets": sets}]}
 
 
-def test_observed_set_rpe_only_counts_observed_or_legacy_rows(module):
+def test_observed_set_rpe_only_counts_rows_flagged_observed(module):
     assert module._observed_set_rpe({"rpe": 8, "rpe_observed": True}) == 8
-    assert module._observed_set_rpe({"rpe": 8}) == 8  # legacy row without the flag
+    assert module._observed_set_rpe({"rpe": 8}) is None  # PER-1588: a row without the flag is unobserved
     assert module._observed_set_rpe({"rpe": 8, "rpe_observed": False}) is None
     assert module._observed_set_rpe({"rpe": None, "rpe_observed": True}) is None
     assert module._observed_set_rpe({"rpe": 10 ** 400}) is None
@@ -28,4 +28,4 @@ def test_last_n_sessions_rpe_skips_unobserved_sets(module, monkeypatch):
         _workout("2026-07-14", [{"rpe": 8}]),
     ])
 
-    assert module._last_n_sessions_rpe(3) == [7.0, 8.0]
+    assert module._last_n_sessions_rpe(3) == [7.0]

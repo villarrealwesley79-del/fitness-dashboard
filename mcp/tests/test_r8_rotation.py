@@ -160,7 +160,7 @@ def test_thread_with_free_fds_rotates_and_keeps_a_contiguous_run_of_lines(tmp_pa
     log, r = thread_probe(tmp_path, "normal", cap)
     assert r["max_size"] <= cap + r["rate"] * 1.25, r
     old, new = numbers(tmp_path / "mcp.log.1"), numbers(log)
-    assert old and new, (len(old), len(new))
+    assert old, len(old)  # the last rotation may land just before the writer stops, leaving the new file empty
     run = old + new
     assert run == list(range(run[0], run[0] + len(run))), "a line went missing across rotation"
     assert run[-1] == r["written"] - 1

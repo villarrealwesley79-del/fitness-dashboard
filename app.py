@@ -854,7 +854,7 @@ def _backfill_history_ids(rows, filepath, entry_type):
     changed = False
     if isinstance(rows, list):
         for row in rows:
-            if isinstance(row, dict) and not row.get("id"):
+            if isinstance(row, dict) and row.get("id") in (None, ""):
                 row["id"] = uuid.uuid4().hex[:12]
                 changed = True
     if changed:
@@ -2373,7 +2373,7 @@ def _deterministic_adjust_payload(
         "applied_notes": applied_notes,
         "skipped_notes": skipped_notes,
         "constraint": constraint,
-        "meta": {"mode": "deterministic_fallback", "reason": reason},
+        "meta": {"mode": "deterministic", "reason": reason},
         "cache_hit": False,
     }
 
@@ -2585,9 +2585,9 @@ def _observed_set_rpe(set_row):
 
     The guided workout saves the prescribed target as ``rpe`` with
     ``rpe_observed: False`` for sets the user never touched; that target is not
-    evidence of effort. Legacy rows without the flag keep counting, as before.
+    evidence of effort. Rows without the flag (legacy or imported estimates) are unobserved too.
     """
-    if not isinstance(set_row, dict) or set_row.get("rpe_observed") is False:
+    if not isinstance(set_row, dict) or set_row.get("rpe_observed") is not True:
         return None
     try:
         rpe = float(set_row.get("rpe"))
@@ -2636,6 +2636,10 @@ def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound,
     min_reps = last_perf.get("min_reps", 0)
     completed_reps = min_reps >= base_reps
 
+    # Missed reps are evidence on their own, even when no RPE was observed.
+    if not completed_reps:
+        return max(5, base_weight - weight_step), base_reps, "Auto-regulated: reduce load"
+
     if avg_rpe is None:
         return base_weight, base_reps, "Maintain load: RPE missing"
 
@@ -2643,7 +2647,7 @@ def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound,
         return base_weight + weight_step, base_reps, f"Progression: +{weight_step} lbs"
     if abs(avg_rpe - target_rpe) <= 0.25 and completed_reps:
         return base_weight, base_reps + 1, "Progression: +1 rep"
-    if avg_rpe > target_rpe + 0.25 or not completed_reps:
+    if avg_rpe > target_rpe + 0.25:
         adjusted = max(5, base_weight - weight_step)
         return adjusted, base_reps, "Auto-regulated: reduce load"
 
@@ -2999,7 +3003,9 @@ def calculate_personal_records(workouts: list) -> dict:
 
     for workout in workouts:
         for exercise in workout.get("exercises", []):
-            machine = exercise["machine"]
+            machine = exercise.get("machine")
+            if not machine:
+                continue  # rows stored before the route validated the name
             if machine not in exercise_prs:
                 exercise_prs[machine] = {"all_time": 0, "all_time_date": "", "recent_30": 0, "recent_30_date": ""}
 
@@ -3274,7 +3280,9 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     exercise_freq = {}
     for w in workouts:
         for e in w.get("exercises", []):
-            machine = e["machine"]
+            machine = e.get("machine")
+            if not machine:
+                continue
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
@@ -3962,7 +3970,8 @@ def _hrv_facts(days=7, drop_short=True):
     The first provider in the recovery preference with at least 4 samples wins; fewer
     everywhere falls back to the most preferred one. A series whose newest fact is stale is
     skipped, so a fresh fallback provider fills the gap; all stale returns []. A sub-hour-only
-    day's sleep HRV is left out unless keeping it turns the trend 'declining'.
+    day's sleep HRV is left out unless the series chosen with short days kept (possibly another
+    provider or metric) is 'declining' and the one without them is not.
     """
     preference = SOURCE_PREFERENCE["recovery"]
     metrics = set(_HRV_METRICS) | {"sleep_duration"}  # sleep_duration brings in the night's fragment exclusion
@@ -4132,16 +4141,11 @@ def api_next_workout():
             generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
         persisted = _persist_current_workout_plan(generated_plan, fingerprint)
         if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            # Read-only view: like /api/dashboard, serve the generated plan unpersisted.
             current_plan = _current_workout_plan_for_fingerprint(
                 fingerprint,
                 durable_only=True,
-            )
-            if current_plan is None:
-                return api_error(
-                    "Workout plan changed while this request was in progress. Refresh and retry.",
-                    409,
-                    code="workout_plan_conflict",
-                )
+            ) or generated_plan
         else:
             current_plan = persisted or generated_plan
     freshness = _compute_data_freshness()
@@ -4595,6 +4599,14 @@ def add_workout():
     if err2:
         return err2
 
+    if not all(isinstance(ex, dict) and isinstance(ex.get("machine"), str) and ex["machine"].strip() for ex in exercises):
+        return api_error("Each exercise must include machine", 400, code="invalid_field")  # readers index ["machine"]
+
+    for exercise in exercises:
+        for set_row in (exercise.get("sets") if isinstance(exercise, dict) else None) or []:
+            if isinstance(set_row, dict):
+                _normalize_set_rpe(set_row)  # a missing rpe_observed is false
+
     entry = {
         "date": date_s,
         "session_type": session_type,
@@ -4843,7 +4855,7 @@ def add_body_measurement():
     if err2:
         return err2
     raw_date = data.get("date")
-    date_s = datetime.now().strftime("%Y-%m-%d") if raw_date is None else raw_date
+    date_s = datetime.now().strftime("%Y-%m-%d") if raw_date in (None, "") else raw_date
     if _body_measurement_date_or_none(date_s) is None:
         return api_error("date must be a valid YYYY-MM-DD date", 400, code="invalid_field")
     tape_context, err2 = _validate_navy_tape_context(data)
@@ -4934,21 +4946,21 @@ def settings():
     """Get or update user settings including training goal and available time."""
     global LAST_WORKOUT_RECOMMENDATION
     if request.method == 'GET':
-        goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
+        goal = USER_SETTINGS.get("training_goal", DEFAULT_SETTINGS["training_goal"])
         goal_params = GOAL_PARAMETERS.get(goal, {})
         return jsonify({
             "training_goal": goal,
             "goal_details": goal_params,
-            "date_of_birth": USER_SETTINGS.get("date_of_birth", ""),
-            "sex": USER_SETTINGS.get("sex", ""),
-            "sessions_per_week_target": USER_SETTINGS.get("sessions_per_week_target", 3),
-            "available_time_minutes": USER_SETTINGS.get("available_time_minutes", 60),
-            "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", 180),
-            "target_body_fat_pct": USER_SETTINGS.get("target_body_fat_pct", 15),
-            "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", 72),
-            "equipment_preference": USER_SETTINGS.get("equipment_preference", "machines_only"),
-            "preferred_equipment_brands": USER_SETTINGS.get("preferred_equipment_brands", []),
-            "excluded_exercises": USER_SETTINGS.get("excluded_exercises", []),
+            "date_of_birth": USER_SETTINGS.get("date_of_birth", DEFAULT_SETTINGS["date_of_birth"]),
+            "sex": USER_SETTINGS.get("sex", DEFAULT_SETTINGS["sex"]),
+            "sessions_per_week_target": USER_SETTINGS.get("sessions_per_week_target", DEFAULT_SETTINGS["sessions_per_week_target"]),
+            "available_time_minutes": USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"]),
+            "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", DEFAULT_SETTINGS["target_weight_lbs"]),
+            "target_body_fat_pct": USER_SETTINGS.get("target_body_fat_pct", DEFAULT_SETTINGS["target_body_fat_pct"]),
+            "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", DEFAULT_SETTINGS["fatigue_threshold"]),
+            "equipment_preference": USER_SETTINGS.get("equipment_preference", DEFAULT_SETTINGS["equipment_preference"]),
+            "preferred_equipment_brands": USER_SETTINGS.get("preferred_equipment_brands", DEFAULT_SETTINGS["preferred_equipment_brands"]),
+            "excluded_exercises": USER_SETTINGS.get("excluded_exercises", DEFAULT_SETTINGS["excluded_exercises"]),
             "volume_landmarks": USER_SETTINGS.get("volume_landmarks", DEFAULT_SETTINGS["volume_landmarks"]),
             "available_goals": [
                 {"value": g, "name": p["name"], "description": p["description"]}
@@ -5349,7 +5361,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 kept.append(ex)
         exercises = kept
 
-    # ── 5) Apply swaps. LLM names the muscle; Python picks the exercise.
+    # ── 5) Apply swaps. The request names the muscle; Python picks the exercise.
     volume_data = calculate_volume(WORKOUTS, weeks=4)
     progression = calculate_progression_status(WORKOUTS)
     time_per_set = goal_params.get("time_per_set_minutes", 3)
@@ -5555,6 +5567,8 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             dropped = ", ".join(ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):])
             fits = new_estimated_minutes <= duration_cap
             tail = f"fits {int(duration_cap)} min window" if fits else f"kept the first exercise; shortest plan is {new_estimated_minutes} min"
+            if not fits and cardio_min:
+                tail += f" ({int(cardio_min)} min is cardio; \"No cardio\" would shorten it)"
             applied_notes.append(f"Trimmed: {dropped} — {tail}")
             exercises = kept
         old_estimated_minutes = recommendation.get("estimated_minutes")
@@ -5568,6 +5582,8 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     cardio = recommendation.get("cardio")
     # Included cardio has no include_cardio key; only the skip shapes carry False.
     if intent.get("drop_cardio") and cardio and cardio.get("include_cardio", True) is not False:
+        if not duration_cap and recommendation.get("estimated_minutes") is not None:  # a time box already excluded it
+            recommendation["estimated_minutes"] = max(0, int(recommendation["estimated_minutes"] - float(cardio.get("duration_minutes") or 0)))
         recommendation["cardio"] = None
         applied_notes.append("Removed: Cardio finisher — per your request")
 
@@ -5690,37 +5706,6 @@ def adjust_workout():
         )
     payload["recommendation"] = persisted or payload["recommendation"]
     return jsonify(_payload_with_recommendation_display_scope(payload))
-
-
-APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
-APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"
-APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60
-
-
-def _shell_reload_required_response():
-    response = jsonify({"error": "reload_required", "reload": True})
-    response.status_code = 401
-    response.headers["Cache-Control"] = "no-store"
-    response.set_cookie(
-        APP_SHELL_RELOAD_COOKIE,
-        APP_SHELL_RELOAD_VERSION,
-        max_age=APP_SHELL_RELOAD_COOKIE_MAX_AGE_S,
-        httponly=True,
-        secure=request.is_secure,
-        samesite="Lax",
-        path="/",
-    )
-    return response
-
-
-def _is_browser_app_shell_request():
-    user_agent = request.headers.get("User-Agent", "")
-    if "Mozilla/" in user_agent:
-        return True
-    return any(
-        request.headers.get(header)
-        for header in ("Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site")
-    )
 
 
 # ==================== WEATHER (wttr.in) ====================

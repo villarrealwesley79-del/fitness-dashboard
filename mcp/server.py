@@ -2,6 +2,7 @@
 
 Run: python mcp/server.py   (all settings come from the environment; see docs/MCP.md)
 """
+import errno
 import logging
 import os
 import re
@@ -170,6 +171,9 @@ def rotate_log(path: str, cap: int) -> bool:
     near 2 x cap plus what one 1 s check interval writes. It refuses to rename a path that is not fd 2's file.
     The new file is opened first: if that fails (no free fd, disk full) the log is truncated in place, so
     the cap holds and a later tick can still rotate.
+    shortcut: between the two renames `path` briefly does not exist (microseconds); a reader that opens it
+    in that window sees ENOENT. Closing it needs a hard-link dance (link, replace, replace); upgrade if a
+    log shipper that tails by path ever loses lines.
     """
     if os.fstat(2).st_size <= cap or not _is_stderr_file(path):
         return False
@@ -225,7 +229,8 @@ class LogRejectedRedirects:
             files = size = 0
 
             def fail(error):  # os.walk ignores scandir errors; with no free fd it would walk nothing
-                raise error
+                if error.errno in (errno.EMFILE, errno.ENFILE):  # any other error skips that directory, as os.walk does
+                    raise error
 
             try:
                 for directory, _, names in os.walk(self.store, onerror=fail):

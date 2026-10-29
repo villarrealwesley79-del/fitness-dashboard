@@ -49,7 +49,8 @@ def app_db(isolated_app, monkeypatch):
 
 
 def _store(app_db, payload):
-    app_db._store_wearable_facts_from_open_wearables(payload)
+    # Fetched after the fixtures' same-day end times, whatever the clock says: an end time in the future is marked unknown.
+    app_db._store_wearable_facts_from_open_wearables({"fetched_at": f"{_day(-1)}T12:00:00Z", **payload})
 
 
 def _rows(app_db, metric):

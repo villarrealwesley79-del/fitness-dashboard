@@ -379,7 +379,7 @@ def _sleep(db, offset, duration, *, deep=None, rem=None, light=None, provider="o
         WearableDailyFact(
             date=day, provider_id=provider, source_label=provider, metric=metric, value=float(value),
             source_provider=provider, source_system="open_wearables", source_id="sleep-summary",
-            observed_at=f"{day}T{wake}Z", used_for_recommendation=True,
+            observed_at=f"{day}T{wake}Z", used_for_recommendation=True, freshness="fresh",
         )
         for metric, value in rows if value is not None
     ])

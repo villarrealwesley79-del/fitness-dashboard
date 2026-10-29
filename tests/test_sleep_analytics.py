@@ -25,7 +25,7 @@ def _store_night(module, day, provider, *, wake, minutes, deep=None, rem=None, l
     upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
         WearableDailyFact(
             date=day, provider_id=provider, source_label=provider, metric=metric, value=float(value),
-            source_provider=provider, source_system=system, source_id="sleep-summary", observed_at=wake,
+            source_provider=provider, source_system=system, source_id="sleep-summary", observed_at=wake, freshness="fresh",
         )
         for metric, value in metrics.items() if value is not None
     ])

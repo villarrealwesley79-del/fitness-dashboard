@@ -802,14 +802,12 @@ def load_user(user_id):
     return User.get_by_id(int(user_id))
 
 
-def _safe_next(next_page: str | None, *, reload_root: bool = False) -> str:
+def _safe_next(next_page: str | None) -> str:
     next_page = next_page or url_for("index")
     if any(ord(character) < 32 for character in next_page):
         next_page = url_for("index")
     if "\\" in next_page or not next_page.startswith("/") or next_page.startswith("//"):
         next_page = url_for("index")
-    if reload_root and next_page == "/":
-        next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"
     return next_page
 
 
@@ -817,7 +815,7 @@ def _safe_next(next_page: str | None, *, reload_root: bool = False) -> str:
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET" and current_user.is_authenticated:
-        return redirect(_safe_next(request.args.get("next"), reload_root=True))
+        return redirect(_safe_next(request.args.get("next")))
 
     if request.method == "POST":
         ip = _rate_client_ip()

@@ -405,32 +405,6 @@ process.stdout.write(JSON.stringify({ aborted, message }));
     assert output["message"] == "aborted"
 
 
-def test_handle_unauthorized_preserves_active_workout_and_reload_paths():
-    output = run_app_js(
-        ["handleUnauthorizedResponse"],
-        """
-sandbox.location.reload = () => { sandbox.__reloaded = true; };
-let toasts = [];
-sandbox.__fitSet.toast((message, tone) => toasts.push({ message, tone }));
-let active = true;
-sandbox.__fitSet.activeWorkoutHasProgress(() => active);
-const guarded = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
-let first = '';
-try { await e.handleUnauthorizedResponse(guarded); } catch (error) { first = error.message; }
-active = false;
-const reload = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
-let second = '';
-try { await e.handleUnauthorizedResponse(reload); } catch (error) { second = error.message; }
-process.stdout.write(JSON.stringify({ first, second, reloaded: Boolean(sandbox.__reloaded), toasts }));
-""",
-        mocks=["toast", "activeWorkoutHasProgress"],
-    )
-    assert output["first"] == "reload required after workout"
-    assert output["second"] == "reload required"
-    assert output["reloaded"] is True
-    assert output["toasts"] == [{"message": "Update ready after workout. Refresh when finished.", "tone": "warn"}]
-
-
 def test_fit233_adaptation_release_assets_and_reload_contract():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
@@ -438,24 +412,17 @@ def test_fit233_adaptation_release_assets_and_reload_contract():
     app_py = (ROOT / "app.py").read_text()
     auth_py = (ROOT / "auth.py").read_text()
 
-    assert "app-loader.js?v=20261028-w4c-apple-via-ow" in template
-    assert "app.js?v=20261028-w4c-apple-via-ow" in loader
-    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in sw
+    assert "app-loader.js?v=20261029-w7d" in template
+    assert "app.js?v=20261029-w7d" in loader
+    assert "fitness-dashboard-v20261029-w7d" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
     assert "keys.map(key => caches.delete(key))" in sw
     assert "client.navigate(client.url)" not in sw
-    assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
-    assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
-    assert "APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60" in app_py
-    assert '"reload_required"' in app_py
-    assert "response.status_code = 401" in app_py
-    assert "response.set_cookie(" in app_py
     assert "current_user.is_authenticated" in auth_py
     assert 'request.args.get("next")' in auth_py
     assert 'next_page.startswith("//")' in auth_py
-    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
     assert "@app.route('/gym-now')" in app_py
     assert "Cache-Control\": \"no-store\"" in app_py
     assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py
@@ -466,11 +433,11 @@ def test_fit233_adaptation_release_assets_and_reload_contract():
 def test_fit233_dashboard_shell_defers_heavy_bundle():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "app-loader.js?v=20261028-w4c-apple-via-ow" in template
+    assert "app-loader.js?v=20261029-w7d" in template
     assert '<script src="/static/js/app.js' not in template
     assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
     assert "window.addEventListener('load', loadAppBundle" not in loader
-    assert "script.src = '/static/js/app.js?v=20261028-w4c-apple-via-ow';" in loader
+    assert "script.src = '/static/js/app.js?v=20261029-w7d';" in loader
     assert "script.async = true;" in loader
 
 
@@ -550,18 +517,12 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert '"day": day' in fingerprint_py
     assert '"wearable_facts": [' in fingerprint_py and '"weather": {' in fingerprint_py
     assert '"open_wearables": {' in fingerprint_py and '"apple_health": {' not in fingerprint_py
-    assert "app-loader.js?v=20261028-w4c-apple-via-ow" in template
-    assert "app.js?v=20261028-w4c-apple-via-ow" in loader
-    assert "fitness-dashboard-v20261028-w4c-apple-via-ow" in sw
-    assert "APP_SHELL_RELOAD_COOKIE = \"fd_shell_reload\"" in app_py
-    assert "APP_SHELL_RELOAD_VERSION = \"20260525-fit181-controller-reload-r2\"" in app_py
-    assert '"reload_required"' in app_py
-    assert "response.status_code = 401" in app_py
-    assert "response.set_cookie(" in app_py
+    assert "app-loader.js?v=20261029-w7d" in template
+    assert "app.js?v=20261029-w7d" in loader
+    assert "fitness-dashboard-v20261029-w7d" in sw
     assert "current_user.is_authenticated" in auth_py
     assert 'request.args.get("next")' in auth_py
     assert 'next_page.startswith("//")' in auth_py
-    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
     assert "@app.route('/gym-now')" in app_py
     assert '"Cache-Control": "no-store"' in app_py
     assert '"Cache-Control": "no-store, max-age=0"' in app_py
@@ -626,9 +587,9 @@ process.stdout.write(JSON.stringify(calls));
 def test_dashboard_shell_loads_heavy_app_bundle_when_dom_is_ready():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "app-loader.js?v=20261028-w4c-apple-via-ow" in template
+    assert "app-loader.js?v=20261029-w7d" in template
     assert '<script src="/static/js/app.js' not in template
     assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
     assert "window.addEventListener('load', loadAppBundle" not in loader
-    assert "script.src = '/static/js/app.js?v=20261028-w4c-apple-via-ow';" in loader
+    assert "script.src = '/static/js/app.js?v=20261029-w7d';" in loader
     assert "script.async = true;" in loader

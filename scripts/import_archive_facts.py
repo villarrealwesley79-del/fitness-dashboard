@@ -169,11 +169,17 @@ def apple_facts(path: str, imported_at: str) -> tuple[list[WearableDailyFact], d
             if not isinstance(data, dict) or not day:
                 continue
             if kind == "sleep":
+                derived = False
+                if (_number(data.get("duration_minutes")) or 0) <= 0:  # HAE often writes 0.0 beside real stages
+                    asleep = sum(_number(data.get(k)) or 0 for k in ("deep_minutes", "rem_minutes", "core_minutes"))  # never in_bed
+                    if asleep > 0:
+                        data, derived = {**data, "duration_minutes": asleep}, True
                 for key, (metric, unit) in APPLE_SLEEP.items():
                     value = _number(data.get(key))
                     if value is not None and not (metric == "sleep_duration" and value <= 0):
+                        label = "ah_sync_log.sleep.deep+rem+core" if derived and key == "duration_minutes" else f"ah_sync_log.sleep.{key}"
                         facts.append(_fact("apple", day, metric, value, unit, "archive:ah_sleep",
-                                           f"ah_sync_log.sleep.{key}", "summary", imported_at=imported_at))
+                                           label, "summary", imported_at=imported_at))
             elif kind == "heart_rate":
                 value = _number(data.get("value"))
                 if str(data.get("type")) == "resting" and value is not None:

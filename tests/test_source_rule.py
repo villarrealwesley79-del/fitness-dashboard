@@ -1,6 +1,7 @@
 """The owner's source rule: Oura first for sleep and recovery, WHOOP first for activity."""
 
-from datetime import date, datetime, timedelta, timezone
+import time
+from datetime import date, timedelta
 
 import pytest
 
@@ -179,7 +180,7 @@ def test_multi_day_sleep_summary_stores_one_dated_fact_per_night(tmp_path):
     days = [_day(i) for i in range(5)]
     hub.store_wearable_facts(
         {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": f"{_day(-1)}T12:00:00Z",  # after today's end time whatever the clock says (future end = unknown)
             "sleep_summary": {"data": [
                 {"date": d, "source": {"provider": "oura"}, "end_time": f"{d}T08:00:00Z", "duration_minutes": 400 + n}
                 for n, d in enumerate(days)
@@ -193,9 +194,33 @@ def test_multi_day_sleep_summary_stores_one_dated_fact_per_night(tmp_path):
     assert {series[d]["sleep_duration"]["provider"] for d in days} == {"oura"}
 
 
+@pytest.mark.parametrize("tz", ["UTC", "America/Chicago"])
+def test_same_day_sleep_is_kept_or_dropped_by_the_fetch_time_not_the_machine_clock(tmp_path, monkeypatch, tz):
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        day = "2026-10-29"  # explicit "today": the fixtures above used the machine date, which broke 00:00-08:00 UTC
+
+        def kept(fetched_at, name):
+            db_file = str(tmp_path / name)
+            hub.store_wearable_facts(
+                {"fetched_at": fetched_at, "sleep_summary": {"data": [
+                    {"date": day, "source": {"provider": "oura"}, "end_time": f"{day}T08:00:00Z", "duration_minutes": 420}
+                ]}},
+                db_file=db_file, profile_key="1",
+                activity_extractor=lambda _p: [], sleep_extractor=lambda _p: None,
+            )
+            return day in preferred_daily_facts(db_file, {"sleep_duration"}, day, day, profile_key="1")
+
+        assert kept(f"{day}T12:00:00Z", "after.sqlite3")  # fetched after the end time
+        assert not kept(f"{day}T00:30:00Z", "before.sqlite3")  # just after 00:00 UTC the 08:00 end is still ahead: unknown, skipped
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_offset_less_observed_at_is_utc_not_host_local(monkeypatch):
     monkeypatch.setenv("TZ", "Pacific/Kiritimati")  # UTC+14: a host-local reading would be 14 h off
-    import time
     time.tzset()
     try:
         assert hub._fact_freshness("2026-07-14T08:00:00", "2026-07-14T10:00:00Z") == "fresh"

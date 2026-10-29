@@ -262,7 +262,7 @@ def test_seven_five_hour_nights_via_ow_store_give_seven_nights_under(app_db):
     days = [_day(i) for i in range(7)]
     hub.store_wearable_facts(
         {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": f"{_day(-1)}T12:00:00Z",  # after today's end time whatever the clock says (future end = unknown)
             "sleep_summary": {"data": [
                 {"date": d, "source": {"provider": "oura"}, "end_time": f"{d}T12:00:00Z", "duration_minutes": 300}
                 for d in days
