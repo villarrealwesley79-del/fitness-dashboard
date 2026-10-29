@@ -40,3 +40,8 @@ def test_navigation_is_word_only_and_keeps_its_hooks():
     for tab in ("dashboard", "vitals", "workout", "log", "history", "body", "stats", "settings"):
         assert f'id="tab-btn-{tab}"' in INDEX and f'data-tab="tab-{tab}"' in INDEX
     assert 'role="tablist"' in INDEX
+
+
+def test_muscle_recovery_levels_stay_distinct():
+    backgrounds = [re.search(rf"\.mr-{level}\s*\{{[^}}]*background:\s*([^;]+);", CSS).group(1) for level in ("recovered", "mild", "moderate", "high", "severe")]
+    assert len(set(backgrounds)) == 5, backgrounds

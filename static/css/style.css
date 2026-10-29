@@ -23,6 +23,12 @@
     --error: #b42d1a;       /* #e33a22 darkened: 6.3:1 on white, 5.6:1 on paper */
     --error-tint: rgba(180,45,26,0.08);
     --error-line: rgba(180,45,26,0.4);
+    --mild: #4f6b2a;        /* muscle-recovery scale: between good and warn */
+    --mild-tint: rgba(79,107,42,0.10);
+    --mild-line: rgba(79,107,42,0.4);
+    --high: #8a3d1f;        /* muscle-recovery scale: between warn and error */
+    --high-tint: rgba(138,61,31,0.10);
+    --high-line: rgba(138,61,31,0.4);
     --font-display: Georgia, "Times New Roman", serif;
     --font-sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
 
@@ -2119,12 +2125,12 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 
 .mr-recovered { background: var(--good-tint); border-color: var(--good-line); }
 .mr-recovered .mr-readiness { color: var(--good); }
-.mr-mild      { background: var(--good-tint); border-color: var(--good-line); }
-.mr-mild .mr-readiness      { color: var(--good); }
+.mr-mild      { background: var(--mild-tint); border-color: var(--mild-line); }
+.mr-mild .mr-readiness      { color: var(--mild); }
 .mr-moderate  { background: var(--warn-tint); border-color: var(--warn-line); }
 .mr-moderate .mr-readiness  { color: var(--accent-amber-2); }
-.mr-high      { background: var(--warn-tint); border-color: var(--warn-line); }
-.mr-high .mr-readiness      { color: var(--warn); }
+.mr-high      { background: var(--high-tint); border-color: var(--high-line); }
+.mr-high .mr-readiness      { color: var(--high); }
 .mr-severe    { background: var(--error-tint); border-color: var(--error-line); }
 .mr-severe .mr-readiness    { color: var(--error); }
 
@@ -2165,9 +2171,9 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     border: 1px solid var(--border-2);
 }
 .mr-key-recovered { color: var(--good); border-color: var(--good-line); background: var(--good-tint); }
-.mr-key-mild      { color: var(--good); border-color: var(--good-line); background: var(--good-tint); }
+.mr-key-mild      { color: var(--mild); border-color: var(--mild-line); background: var(--mild-tint); }
 .mr-key-moderate  { color: var(--accent-amber-2); border-color: var(--warn-line); background: var(--warn-tint); }
-.mr-key-high      { color: var(--warn); border-color: var(--warn-line); background: var(--warn-tint); }
+.mr-key-high      { color: var(--high); border-color: var(--high-line); background: var(--high-tint); }
 .mr-key-severe    { color: var(--error); border-color: var(--error-line);  background: var(--error-tint); }
 
 /* ======================= SYNC QUEUE (FIT-51) ======================= */
