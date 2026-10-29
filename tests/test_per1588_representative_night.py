@@ -69,6 +69,7 @@ def test_the_codex_night_has_the_same_provider_and_label_for_every_caller(tmp_pa
     shown = _read(db, other)["sleep_duration"]
     pick = lambda f: (f["provider"], f["value"], f["conflict_state"])
     assert pick(shown) == pick(readiness)
+    assert pick(readiness) == ("whoop", 300, "conservative_value_used")
 
 
 # 3. The bot's night under every ordering: never 540, and a conservative label always carries the minimum.
@@ -90,6 +91,10 @@ def test_the_codex_night_never_reports_540_under_any_ordering(tmp_path, thin_new
     d = _read(db, SLEEP_ROWS_METRICS)["sleep_duration"]
     assert d["value"] != 540
     assert d["value"] <= 480 or d["provider"] == "apple" and d["value"] == third <= 480
+    if d["conflict_state"] == "conservative_value_used":
+        # main's oracle: WHOOP is judged on its first plausible record (newer 300 when thin_newer or archive), not its longest
+        reps = [480, 300 if full_system == "archive" or thin_newer else 540] + ([third] if third else [])
+        assert d["value"] == min(reps)
 
 
 # 4. End to end: the sources line on /api/wearables/today must name the provider whose night is shown.
