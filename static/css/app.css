@@ -218,11 +218,15 @@
     cursor: pointer;
 }
 
-.open-wearables-provider-btn:not(:disabled):hover,
+.open-wearables-provider-btn:not(:disabled):hover {
+    background: var(--paper);
+}
+
 .open-wearables-provider-btn.is-selected {
-    border-color: var(--hairline);
-    background: var(--tint);
+    border-color: var(--ink);
+    background: var(--card);
     color: var(--fg-0);
+    box-shadow: inset 0 0 0 1px var(--ink);
 }
 
 .open-wearables-provider-btn.is-unavailable {

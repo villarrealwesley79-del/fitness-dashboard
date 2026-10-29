@@ -45,3 +45,8 @@ def test_navigation_is_word_only_and_keeps_its_hooks():
 def test_muscle_recovery_levels_stay_distinct():
     backgrounds = [re.search(rf"\.mr-{level}\s*\{{[^}}]*background:\s*([^;]+);", CSS).group(1) for level in ("recovered", "mild", "moderate", "high", "severe")]
     assert len(set(backgrounds)) == 5, backgrounds
+
+
+def test_selected_wearable_provider_stands_out():
+    selected = re.search(r"\.open-wearables-provider-btn\.is-selected\s*\{([^}]*)\}", CSS).group(1)
+    assert "border-color: var(--ink)" in selected and "box-shadow: inset 0 0 0 1px var(--ink)" in selected
