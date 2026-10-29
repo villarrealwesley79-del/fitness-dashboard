@@ -35,7 +35,7 @@ ALLOWED_PATHS = {
 }
 TODAY = time.strftime("%Y-%m-%d")
 FRESH = {s: {"status": "ok", "last_data_point": TODAY, "last_sync_attempt": TODAY, "token": LEAK}
-         for s in ("open_wearables", "oura", "whoop", "apple_health", "food")}
+         for s in ("open_wearables", "wearable_facts", "apple_health", "food")}
 ROUTES = {
     "/api/recommendation/smart": {
         "recommendation": "moderate", "readiness": 80, "notes": LEAK,
@@ -215,7 +215,7 @@ def test_tools_return_only_documented_fields(client):
     assert not keys(outputs) & {"id", "auth_scope", "notes", "food", "nutrition_context", "token", "x"}
     plan = outputs["get_today_plan"]
     assert plan["next_workout"]["exercises"] == [{"exercise": "Chest Press", "target_sets": 3, "target_reps": 8}]
-    assert set(plan["data_freshness"]) == {"open_wearables", "oura", "whoop", "apple_health"}
+    assert set(plan["data_freshness"]) == {"open_wearables", "wearable_facts", "apple_health"}
     assert outputs["get_sleep_recovery"]["nights"][0]["deep_min"] == 80  # imported-night key name survives
     history = outputs["get_workout_history"]
     assert [w["date"] for w in history["workouts"]] == [TODAY]  # the 2001 session is outside `days`
@@ -658,8 +658,8 @@ def test_main_warns_when_mcp_log_file_is_not_stderrs_file_and_limits_concurrency
 def test_freshness_keeps_who_a_node_belongs_to_and_projects_providers_safely(make, monkeypatch):
     fresh = {
         **FRESH,
-        "oura": {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY, "source": "open_wearables",
-                 "superseded_by": "open_wearables", "superseded_source": "oura", "token": LEAK},
+        "wearable_facts": {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY, "source": "open_wearables",
+                           "superseded_by": "open_wearables", "superseded_source": "oura", "token": LEAK},
         "open_wearables": {
             "status": "fresh", "last_data_point": None, "last_sync_attempt": TODAY, "source": "hub", "token": LEAK,
             "providers": [{"provider_id": "oura", "label": "Oura", "state": "connected", "last_sync_at": TODAY,
@@ -673,8 +673,8 @@ def test_freshness_keeps_who_a_node_belongs_to_and_projects_providers_safely(mak
         sleep = call(c, "get_sleep_recovery", BOT_TOKEN)
     sleep = sleep.get("freshness") or sleep.get("data_freshness")
     for block in (plan, sleep):
-        assert block["oura"] == {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY,
-                                 "source": "open_wearables", "superseded_by": "open_wearables"}
+        assert block["wearable_facts"] == {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY,
+                                           "source": "open_wearables", "superseded_by": "open_wearables"}
         assert block["open_wearables"]["providers"] == [
             {"provider_id": "oura", "label": "Oura", "state": "connected", "last_sync_at": TODAY, "stale": False}]
         assert LEAK not in str(block)

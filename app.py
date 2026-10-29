@@ -2255,17 +2255,22 @@ def _refresh_wearable_facts(force=False):
 
     Failures are swallowed: readers fall back to the facts already stored.
     """
-    with _WEARABLE_REFRESH_LOCK:
+    if not _WEARABLE_REFRESH_LOCK.acquire(timeout=2):
+        return False  # a fetch is still running (OW slow or hung): read the stored facts
+    try:
         last = _WEARABLE_REFRESH_STATE["at"]
         if not force and last is not None and time.monotonic() - last < _WEARABLE_REFRESH_SECONDS:
             return False
         _WEARABLE_REFRESH_STATE["at"] = time.monotonic()
         try:
-            _store_wearable_facts_from_open_wearables(fetch_open_wearables_data())
+            # 2 s per OW call: the whole live window (6 calls) stays inside the page's 30 s client timeout when OW stalls
+            _store_wearable_facts_from_open_wearables(fetch_open_wearables_data(timeout_s=2))
             return True
         except Exception:
             app.logger.warning("Open Wearables refresh failed; using stored facts", exc_info=True)
             return False
+    finally:
+        _WEARABLE_REFRESH_LOCK.release()
 
 
 def backfill_open_wearables_facts(days=365):
@@ -3830,7 +3835,7 @@ def _sleep_rows_from_facts(days=7):
             return fact["value"] if fact and fact["provider"] == duration["provider"] else None
 
         end_at = duration.get("observed_at")
-        time_in_bed = value("sleep_time_in_bed") or duration["value"]
+        time_in_bed = value("sleep_time_in_bed")
         rows.append({
             "day": day,
             "sleep_duration_min": duration["value"],
@@ -3852,7 +3857,7 @@ def _sleep_rows_from_facts(days=7):
             "conflict_state": duration["conflict_state"],
             "sleep_end": end_at,
             # Estimated: wake time minus time in bed (only the offset-free spread is scored).
-            "bedtime_start": _estimated_bedtime(end_at, time_in_bed),
+            "bedtime_start": _estimated_bedtime(end_at, time_in_bed) if time_in_bed else None,
         })
     return rows
 
@@ -4361,12 +4366,14 @@ def _hrv_facts(days=7):
     skipped, so a fresh fallback provider fills the gap; all stale returns [].
     """
     preference = SOURCE_PREFERENCE["recovery"]
-    seen = {f["provider"] for by_metric in _preferred_facts(set(_HRV_METRICS), days=days).values() for f in by_metric.values()}
+    metrics = set(_HRV_METRICS) | {"sleep_duration"}  # sleep_duration brings in the night's fragment exclusion
+    seen = {f["provider"] for by_metric in _preferred_facts(metrics, days=days).values() for m, f in by_metric.items() if m in _HRV_METRICS}
     series = {}
     for provider in [*preference, *sorted(seen - set(preference))]:  # each provider's whole series, not the dates it won
-        for _day, by_metric in sorted(_preferred_facts(set(_HRV_METRICS), days=days, provider=provider).items()):
+        for _day, by_metric in sorted(_preferred_facts(metrics, days=days, provider=provider).items()):
             for metric, fact in by_metric.items():
-                series.setdefault((provider, metric), []).append(fact)
+                if metric in _HRV_METRICS:
+                    series.setdefault((provider, metric), []).append(fact)
     ranked = sorted(series, key=lambda k: (preference.index(k[0]) if k[0] in preference else len(preference), _HRV_METRICS.index(k[1])))
     live = [k for k in ranked if series[k][-1]["freshness"] != "stale"]
     return next((series[k] for k in live if len(series[k]) >= 4), series[live[0]] if live else [])
@@ -7286,7 +7293,7 @@ def _open_wearables_window_bounds(*, now=None, local_zone=None, days=7):
     return window_start.isoformat(), window_end.isoformat()
 
 
-def fetch_open_wearables_data(days=7, now=None):
+def fetch_open_wearables_data(days=7, now=None, timeout_s=6):
     """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort).
 
     ``now`` moves the window for a history backfill; only the live window feeds the plan marker.
@@ -7358,7 +7365,7 @@ def fetch_open_wearables_data(days=7, now=None):
         current_url = url
         first_payload = None
         for _ in range(5):
-            payload = _ow_request(current_url, headers=headers)
+            payload = _ow_request(current_url, headers=headers, timeout_s=timeout_s)
             if first_payload is None:
                 first_payload = payload
             if not isinstance(payload, dict):
@@ -7396,7 +7403,7 @@ def fetch_open_wearables_data(days=7, now=None):
     for key, url in endpoints.items():
         try:
             payload = (
-                _ow_request(url, headers=headers)
+                _ow_request(url, headers=headers, timeout_s=timeout_s)
                 if key == "body_summary"
                 else fetch_paginated_pages(url, key)
             )
@@ -8629,7 +8636,8 @@ def sleep_summary():
     """Sleep summary for the dashboard: last night and 7-day trends from stored facts."""
     try:
         rows = _sleep_rows_from_facts(days=7)
-        last_night = rows[0] if rows else None
+        # a stale newest night is not "last night" (same rule as calculate_sleep_debt)
+        last_night = rows[0] if rows and rows[0]["freshness"] != "stale" else None
         data_quality = _sleep_summary_data_quality(last_night or {}, rows)
         excluded_dates = set(data_quality.get("excluded_dates") or [])
         week_data = [r for r in rows if r["day"] not in excluded_dates and _is_valid_nightly_sleep_row(r)]
@@ -8651,19 +8659,18 @@ def sleep_summary():
             consistency_status = "fair"
         else:
             consistency_status = "poor"
-        night = last_night or {}
         return jsonify({
-            "last_night": {
-                "date": night.get("day"),
-                "total_sleep_min": night.get("total_sleep_min"),
-                "deep_sleep_min": night.get("deep_sleep_min"),
-                "rem_sleep_min": night.get("rem_sleep_min"),
-                "light_sleep_min": night.get("light_sleep_min"),
-                "awake_time_min": night.get("awake_time_min"),
+            "last_night": last_night and {
+                "date": last_night.get("day"),
+                "total_sleep_min": last_night.get("total_sleep_min"),
+                "deep_sleep_min": last_night.get("deep_sleep_min"),
+                "rem_sleep_min": last_night.get("rem_sleep_min"),
+                "light_sleep_min": last_night.get("light_sleep_min"),
+                "awake_time_min": last_night.get("awake_time_min"),
                 "sleep_score": None,
-                "avg_heart_rate": night.get("avg_heart_rate"),
-                "efficiency": night.get("efficiency"),
-                "source": night.get("provider"),
+                "avg_heart_rate": last_night.get("avg_heart_rate"),
+                "efficiency": last_night.get("efficiency"),
+                "source": last_night.get("provider"),
             },
             "week_average": {
                 "duration_min": int(avg_duration) if avg_duration is not None else None,
@@ -9188,11 +9195,6 @@ def _wearable_factor_rules(readiness, recovery_bonus, hrv_trend, sleep_debt):
         next_recommendation = _downgrade_training_recommendation_once(recommendation)
         applied["sleep"] = applied["sleep"] or next_recommendation != recommendation
     return applied
-
-
-def _wearable_factor_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
-    """Whether any wearable-owned rule changed the category at its application step."""
-    return any(_wearable_factor_rules(readiness, recovery_bonus, hrv_trend, sleep_debt).values())
 
 
 @app.route('/api/recommendation/smart')

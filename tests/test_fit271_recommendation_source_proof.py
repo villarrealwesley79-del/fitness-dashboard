@@ -174,31 +174,31 @@ def test_payload_builder_exposes_source_proof_without_removing_existing_contract
 def test_wearable_rule_tracks_rules_even_when_their_net_category_cancels():
     import app as module
 
-    assert module._wearable_factor_rule_applied(
+    assert any(module._wearable_factor_rules(
         90,
         {"bonus_points": 0},
         "declining",
         {"debt_minutes": 0},
-    ) is True
+    ).values()) is True
 
 
 def test_wearable_rule_does_not_claim_a_local_recovery_bonus_threshold_change():
     import app as module
 
-    assert module._wearable_factor_rule_applied(
+    assert any(module._wearable_factor_rules(
         80,
         {"bonus_points": 10},
         "stable",
         {"debt_minutes": 0},
-    ) is False
+    ).values()) is False
 
 
 def test_wearable_rule_uses_effective_readiness_for_recovery_threshold():
     import app as module
 
-    assert module._wearable_factor_rule_applied(
+    assert any(module._wearable_factor_rules(
         65,
         {"bonus_points": 10},
         "stable",
         {"debt_minutes": 0},
-    ) is False
+    ).values()) is False

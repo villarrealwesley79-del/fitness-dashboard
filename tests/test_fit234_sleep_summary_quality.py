@@ -371,10 +371,10 @@ def _day(offset):
     return (date.today() - timedelta(days=offset)).isoformat()
 
 
-def _sleep(db, offset, duration, *, deep=None, rem=None, light=None, provider="oura", wake="07:00:00"):
+def _sleep(db, offset, duration, *, deep=None, rem=None, light=None, provider="oura", wake="07:00:00", in_bed=None):
     day = _day(offset)
     rows = [("sleep_duration", duration), ("sleep_deep_duration", deep), ("sleep_rem_duration", rem),
-            ("sleep_light_duration", light)]
+            ("sleep_light_duration", light), ("sleep_time_in_bed", in_bed)]
     upsert_daily_facts(db, [
         WearableDailyFact(
             date=day, provider_id=provider, source_label=provider, metric=metric, value=float(value),
@@ -437,7 +437,7 @@ def test_sleep_summary_excludes_an_inconsistent_night_from_the_averages(facts_db
 
 def test_sleep_summary_bedtime_spread_comes_from_wake_time_minus_time_in_bed(facts_db, isolated_app):
     for offset, wake in ((3, "06:00:00"), (2, "06:30:00"), (1, "06:00:00"), (0, "06:30:00")):
-        _sleep(facts_db, offset, 480, deep=90, rem=100, light=290, wake=wake)
+        _sleep(facts_db, offset, 480, deep=90, rem=100, light=290, wake=wake, in_bed=480)
 
     payload = isolated_app.app.test_client().get("/api/sleep/summary").get_json()
 
