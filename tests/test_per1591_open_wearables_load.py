@@ -276,15 +276,15 @@ def test_one_logged_run_drops_only_one_same_day_watch_run(app_module):
     assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [30, 45.0]
 
 
-def test_a_watch_run_also_logged_by_hand_still_counts_toward_acwr(app_module):
+def test_a_watch_run_also_logged_by_hand_counts_no_watch_minutes(app_module):
     app_module.WORKOUTS[:] = [timed_lift(n) for n in (3, 10, 17, 24)]
     for n in (2, 9, 16, 23):
         store(app_module, n, "Running", 30, hour=7)
-    watch_only = app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] is not None
     for n in (2, 9, 16, 23):
         app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 30})
-    assert watch_only is not None
-    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] == watch_only
+    # Every watch run is the logged one: no watch session is counted, so the ratio is the logs' own, as before watch sessions counted.
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] is None
 
 
 def test_a_run_logged_by_hand_alone_is_never_less_cautious_than_not_logging_it(app_module):
@@ -302,6 +302,7 @@ def test_a_completed_workout_cardio_entry_is_not_counted_twice(app_module):
     app_module.WORKOUTS[:] = [{**timed_lift(2), "duration_minutes": 75}]  # 45 lifting + 30 cardio, as /api/complete-workout stores it
     app_module.CARDIO_DATA.append({"date": day(2), "activity_type": "Rower", "duration_minutes": 30, "workout_id": "w1"})
     store(app_module, 2, "Rowing", 30)
+    store(app_module, 20, "Running", 30)  # a watch session that counts, so the minutes series exists
     assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 75
 
 
@@ -320,6 +321,7 @@ def test_a_watch_session_without_a_duration_adds_nothing(app_module):
 @pytest.mark.parametrize("label,canonical", [
     ("indoor_cycling", "cycling"), ("running_treadmill", "treadmill"), ("rowing_machine", "rowing"), ("trail_running", "running"),
     ("Stair Climbing", "stairmaster"), ("open-water-swimming", "swimming"), ("hiking", "walking"), ("Outdoor Run", "running"),
+    ("trail_hiking", "walking"), ("cyclocross", "cycling"), ("e_biking", "cycling"), ("swimming_pool", "swimming"), ("swimming_open_water", "swimming"),
 ])
 def test_watch_activity_names_map_to_a_fatigue_type(app_module, label, canonical):
     assert app_module._canonical_cardio_fatigue_type(label) == canonical
@@ -338,8 +340,85 @@ def test_smart_recommendation_names_the_watch_minutes_it_used(app_module):
         store(app_module, n, "Running", 90, provider="apple")
     data = app_module.app.test_client().get("/api/recommendation/smart").get_json()
     assert data["readiness_factors"]["acwr"]["acwr_series"]["used"] == "minutes"
-    assert "watch minutes" in data["reasoning"]
+    assert "training minutes" in data["reasoning"]  # the series also holds logged minutes, so it is not called the watch's
     proof = data["recommendation_sources"]["source_proof"]["open_wearables"]
     assert proof["used_for_recommendation"] and proof["fields_used"] == ["workout_duration"] and proof["modifier_applied"]
     assert proof["providers"] and proof["observed_at"]
     assert data["recommendation_sources"]["open_wearables"]["role"] == "bounded modifier"
+
+
+# ---- Round 3 ---------------------------------------------------------------------------------------------------
+
+def spike(module):
+    """Four hand-logged 90-minute runs this week, each also on the watch, after one quiet 30-minute watch run: minutes win."""
+    store(module, 20, "Running", 30, hour=7)
+    for n in (1, 2, 3, 4):
+        store(module, n, "Running", 90, hour=7)
+        module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 90, "intensity": 5})
+
+
+@pytest.mark.parametrize("route", ["/api/dashboard", "/api/next-workout"])
+def test_every_route_that_decides_on_the_minutes_ratio_says_so(app_module, route):
+    spike(app_module)
+    data = app_module.app.test_client().get(route).get_json()
+    source = data["recommendation_sources"]["open_wearables"]
+    assert source["used_for_recommendation"] is True
+    assert "no fresh provider facts" not in source["detail"] and "workout minutes are counted" in source["detail"]
+
+
+def test_logged_minutes_are_not_called_watch_minutes(app_module):
+    # Hand-logged runs this week; the only watch session is an old walk, which only lowers the ratio.
+    app_module.WORKOUTS[:] = [{**l, "duration_minutes": 55} for l in OWNER_LIFTS]
+    app_module.CARDIO_DATA[:] = [{"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 60, "intensity": 5} for n in (0, 1, 2, 3)]
+    store(app_module, 25, "Walking", 20, hour=7)
+    data = app_module.app.test_client().get("/api/recommendation/smart").get_json()
+    assert data["readiness_factors"]["acwr"]["acwr_series"]["used"] == "minutes"
+    assert "watch minutes" not in data["reasoning"]
+    assert "Open Wearables workout minutes set" not in data["recommendation_sources"]["open_wearables"]["detail"]
+
+
+def test_a_non_finite_logged_cardio_duration_does_not_crash_the_dashboard(app_module):
+    store(app_module, 2, "Running", 30)
+    app_module.CARDIO_DATA.append({"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": float("inf"), "intensity": 5})
+    app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        assert app_module.app.test_client().get("/api/dashboard").status_code == 200
+    finally:
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = None
+
+
+@pytest.mark.parametrize("timed_first", [True, False])
+def test_a_timed_lift_takes_its_folded_watch_session_so_an_untimed_one_does_not_borrow_it(app_module, timed_first):
+    timed, untimed = {**lift(2), "duration_minutes": 60}, {**lift(2), "duration_minutes": 0}
+    store(app_module, 2, "Traditional Strength Training", 60, hour=18)
+    store(app_module, 10, "Running", 30, hour=7)
+    result = app_module.calculate_acwr([timed, untimed] if timed_first else [untimed, timed])
+    # History hands the one watch session to the first lift in row order. Timed first: it keeps its own 60 and the untimed
+    # lift gets nothing. Untimed first: that lift gets the watch's 60 and the timed lift adds its own.
+    assert result["acwr_series"]["minutes"]["acute_load"] == (60 if timed_first else 120)
+
+
+def test_the_plan_fingerprint_sees_folded_watch_durations(app_module):
+    workouts = [{**lift(20), "duration_minutes": 40}, lift(1)]
+    store(app_module, 1, "Traditional Strength Training", 40, sid="folded", hour=18)
+    before = app_module._open_wearables_fingerprint_sessions(workouts)
+    store(app_module, 1, "Traditional Strength Training", 240, sid="folded", hour=18)
+    after = app_module._open_wearables_fingerprint_sessions(workouts)
+    assert [r["duration_minutes"] for r in before] == [40] and [r["duration_minutes"] for r in after] == [240]
+
+
+def test_logs_alone_never_get_a_minutes_series_credited_to_the_watch(app_module):
+    # The watch lift folds into a timed lift and the watch run is the hand-logged run: no watch session is counted.
+    app_module.WORKOUTS[:] = [{**lift(1), "duration_minutes": 60}]
+    store(app_module, 1, "Traditional Strength Training", 60, hour=18)
+    store(app_module, 2, "Running", 30, hour=7)
+    app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": 30, "intensity": 5}]
+    result = app_module.calculate_acwr(app_module.WORKOUTS)
+    assert result["acwr_series"]["minutes"] is None and result["acwr_series"]["used"] == "tonnage"
+
+
+@pytest.mark.parametrize("sets", [None, 0, "x"])
+def test_add_workout_rejects_a_non_list_sets_and_stores_nothing(app_module, sets):
+    body = {"date": day(1), "session_type": "push", "exercises": [{"machine": "Bench", "sets": sets}]}
+    assert app_module.app.test_client().post("/api/add-workout", json=body).status_code == 400
+    assert app_module.WORKOUTS == []

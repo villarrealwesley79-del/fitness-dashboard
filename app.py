@@ -563,6 +563,7 @@ def _canonical_cardio_fatigue_type(value):
         "stair climbing machine": "stairmaster",
         "pool swimming": "swimming",
         "open water swimming": "swimming",
+        "trail hiking": "walking", "cyclocross": "cycling", "e biking": "cycling", "swimming pool": "swimming", "swimming open water": "swimming",
     }
     return aliases.get(activity, activity)
 
@@ -3371,8 +3372,9 @@ def _open_wearables_fold(workouts):
     """(kept, folded): stored Open Wearables sessions of the last 28 days that add load.
 
     Same fold as History's mergeStrengthHistorySources: each logged workout absorbs at most one
-    strength session on its date, in History's row order. folded maps a date to the absorbed
-    sessions. A session without a positive duration adds no load (it still absorbs, as in History).
+    strength session on its date, in History's row order. folded maps a date to every absorbed
+    session in that order, so slot k belongs to the date's k-th logged workout (a session without a
+    positive duration adds no load, but keeps its slot, as in History).
     Reads the fact store only; if it is unreadable, nothing is added.
     """
     try:
@@ -3387,8 +3389,7 @@ def _open_wearables_fold(workouts):
         loads = math.isfinite(_fit95_number(row.get("duration_minutes"))) and _fit95_number(row.get("duration_minutes")) > 0
         if row["canonical_category"] == "strength_training" and absorbable[row["date"]] > 0:
             absorbable[row["date"]] -= 1
-            if loads:
-                folded[row["date"]].append(row)
+            folded[row["date"]].append(row)
         elif loads:
             kept.append(row)
     return kept, folded
@@ -3397,6 +3398,12 @@ def _open_wearables_fold(workouts):
 def _open_wearables_load_sessions(workouts):
     """Sessions left after the strength fold (cardio already hand-logged is still here; see _unlogged_watch_cardio)."""
     return _open_wearables_fold(workouts)[0]
+
+
+def _open_wearables_fingerprint_sessions(workouts):
+    """Kept and folded sessions: everything calculate_acwr can read, so a change in either re-plans."""
+    kept, folded = _open_wearables_fold(workouts)
+    return kept + [s for sessions in folded.values() for s in sessions]
 
 
 def _unlogged_watch_cardio(sessions):
@@ -3428,7 +3435,8 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
     over the last 28 days, using the available days if fewer):
       tonnage: sum over all sets of (reps * weight), plus duration-derived load for
                cardio-style app workouts. Unchanged from before watch sessions counted.
-      minutes: duration of the Open Wearables sessions that survive the History fold.
+      minutes: logged workout and cardio durations plus the Open Wearables sessions that survive the
+               History fold. It is dropped unless a watch session is counted in it.
     The reported ratio is the higher of the two. Only the ratio acts on the plan: above 1.5
     forces recovery and 1.3 or more downgrades once (_training_recommendation_from_factors);
     nothing raises volume on a low ratio, so a higher ratio is never less cautious. Ties
@@ -3471,7 +3479,7 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
     counted = []  # watch sessions whose minutes are in the series
 
     def add_minutes(d, minutes):
-        if d and minutes > 0:
+        if d and math.isfinite(minutes) and minutes > 0:
             daily_minutes[d] = daily_minutes.get(d, 0.0) + minutes
 
     for w in workouts:
@@ -3479,9 +3487,10 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
         if d:
             daily[d] = daily.get(d, 0.0) + workout_load(w)
         minutes = _workout_duration_minutes(w)
-        if d and not minutes and folded.get(w.get("date")):  # logged without a duration: the watch's own, folded into it
-            counted.append(folded[w["date"]].pop(0))
-            minutes = counted[-1]["duration_minutes"]
+        slot = folded[w["date"]].pop(0) if folded.get(w.get("date")) else None  # every workout takes its slot, as in History
+        if d and not minutes and slot and _fit95_number(slot.get("duration_minutes")) > 0:  # logged without a duration: the watch's own
+            counted.append(slot)
+            minutes = slot["duration_minutes"]
         add_minutes(d, minutes)
     for c in CARDIO_DATA:
         if not c.get("workout_id"):  # completed-workout cardio is already in its WORKOUTS row
@@ -3491,7 +3500,7 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
         if d:
             counted.append(s)
             add_minutes(d, _fit95_number(s.get("duration_minutes")))
-    if not (kept or folded):  # no watch data: the minutes series would only restate what is logged
+    if not counted:  # no watch session counted: the minutes series would only restate what is logged
         daily_minutes = {}
 
     series = {"tonnage": _acwr_window(daily, today), "minutes": _acwr_window(daily_minutes, today)}
@@ -4426,7 +4435,7 @@ def _workout_recommendation_fingerprint():
         wearable_facts=wearable_facts,
         readiness=_readiness_with_basis()[0],
         schedule_fit={"status": fit["status"], "plan_minutes": fit["plan_minutes"]},
-        open_wearables_load=[[r["date"], r["activity_type"], r["duration_minutes"]] for r in _open_wearables_load_sessions(WORKOUTS)],
+        open_wearables_load=[[r["date"], r["activity_type"], r["duration_minutes"]] for r in _open_wearables_fingerprint_sessions(WORKOUTS)],
     )
 
 
@@ -4483,6 +4492,7 @@ def api_next_workout():
                 freshness,
                 open_wearables_facts,
                 open_wearables_modifier,
+                watch_load=_watch_load_source(calculate_acwr(WORKOUTS)),
             ),
             "wearable_sources": _wearable_sources_payload(freshness),
         },
@@ -4784,6 +4794,7 @@ def api_dashboard():
             freshness,
             open_wearables_facts,
             open_wearables_modifier,
+            watch_load=_watch_load_source(acwr),
         ),
     })
 
@@ -4928,7 +4939,7 @@ def add_workout():
         return api_error("Each exercise must include machine", 400, code="invalid_field")  # readers index ["machine"]
 
     for exercise in exercises:
-        sets = exercise.get("sets") or []
+        sets = exercise.get("sets", [])  # null or 0 is not a list: 400, never stored
         if not isinstance(sets, list) or not all(_set_numbers(set_row) for set_row in sets):
             return api_error("Each set must be an object with numeric weight_lbs and reps", 400, code="invalid_field")
 
@@ -7748,13 +7759,23 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
     )
 
 
-def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None):
+def _watch_load_source(acwr_data):
+    """The Open Wearables load claim for the source list: set only when the minutes series (with counted watch sessions) is the ratio used."""
+    acwr_series = (acwr_data or {}).get("acwr_series") or {}
+    return acwr_series.get("used") == "minutes" and {
+        "providers": acwr_series.get("watch_providers") or [],
+        "observed_at": acwr_series.get("watch_observed_at"),
+        "modifier_applied": float(acwr_data.get("acwr") or 0) >= 1.3,  # the band that downgrades or forces recovery
+    } or None
+
+
+def _recommendation_sources_payload(freshness, open_wearables_facts, open_wearables_modifier, source_inputs=None, watch_load=None):
     open_wearables_modifier = open_wearables_modifier or {}
     open_wearables_source = build_open_wearables_recommendation_source(
         freshness.get("open_wearables"),
         facts=open_wearables_facts,
         modifier=open_wearables_modifier,
-        load=(source_inputs or {}).get("open_wearables_load"),
+        load=watch_load or (source_inputs or {}).get("open_wearables_load"),
     )
     payload = {"open_wearables": open_wearables_source}
     if source_inputs is not None:
@@ -8923,7 +8944,7 @@ def smart_recommendation_api():
     if (recommendation_sleep_debt.get('debt_minutes') or 0) > 0:
         reason_bits.append(f"Sleep debt {recommendation_sleep_debt.get('debt_minutes')} min ({recommendation_sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
-        reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')}{', watch minutes' if (acwr_data.get('acwr_series') or {}).get('used') == 'minutes' else ''})")
+        reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')}{', training minutes' if (acwr_data.get('acwr_series') or {}).get('used') == 'minutes' else ''})")
     if recent:
         worst = max(recent, key=lambda s: s.get("soreness_level") or 0)
         ts = _parse_soreness_timestamp(worst)
@@ -9093,12 +9114,7 @@ def smart_recommendation_api():
     wearable_rules = _wearable_factor_rules(
         recommendation_readiness, recovery_bonus, recommendation_hrv_trend, recommendation_sleep_debt,
     )
-    acwr_series = acwr_data.get("acwr_series") or {}
-    watch_load = acwr_series.get("used") == "minutes" and {
-        "providers": acwr_series.get("watch_providers") or [],
-        "observed_at": acwr_series.get("watch_observed_at"),
-        "modifier_applied": float(acwr_data.get("acwr") or 0) >= 1.3,  # the band that downgrades or forces recovery
-    } or None
+    watch_load = _watch_load_source(acwr_data)
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
         "open_wearables_load": watch_load,
