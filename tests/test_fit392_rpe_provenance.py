@@ -323,7 +323,7 @@ def test_set_rpe_control_has_mobile_safe_layout_and_new_asset_version():
     label_rule = STYLE_CSS.split(".set-rpe-cell > span {", 1)[1].split("}", 1)[0]
     assert "font-size: 11px" in label_rule  # PER-1588: was 9px
     assert "@media (max-width: 420px)" in STYLE_CSS
-    assert "/static/css/style.css?v=20261029-w6" in html
-    assert "/static/js/app-loader.js?v=20261029-w6" in html
-    assert "/static/js/app.js?v=20261029-w6" in loader
-    assert "fitness-dashboard-v20261029-w6" in service_worker
+    assert "/static/css/style.css?v=20261029-nocal" in html
+    assert "/static/js/app-loader.js?v=20261029-nocal" in html
+    assert "/static/js/app.js?v=20261029-nocal" in loader
+    assert "fitness-dashboard-v20261029-nocal" in service_worker

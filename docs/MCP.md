@@ -8,7 +8,7 @@ assistant cloud --HTTPS--> Tailscale Funnel :8443 --> MCP server 127.0.0.1:8765 
 
 - Code: `mcp/` (FastMCP 4.1.4, its own process, launchd `com.fitness-mcp`). Flask only gains a small read-token hook in `auth.py`.
 - Two credentials on the one endpoint `/mcp`: GitHub login pinned to your numeric GitHub id (OAuth, for the apps), and one static bearer token (for bots on the API).
-- Tools (all `readOnlyHint`): `get_today_plan`, `get_workout_history`, `get_progressive_overload`, `get_body_trend`, `get_sleep_recovery`, `get_open_windows`. Each returns documented fields only.
+- Tools (all `readOnlyHint`): `get_today_plan`, `get_workout_history`, `get_progressive_overload`, `get_body_trend`, `get_sleep_recovery`. Each returns documented fields only.
 - Status: built and tested locally. **Funnel stays off until the auth code is reviewed.** Nothing below has been run on frankbox.
 
 ## Setup (owner steps, on frankbox)

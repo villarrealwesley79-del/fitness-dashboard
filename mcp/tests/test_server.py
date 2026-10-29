@@ -27,11 +27,11 @@ LEAK = "UNDOCUMENTED-LEAK"
 SECRETS = (GH_OWNER, GH_OTHER, BOT_TOKEN, READ_TOKEN, CLIENT_SECRET, SIGNING_KEY)
 TOOLS = {
     "get_today_plan", "get_workout_history", "get_progressive_overload",
-    "get_body_trend", "get_sleep_recovery", "get_open_windows",
+    "get_body_trend", "get_sleep_recovery",
 }
 ALLOWED_PATHS = {
     "/api/recommendation/smart", "/api/history-all", "/api/progressive-overload", "/api/body-history",
-    "/api/body-recomp", "/api/sleep/analytics", "/api/freshness", "/api/calendar/windows",
+    "/api/body-recomp", "/api/sleep/analytics", "/api/freshness",
 }
 TODAY = time.strftime("%Y-%m-%d")
 FRESH = {s: {"status": "ok", "last_data_point": TODAY, "last_sync_attempt": TODAY, "token": LEAK}
@@ -216,6 +216,7 @@ def test_tools_return_only_documented_fields(client):
     plan = outputs["get_today_plan"]
     assert plan["next_workout"]["exercises"] == [{"exercise": "Chest Press", "target_sets": 3, "target_reps": 8}]
     assert set(plan["data_freshness"]) == {"open_wearables", "wearable_facts"}
+    assert plan["next_workout"]["estimated_minutes"] == 45  # the assistant sizes its own calendar block from this
     assert outputs["get_sleep_recovery"]["nights"][0]["deep_min"] == 80  # imported-night key name survives
     history = outputs["get_workout_history"]
     assert [w["date"] for w in history["workouts"]] == [TODAY]  # the 2001 session is outside `days`
@@ -223,17 +224,11 @@ def test_tools_return_only_documented_fields(client):
 
 
 def test_tools_only_issue_allowlisted_gets_with_the_read_token(client, seen):
-    for tool in sorted(TOOLS - {"get_open_windows"}):
+    for tool in sorted(TOOLS):
         call(client, tool, BOT_TOKEN)
     assert {path for _, path, _ in seen} <= ALLOWED_PATHS
     assert {method for method, _, _ in seen} == {"GET"}
     assert {auth for _, _, auth in seen} == {f"Bearer {READ_TOKEN}"}
-
-
-def test_open_windows_unconfigured_when_route_is_missing(client):
-    assert call(client, "get_open_windows", BOT_TOKEN, day="today") == {"status": "unconfigured", "day": "today"}
-    bad = rpc(client, "tools/call", {"name": "get_open_windows", "arguments": {"day": "yesterday"}}, BOT_TOKEN).json()
-    assert bad["result"]["isError"] is True
 
 
 def test_unlisted_redirect_uri_is_refused_and_logged(client, caplog):
