@@ -40,6 +40,7 @@ def build_open_wearables_recommendation_source(
     providers: list[dict] | None = None,
     facts: list[dict] | None = None,
     modifier: dict | None = None,
+    load: dict | None = None,
 ) -> dict:
     freshness = freshness or {}
     providers = providers or []
@@ -49,13 +50,15 @@ def build_open_wearables_recommendation_source(
     if facts and modifier.get("applied") and status == "missing":
         status = "fresh"
     consumed = consumed_facts(facts)
-    used = bool(consumed) and status in {"fresh", "aging", "connected"}
+    used = (bool(consumed) and status in {"fresh", "aging", "connected"}) or bool(load)  # watch minutes drove the ACWR
     provider_labels = [p.get("label") or p.get("provider_id") for p in providers if isinstance(p, dict)]
     detail = "Open Wearables is the wearable hub."
     if modifier.get("applied"):
         detail = modifier.get("detail") or "Open Wearables facts applied a conservative recommendation guard."
     elif consumed:
         detail = f"Open Wearables contributed {len(consumed)} normalized fact{'s' if len(consumed) != 1 else ''}."
+    elif load:
+        detail = "Open Wearables workout minutes set the training-load ratio."
     elif facts:
         detail = f"Open Wearables has {len(facts)} fact{'s' if len(facts) != 1 else ''}; none feed today's recommendation."
     elif provider_labels:
@@ -150,6 +153,9 @@ def build_recommendation_source_proof(
         }
 
     open_fields = [fact.get("metric") for fact in consumed_facts(source_inputs.get("open_wearables_facts"))]
+    load = source_inputs.get("open_wearables_load")  # watch minutes that set the ACWR: {providers, observed_at, modifier_applied}
+    if load:
+        open_fields.append("workout_duration")
     open_used = bool(open_fields) and bool(open_wearables_source.get("used_for_recommendation"))
     open_status = str(open_wearables_source.get("freshness") or "missing")
     freshness_with_open = dict(freshness)
@@ -160,7 +166,7 @@ def build_recommendation_source_proof(
         "open_wearables": proof(
             "open_wearables",
             open_fields,
-            bool(source_inputs.get("open_wearables_modifier_applied")),
+            bool(source_inputs.get("open_wearables_modifier_applied") or (load or {}).get("modifier_applied")),
             used_override=open_used,
         ),
         **{
@@ -173,4 +179,6 @@ def build_recommendation_source_proof(
             bool(source_inputs.get("weather_modifier_applied")),
         ),
     }
+    if load:
+        result["open_wearables"].update(providers=load.get("providers") or [], observed_at=load.get("observed_at"))
     return result

@@ -27,7 +27,7 @@ def canonical_training_category(label: str | None, source: str | None = None) ->
     source_norm = _normalise_label(source)
     if normalized in _STRENGTH_LABELS:
         return "strength_training"
-    if "strength" in normalized or "weight" in normalized or "resistance" in normalized:
+    if "strength" in normalized or "weight" in normalized or "resistance" in normalized or "lift" in normalized:
         return "strength_training"
     if source_norm == "lifted":
         return "strength_training"

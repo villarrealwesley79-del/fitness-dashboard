@@ -26,14 +26,14 @@ def lift(n, weight=100, reps=10, sets=3):
 OWNER_LIFTS = [lift(n) for n in (2, 5, 9, 12, 16, 23)]
 
 
-def store(module, n, label, minutes, *, provider="whoop", sid=None, hour=12):
+def store(module, n, label, minutes, *, provider="whoop", sid=None, hour=12, category=None):
     observed = f"{day(n)}T{hour:02d}:00:00Z"
     upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
         WearableDailyFact(
             date=day(n), provider_id=provider, source_label=provider, metric="workout_duration", value=float(minutes), unit="min",
             source_provider=provider, source_system="open_wearables", source_record_kind="event",
             source_id=sid or f"{provider}-{n}-{hour}-{label}", observed_at=observed, original_label=label,
-            category=hub._workout_category(label),
+            category=category or hub._workout_category(label),
         )
     ], profile_key=module._open_wearables_profile_key())
 
@@ -128,7 +128,9 @@ def test_cardio_already_logged_is_not_counted_twice(app_module):
     store(app_module, 1, "Outdoor Run", 40, sid="r")
     store(app_module, 1, "Cycling", 40, sid="c")
     app_module.CARDIO_DATA.append({"date": day(1), "activity_type": "Running", "duration_minutes": 40})
-    assert [r["activity_type"] for r in app_module._open_wearables_load_sessions([])] == ["Cycling"]
+    # Fatigue rows and the ACWR minutes both drop the logged copy only (one entry covers one session).
+    assert [r["activity_type"] for r in app_module._unlogged_watch_cardio(app_module._open_wearables_load_sessions([]))] == ["Cycling"]
+    assert [r["activity_type"] for r in app_module._cardio_with_open_wearables()] == ["Running", "Cycling"]
 
 
 def test_load_keeps_exactly_the_sessions_history_shows_beside_logged_lifts(app_module):
@@ -226,3 +228,118 @@ def test_readers_skip_an_exercise_without_a_string_machine(app_module):
     assert export.status_code == 200 and "| Row |" in export.get_data(as_text=True)
     assert list(app_module.calculate_personal_records(app_module.WORKOUTS)) == ["Row"]
     assert client.get("/api/dashboard").status_code == 200
+
+
+# Round 2: the minutes series counts every session once
+
+def timed_lift(n):
+    return {**lift(n), "duration_minutes": 55}
+
+
+# Owner-like month: 3 logged lifts a week, each also recorded by the watch (folded), one 30-minute run a week.
+OWNER_LIFT_DAYS = (1, 3, 5, 8, 10, 12, 15, 17, 19, 22, 24, 26)
+
+
+def owner_month(module):
+    module.WORKOUTS[:] = [timed_lift(n) for n in OWNER_LIFT_DAYS]
+    for n in OWNER_LIFT_DAYS:
+        store(module, n, "Traditional Strength Training", 55, hour=18)
+    for n in (9, 16, 23):
+        store(module, n, "Running", 30, hour=7)
+
+
+def test_one_extra_30_minute_run_does_not_force_a_recovery_day(app_module):
+    owner_month(app_module)
+    for n in (2, 4):
+        store(app_module, n, "Running", 30, hour=7)
+    acwr = app_module.calculate_acwr(app_module.WORKOUTS)
+    assert acwr["acwr_series"]["minutes"]["acwr"] < 1.3  # watch-only minutes read 60/44 = 1.37
+    assert app_module._training_recommendation_from_factors(None, acwr_data=acwr)[0] == "moderate"
+    assert app_module.app.test_client().get("/api/recommendation/smart").get_json()["recommendation"] == "moderate"
+
+
+def test_a_logged_lift_without_a_duration_counts_the_watch_session_folded_into_it(app_module):
+    store(app_module, 2, "Traditional Strength Training", 50)
+    store(app_module, 20, "Running", 30)
+    result = app_module.calculate_acwr([lift(2)])
+    assert result["acwr_series"]["minutes"]["acute_load"] == 50
+    # No watch data at all: the minutes series stays out, so a logged-only user sees the same numbers as before.
+    assert app_module.calculate_acwr([timed_lift(2)], wearable_sessions=[])["acwr_series"]["minutes"] is None
+
+
+def test_one_logged_run_drops_only_one_same_day_watch_run(app_module):
+    store(app_module, 1, "Running", 30, sid="am", hour=7)
+    store(app_module, 1, "Running", 45, sid="pm", hour=18)
+    app_module.CARDIO_DATA.append({"date": day(1), "activity_type": "Outdoor Run", "duration_minutes": 30})
+    kept = app_module._unlogged_watch_cardio(app_module._open_wearables_load_sessions([]))
+    assert [r["duration_minutes"] for r in kept] == [45.0]  # the closest duration is the duplicate
+    assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [30, 45.0]
+
+
+def test_a_watch_run_also_logged_by_hand_still_counts_toward_acwr(app_module):
+    app_module.WORKOUTS[:] = [timed_lift(n) for n in (3, 10, 17, 24)]
+    for n in (2, 9, 16, 23):
+        store(app_module, n, "Running", 30, hour=7)
+    watch_only = app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]
+    for n in (2, 9, 16, 23):
+        app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 30})
+    assert watch_only is not None
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] == watch_only
+
+
+def test_a_run_logged_by_hand_alone_is_never_less_cautious_than_not_logging_it(app_module):
+    store(app_module, 20, "Running", 30)
+    for n in (1, 2, 3, 4):
+        store(app_module, n, "Running", 90)
+    before = app_module.calculate_acwr([])
+    for n in (1, 2, 3, 4):
+        app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 90})
+    assert before["risk"] == "high"
+    assert app_module.calculate_acwr([])["acwr"] >= before["acwr"] * 0.99  # logged by hand: the same minutes, counted once
+
+
+def test_a_completed_workout_cardio_entry_is_not_counted_twice(app_module):
+    app_module.WORKOUTS[:] = [{**timed_lift(2), "duration_minutes": 75}]  # 45 lifting + 30 cardio, as /api/complete-workout stores it
+    app_module.CARDIO_DATA.append({"date": day(2), "activity_type": "Rower", "duration_minutes": 30, "workout_id": "w1"})
+    store(app_module, 2, "Rowing", 30)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 75
+
+
+def test_a_watch_session_without_a_duration_adds_nothing(app_module):
+    store(app_module, 1, "Running", 60)
+    base = app_module.calculate_acwr([])["acwr_series"]["minutes"]
+    upsert_daily_facts(app_module.WEARABLE_FACTS_DB_FILE, [WearableDailyFact(
+        date=day(20), provider_id="whoop", source_label="whoop", metric="workout_active_calories", value=300.0, unit="kcal",
+        source_provider="whoop", source_system="open_wearables", source_record_kind="event", source_id="cal-only",
+        observed_at=f"{day(20)}T07:00:00Z", original_label="Running", category="cardio",
+    )], profile_key=app_module._open_wearables_profile_key())
+    assert app_module._open_wearables_load_sessions([]) != [] and len(app_module._open_wearables_load_sessions([])) == 1
+    assert app_module.calculate_acwr([])["acwr_series"]["minutes"] == base
+
+
+@pytest.mark.parametrize("label,canonical", [
+    ("indoor_cycling", "cycling"), ("running_treadmill", "treadmill"), ("rowing_machine", "rowing"), ("trail_running", "running"),
+    ("Stair Climbing", "stairmaster"), ("open-water-swimming", "swimming"), ("hiking", "walking"), ("Outdoor Run", "running"),
+])
+def test_watch_activity_names_map_to_a_fatigue_type(app_module, label, canonical):
+    assert app_module._canonical_cardio_fatigue_type(label) == canonical
+    app_module.CARDIO_DATA.append({"date": day(1), "activity_type": label, "duration_minutes": 60, "intensity": 5})
+    assert app_module.get_cardio_muscle_impact(app_module.CARDIO_DATA, "back" if canonical in ("rowing", "swimming") else "quads") > 0
+
+
+def test_a_named_watch_lift_folds_into_the_logged_lift(app_module):
+    store(app_module, 1, "Evening Lift", 55, hour=18, category="strength_training")
+    assert app_module._open_wearables_load_sessions([lift(1)]) == []
+
+
+def test_smart_recommendation_names_the_watch_minutes_it_used(app_module):
+    store(app_module, 20, "Running", 30)
+    for n in (1, 2, 3, 4):
+        store(app_module, n, "Running", 90, provider="apple")
+    data = app_module.app.test_client().get("/api/recommendation/smart").get_json()
+    assert data["readiness_factors"]["acwr"]["acwr_series"]["used"] == "minutes"
+    assert "watch minutes" in data["reasoning"]
+    proof = data["recommendation_sources"]["source_proof"]["open_wearables"]
+    assert proof["used_for_recommendation"] and proof["fields_used"] == ["workout_duration"] and proof["modifier_applied"]
+    assert proof["providers"] and proof["observed_at"]
+    assert data["recommendation_sources"]["open_wearables"]["role"] == "bounded modifier"
