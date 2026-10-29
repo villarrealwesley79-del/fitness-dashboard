@@ -7,7 +7,8 @@
 Facts are written with source_system="archive" and the archive's own label in
 original_label. The run never deletes anything, is safe to repeat, and skips an
 archive fact when a live (non-archive) fact already covers the same
-provider, metric and date: Open Wearables wins. History reads archive rows next
+provider, metric and date (a workout: the same session, category and start within
+5 minutes): Open Wearables wins. History reads archive rows next
 to live ones, labelled as archive. An archive fact can fill a day that has no live
 fact (readiness, sleep debt and trends read it, shown as via: archive); it is never
 used by the Open Wearables recommendation guard.
@@ -31,8 +32,8 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from open_wearables_hub import _workout_category  # noqa: E402
-from wearable_fact_store import WearableDailyFact, fact_provider, upsert_daily_facts  # noqa: E402
+from open_wearables_hub import _workout_category, same_workout, workout_key  # noqa: E402
+from wearable_fact_store import WearableDailyFact, fact_provider, list_workout_events, upsert_daily_facts  # noqa: E402
 
 LABELS = {"oura": "Oura (archive)", "apple": "Apple Health (archive)"}
 # oura_daily column -> (metric, unit); readiness_score is a 0-100 score.
@@ -128,6 +129,13 @@ def oura_facts(path: str, imported_at: str) -> list[WearableDailyFact]:
                     if value is not None:
                         facts.append(_fact("oura", row["day"], metric, value, unit, "archive:oura_sleep",
                                            f"oura_sleep.{column}", "event", row["bedtime_end"], imported_at=imported_at))
+                try:  # the measured bedtime: without it, bedtime is guessed from sleep minutes and comes out late
+                    in_bed = (datetime.fromisoformat(row["bedtime_end"]) - datetime.fromisoformat(row["bedtime_start"])).total_seconds() / 60
+                except (TypeError, ValueError):
+                    in_bed = 0
+                if in_bed > 0:
+                    facts.append(_fact("oura", row["day"], "sleep_time_in_bed", in_bed, "min", "archive:oura_sleep",
+                                       "oura_sleep.bedtime_start", "event", row["bedtime_end"], imported_at=imported_at))
         if "oura_daily" in tables:
             for row in conn.execute("SELECT * FROM oura_daily ORDER BY day"):
                 day = row["day"]
@@ -225,11 +233,15 @@ def import_archives(oura: str | None, apple: str | None, db_path: str, profile_k
         apple_rows, unmapped = apple_facts(apple, imported_at)
         facts += apple_rows
     live = live_keys(db_path, profile_key)
-    live_workout_days = {(p, d) for p, m, d in live if m.startswith("workout_")}
+    live_workouts = [  # a live session hides only its own archived copy: same provider, category, start within 5 minutes
+        (e["provider"], workout_key(e))
+        for e in (list_workout_events(db_path, profile_key) if live else [])
+        if e["via"] != "archive"
+    ]
     kept, skipped_live = [], 0
     for fact in facts:
         covered = (
-            (fact.provider_id, fact.date) in live_workout_days
+            any(p == fact.provider_id and same_workout(k, workout_key(fact.__dict__)) for p, k in live_workouts)
             if fact.metric.startswith("workout_")
             else (fact.provider_id, fact.metric, fact.date) in live
         )

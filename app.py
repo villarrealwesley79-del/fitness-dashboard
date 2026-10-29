@@ -4454,9 +4454,9 @@ _PROOF_FACT_METRICS = {
     *_HRV_METRICS,
 }
 _FINGERPRINT_FACT_METRICS = {
-    "recovery_score", "heart_rate_variability", "resting_heart_rate",
+    "recovery_score", "resting_heart_rate",
     "sleep_duration", "sleep_efficiency", "active_minutes", "steps",
-}
+}  # HRV is fingerprinted through _hrv_facts(), the series the plan reads
 
 
 def _workout_recommendation_fingerprint():
@@ -4466,7 +4466,7 @@ def _workout_recommendation_fingerprint():
         fact
         for day, by_metric in sorted(_preferred_facts(_FINGERPRINT_FACT_METRICS, days=7).items())
         for _metric, fact in sorted(by_metric.items())
-    ]
+    ] + _hrv_facts()
 
     health_workout_files = sorted(
         glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
@@ -8475,7 +8475,7 @@ def wearables_today():
         days=7,
     )
     value_of = lambda metric: (_latest_fact_value(facts, metric) or {}).get("value")
-    hrv_metric = next((m for m in _HRV_METRICS if _latest_fact_value(facts, m)), None)
+    hrv = (_hrv_facts() or [{}])[-1].get("value")  # the series the plan reads, never a stray old fact
     sleep_rows = [row for row in _sleep_rows_from_facts(days=7) if _is_valid_nightly_sleep_row(row)]
     night = sleep_rows[0] if sleep_rows else None
     steps = _latest_fact_value(facts, "steps")
@@ -8484,7 +8484,7 @@ def wearables_today():
         "available": bool(facts or night),
         "readiness": _get_oura_readiness_today(include_open_wearables=False),
         "sleep_score": None,
-        "hrv": value_of(hrv_metric) if hrv_metric else None,
+        "hrv": hrv,
         "steps": value_of("steps"),
         "active_minutes": value_of("active_minutes"),
         "active_calories": value_of("active_calories"),
@@ -8505,16 +8505,16 @@ def wearables_today():
 def wearables_trends():
     """Last 7 days of HRV, steps and sleep from stored facts, plus the HRV trend label."""
     end = datetime.now().date()
-    facts = _preferred_facts({"steps", "active_minutes", "resting_heart_rate"} | set(_HRV_METRICS), days=7)
+    facts = _preferred_facts({"steps", "active_minutes", "resting_heart_rate"}, days=7)
     sleep_by_day = {row["day"]: row for row in _sleep_rows_from_facts(days=7)}
-    hrv_metric = next((m for m in _HRV_METRICS if _latest_fact_value(facts, m)), None)
+    hrv_by_day = {fact["date"]: fact["value"] for fact in _hrv_facts()}  # one provider, one metric
     series = []
-    for day in sorted(set(facts) | set(sleep_by_day)):
+    for day in sorted(set(facts) | set(sleep_by_day) | set(hrv_by_day)):
         sleep = sleep_by_day.get(day)
         value_of = lambda metric: (facts.get(day, {}).get(metric) or {}).get("value")
         series.append({
             "day": day,
-            "hrv": value_of(hrv_metric) if hrv_metric else None,
+            "hrv": hrv_by_day.get(day),
             "steps": value_of("steps"),
             "resting_hr": value_of("resting_heart_rate"),
             "active_minutes": value_of("active_minutes"),
@@ -8524,7 +8524,7 @@ def wearables_trends():
     return jsonify({
         "start_date": (end - timedelta(days=6)).strftime("%Y-%m-%d"),
         "end_date": end.strftime("%Y-%m-%d"),
-        "hrv_trend": get_recent_hrv_trend() if hrv_metric else "unknown",
+        "hrv_trend": get_recent_hrv_trend() if hrv_by_day else "unknown",
         "series": series,
     })
 
@@ -9420,14 +9420,20 @@ def smart_recommendation_api():
         ("activity", "active_minutes", open_wearables_modifier.get("active_fact"), bool(domain_fields["activity"])),
     ):
         if fired and guard_fact:
+            guard_provider = fact_provider(guard_fact.get("provider_id"), guard_fact.get("source_provider"))
+            node = {
+                "provider": guard_provider, "via": "open_wearables", "date": guard_fact.get("date"),
+                "freshness": guard_fact.get("freshness"), "conflict_state": guard_fact.get("conflict_state"),
+            }
+            slot = domain_sources.get(domain, {})
+            if domain == "recovery" and domain_fields[domain] and slot.get("provider") != guard_provider:
+                # The slot's field is Oura's HRV trend: keep it and credit the WHOOP score to its own source.
+                domain_sources[domain] = {**slot, "guard_source": {**node, "fields_used": [field]}}
+                continue
             if field not in domain_fields[domain]:
                 domain_fields[domain].append(field)
-            guard_provider = fact_provider(guard_fact.get("provider_id"), guard_fact.get("source_provider"))
-            if domain_sources.get(domain, {}).get("provider") != guard_provider:  # same provider: keep its conflict_state
-                domain_sources[domain] = {
-                    "provider": guard_provider, "via": "open_wearables", "date": guard_fact.get("date"),
-                    "freshness": guard_fact.get("freshness"), "conflict_state": guard_fact.get("conflict_state"),
-                }
+            if slot.get("provider") != guard_provider:  # same provider: keep its conflict_state
+                domain_sources[domain] = node
     apple_health_fields = []
     try:
         recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)

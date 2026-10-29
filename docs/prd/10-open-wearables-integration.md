@@ -11,7 +11,7 @@ Open Wearables (OW) is the only wearable hub. WHOOP, Oura and Apple Health reach
 | activity | WHOOP, Oura, Apple | steps, active minutes, active calories |
 
 - One fact per date and metric: provider order first, then a live fact over an archive fact, then summary over event, then the newest write.
-- Two providers more than 60 minutes apart on hours slept are a conflict: the lower value is used and `conflict_state` says so. Only nights of 60 minutes or more compete, so a strap-off fragment is never a conflict. The whole night (total, stages, sleep heart rate, efficiency, time in bed) is then that provider's, with none of another provider's values filled in, and the proof names it. Recovery scores are never merged.
+- Two providers more than 60 minutes apart on hours slept are a conflict: the lower value is used and `conflict_state` says so. Only nights of 60 minutes or more compete, so a strap-off fragment is never a conflict. The whole night (total, stages, sleep heart rate, efficiency, time in bed) is then that provider's, with none of another provider's values filled in, and the proof names it. If the first provider's night is under 60 minutes, the next provider with a real night supplies the whole night; that is a gap fill, not a conflict. A provider's own sub-hour row never stands in for its real night. Recovery scores are never merged.
 - Readiness is a sleep estimate from the newest fresh night of the preferred sleep provider. A recovery score is not readiness; WHOOP's reaches the plan once, through the guard below.
 - Facts older than two days are `stale`: they do not feed readiness, sleep debt or the HRV trend, they show as stale in the source proof, and they lower confidence.
 - The proof names the provider and date of the fact behind each consumed field (sleep debt row, HRV series, the guard's highest active-minutes fact), not the newest fact of any metric in the domain.
@@ -19,7 +19,7 @@ Open Wearables (OW) is the only wearable hub. WHOOP, Oura and Apple Health reach
 
 ## What the app shows
 
-- Dashboard sources line: `Sources: sleep Oura · recovery Oura · activity WHOOP via Open Wearables · 07:12`, from `source_proof` on `/api/recommendation/smart`: `{provider, via, date, freshness, used_for_recommendation, ignored_reason, conflict_state}` per domain.
+- Dashboard sources line: `Sources: sleep Oura · recovery Oura · activity WHOOP via Open Wearables · 07:12`, from `source_proof` on `/api/recommendation/smart`: `{provider, via, date, freshness, used_for_recommendation, ignored_reason, conflict_state}` per domain, plus `guard_source` on recovery when the WHOOP score the guard applied comes from a different provider than the HRV trend.
 - `/api/wearables/today`, `/api/wearables/trends`, `/api/sleep/summary`, `/api/sleep/analytics`, `/api/vitals`: all read stored facts.
 - History: `/api/open-wearables/workouts` lists stored workout facts; one workout recorded by two providers is one row with both labels; rows from the archive import say `(archive)`. History never calls OW, so an OW outage cannot fail it.
 

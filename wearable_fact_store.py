@@ -1042,6 +1042,7 @@ def preferred_daily_facts(
     # Only plausible durations compete, so a strap-off fragment is not a conflict.
     conflicts: dict[str, str] = {}
     gap_fills: dict[str, str] = {}  # the top-ranked provider logged only a fragment: the next real night fills in
+    records: dict[str, str] = {}  # the used provider's best plausible record: its other rows (a fragment) never mix in
     for (date_s, metric), candidates in grouped.items():
         tolerance = CONFLICT_TOLERANCE.get(metric)
         if tolerance is None:
@@ -1054,10 +1055,13 @@ def preferred_daily_facts(
             conflicts[date_s] = min(by_provider, key=by_provider.get)
         elif by_provider and candidates[0][1] < MIN_NIGHT_SLEEP_MIN:
             gap_fills[date_s] = next(iter(by_provider))
+        used = conflicts.get(date_s) or gap_fills.get(date_s)
+        if used:
+            records[date_s] = next(c[3]["source_id"] for c in candidates if c[2] == used and c[1] >= MIN_NIGHT_SLEEP_MIN)
     for (date_s, metric), candidates in grouped.items():
         forced = (conflicts.get(date_s) or gap_fills.get(date_s)) if _default_metric_domain(metric) == "sleep" else None
         if forced:
-            candidates = [c for c in candidates if c[2] == forced]
+            candidates = [c for c in candidates if c[2] == forced and c[3]["source_id"] == records[date_s]]
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
         rank, value, provider, row = candidates[0]

@@ -161,7 +161,9 @@ def test_recovery_proof_credits_the_whoop_score_the_guard_applied(app_db):
     ])
     body = app_db.app.test_client().get("/api/recommendation/smart").get_json()
     proof = body["recommendation_sources"]["source_proof"]["recovery"]
-    assert (proof["provider"], proof["fields_used"]) == ("whoop", ["hrv_trend", "recovery_score"]), proof
+    # Round 5: Oura's HRV trend stays Oura's; the WHOOP score the guard applied is credited to WHOOP separately.
+    assert (proof["provider"], proof["fields_used"]) == ("oura", ["hrv_trend"]), proof
+    assert (proof["guard_source"]["provider"], proof["guard_source"]["fields_used"]) == ("whoop", ["recovery_score"]), proof
 
 
 def test_hrv_trend_keeps_one_providers_series(app_db):

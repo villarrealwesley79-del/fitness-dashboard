@@ -1162,36 +1162,44 @@ def _utc_instant(value) -> datetime | None:
     return parsed and (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
+def workout_key(event: dict) -> tuple[str, object]:
+    """(category, UTC start): the same session recorded by two sources has the same key."""
+    category = event["category"] or str(event["original_label"] or "").strip().lower()
+    return category, _utc_instant(event["observed_at"]) or event["date"]
+
+
+def same_workout(a: tuple[str, object], b: tuple[str, object]) -> bool:
+    """Same category and a start within 5 minutes (same date when a start does not parse)."""
+    close = abs(a[1] - b[1]) <= timedelta(minutes=5) if isinstance(a[1], datetime) and isinstance(b[1], datetime) else a[1] == b[1]
+    return a[0] == b[0] and close
+
+
 def stored_workouts(db_file: str, profile_key: str, start: str | None = None) -> list[dict]:
     """History rows from stored workout facts: no live fetch, so an outage cannot fail History.
 
     A workout recorded by two providers (same category, starts within 5 minutes) is one row
-    whose source_label lists both; an archive row never shows next to a live row from
-    the same provider and day.
+    whose source_label lists both; an archive row is hidden only when a live row from the
+    same provider is that session, so an archived morning run survives a live evening ride.
     """
     events = list_workout_events(db_file, profile_key, start)
-    live_days = {(e["provider"], e["date"]) for e in events if e["via"] != "archive"}
     order = SOURCE_PREFERENCE["activity"]
     events.sort(key=lambda e: (order.index(e["provider"]) if e["provider"] in order else len(order), e["via"] == "archive"))
-    groups: list[tuple[str, object, list[dict]]] = []
+    groups: list[tuple[tuple[str, object], list[dict]]] = []
     for event in events:
-        if event["via"] == "archive" and (event["provider"], event["date"]) in live_days:
-            continue
-        category = event["category"] or str(event["original_label"] or "").strip().lower()
-        start = _utc_instant(event["observed_at"]) or event["date"]
-        for group_category, group_start, members in groups:
-            close = (
-                abs(group_start - start) <= timedelta(minutes=5)
-                if isinstance(start, datetime) and isinstance(group_start, datetime)
-                else group_start == start
-            )
-            if group_category == category and close and all(m["provider"] != event["provider"] for m in members):
+        key = workout_key(event)
+        for group_key, members in groups:
+            if not same_workout(group_key, key):
+                continue
+            same = [m for m in members if m["provider"] == event["provider"]]
+            if not same:
                 members.append(event)
                 break
+            if event["via"] == "archive" and any(m["via"] != "archive" for m in same):
+                break  # a live row from this provider is the same session
         else:
-            groups.append((category, start, [event]))
+            groups.append((key, [event]))
     rows = []
-    for _category, _start, members in groups:
+    for _key, members in groups:
         first = members[0]
         labels = []
         for member in members:

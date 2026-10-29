@@ -192,3 +192,73 @@ def test_a_wal_mode_read_only_archive_in_a_read_only_folder_imports_without_crea
     finally:
         os.chmod(folder, 0o755)
     assert summary["written"] == 1
+
+
+def _apple_archive(tmp_path, workouts):
+    apple = tmp_path / "apple_two.db"
+    with closing(sqlite3.connect(apple)) as conn:
+        conn.execute(
+            "CREATE TABLE ah_sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, record_type TEXT NOT NULL, "
+            "record_date TEXT NOT NULL, record_key TEXT NOT NULL DEFAULT '', data_json TEXT NOT NULL, created_at TEXT)"
+        )
+        for start, label in workouts:
+            conn.execute(
+                "INSERT INTO ah_sync_log (source, record_type, record_date, record_key, data_json) VALUES (?, ?, ?, ?, ?)",
+                ("health_auto_export", "workouts", start[:10], start,
+                 json.dumps({"startDate": start, "activity_type": label, "duration_minutes": 40, "total_energy_kcal": 300})),
+            )
+        conn.commit()
+    return apple
+
+
+def test_an_archived_morning_run_survives_a_live_evening_ride_on_the_same_day(tmp_path):
+    """Fails before round 5: any live workout hid every archived workout of that provider and day."""
+    apple = _apple_archive(tmp_path, [("2025-03-01T08:00:00Z", "Running"), ("2025-03-01T18:00:00Z", "Cycling")])
+    db = str(tmp_path / "facts.sqlite3")
+    upsert_daily_facts(db, [WearableDailyFact(
+        date="2025-03-01", provider_id="apple", source_label="Apple Health", metric="workout_duration", value=41.0,
+        source_provider="apple", source_system="open_wearables", source_id="w-ride", source_record_kind="event",
+        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"))], profile_key="1")
+
+    summary = importer.import_archives(None, str(apple), db)
+
+    assert summary["skipped_live"] == 2  # the archived ride (2 metrics) is covered by the live ride
+    rows = sorted(hub.stored_workouts(db, "1"), key=lambda r: r["start_time"])
+    assert [(r["activity_type"], r["archive"]) for r in rows] == [("Running", True), ("Cycling", False)]
+
+
+def test_stored_workouts_hides_an_archive_row_only_for_its_own_live_session(tmp_path):
+    apple = _apple_archive(tmp_path, [("2025-03-01T08:00:00Z", "Running"), ("2025-03-01T18:00:00Z", "Cycling")])
+    db = str(tmp_path / "facts.sqlite3")
+    importer.import_archives(None, str(apple), db)  # both archived
+    upsert_daily_facts(db, [WearableDailyFact(
+        date="2025-03-01", provider_id="apple", source_label="Apple Health", metric="workout_duration", value=41.0,
+        source_provider="apple", source_system="open_wearables", source_id="w-ride", source_record_kind="event",
+        observed_at="2025-03-01T18:02:00Z", original_label="Cycling", category=hub._workout_category("Cycling"))], profile_key="1")
+    rows = sorted(hub.stored_workouts(db, "1"), key=lambda r: r["start_time"])
+    assert [(r["activity_type"], r["archive"]) for r in rows] == [("Running", True), ("Cycling", False)]
+
+
+def test_archived_oura_night_keeps_its_measured_time_in_bed(tmp_path):
+    """Fails before round 5: bedtime_start was dropped, so bedtime was rebuilt from sleep minutes."""
+    oura = tmp_path / "oura_bed.sqlite3"
+    with closing(sqlite3.connect(oura)) as conn:
+        conn.execute(
+            "CREATE TABLE oura_sleep (day TEXT, type TEXT, bedtime_start TEXT, bedtime_end TEXT, total_sleep_min INTEGER, "
+            "deep_sleep_min INTEGER, rem_sleep_min INTEGER, light_sleep_min INTEGER, awake_time_min INTEGER, "
+            "sleep_score INTEGER, efficiency INTEGER, avg_heart_rate REAL, avg_hrv REAL, PRIMARY KEY (day, type))"
+        )
+        conn.execute(
+            "INSERT INTO oura_sleep (day, type, bedtime_start, bedtime_end, total_sleep_min) "
+            "VALUES ('2026-01-05', 'long_sleep', '2026-01-04T22:00:00+00:00', '2026-01-05T06:00:00+00:00', 420)"
+        )
+        conn.execute(  # a start that does not parse adds no time in bed
+            "INSERT INTO oura_sleep (day, type, bedtime_start, bedtime_end, total_sleep_min) "
+            "VALUES ('2026-01-06', 'long_sleep', 'garbage', '2026-01-06T06:00:00+00:00', 400)"
+        )
+        conn.commit()
+    db = str(tmp_path / "facts.sqlite3")
+    importer.import_archives(str(oura), None, db)
+    days = preferred_daily_facts(db, {"sleep_time_in_bed"}, "2026-01-05", "2026-01-06", "1")
+    assert days["2026-01-05"]["sleep_time_in_bed"]["value"] == 480
+    assert "2026-01-06" not in days

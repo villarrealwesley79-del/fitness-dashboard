@@ -148,6 +148,7 @@ def build_recommendation_source_proof(
             "modifier_applied": bool(modifier_applied and used),
             "ignored_reason": ignored_reason,
             "conflict_state": node.get("conflict_state"),
+            **({"guard_source": node["guard_source"]} if node.get("guard_source") else {}),  # a guard fact from another provider
         }
 
     open_fields = [fact.get("metric") for fact in consumed_facts(source_inputs.get("open_wearables_facts"))]
