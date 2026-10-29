@@ -938,7 +938,6 @@ _MCP_READ_PATHS = frozenset({
     "/api/body-recomp",
     "/api/sleep/analytics",
     "/api/freshness",
-    "/api/calendar/windows",
 })
 _MCP_READ_TOKEN_FILE = ".mcp-read-token"
 

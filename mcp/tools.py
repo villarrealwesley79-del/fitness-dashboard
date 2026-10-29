@@ -173,19 +173,3 @@ def register(mcp: FastMCP, dash: Dashboard) -> None:
             **_pick(sleep, ("consistency_score", "sleep_perf_correlation")),
             "data_freshness": _freshness(fresh.get("freshness")),
         }
-
-    @mcp.tool(annotations=READ_ONLY, description=(
-        "Busy and free training windows for a day, from the owner's calendar feed." + CALENDAR_NOTE
-    ))
-    async def get_open_windows(day: str = "today") -> dict:
-        if day not in ("today", "tomorrow"):
-            raise ToolError("day must be 'today' or 'tomorrow'.")
-        # Expected shape (W6 route must match): {status, day, windows:[{start,end,minutes}], busy:[{start,end}]}
-        raw = await dash.get("/api/calendar/windows", day=day)
-        if raw is None:  # route not shipped, or no calendar feed configured
-            return {"status": "unconfigured", "day": day}
-        return {
-            **_pick(raw, ("status", "day")),
-            "windows": _rows(raw.get("windows"), ("start", "end", "minutes")),
-            "busy": _rows(raw.get("busy"), ("start", "end")),
-        }
