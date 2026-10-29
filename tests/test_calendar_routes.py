@@ -486,3 +486,15 @@ process.stdout.write(JSON.stringify({
         "error": ["Needs attention", False, False],
         "none": ["Not connected", True, False],
     }
+
+
+def test_never_connected_user_is_not_refreshing_while_the_lock_is_held(feed):
+    """Another request holding the lock on the first read of the day must not make 'no calendar' read as connected."""
+    module, client, set_feed = feed
+    module._CALENDAR.clear()  # e.g. first request after a restart
+    assert module._CALENDAR_LOCK.acquire(blocking=False)  # another thread's first read of the day
+    try:
+        body = client.get("/api/calendar/ical").get_json()
+    finally:
+        module._CALENDAR_LOCK.release()
+    assert body == {"configured": False, "status": "unconfigured", "last_fetch": None}

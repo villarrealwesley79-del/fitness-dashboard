@@ -4133,6 +4133,9 @@ def _calendar_state(now, force=False):
         cached = dict(_CALENDAR)
         if cached.get("day") == now.date() and cached.get("key") == _calendar_secret_args()[1]["fallback_path"]:
             return cached
+        args, kwargs = _calendar_secret_args()
+        if not load_protected_secret(*args, **kwargs).strip():  # a local read, no network: a never-connected user is not "refreshing"
+            return {"status": "unconfigured", "events": [], "last_fetch": None}
         return {"status": "refreshing", "events": [], "last_fetch": None}  # old-day or other-address data would show a booked day as free
     try:
         args, kwargs = _calendar_secret_args()
