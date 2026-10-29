@@ -1080,15 +1080,18 @@ def preferred_daily_facts(
         forced = None
         if _default_metric_domain(metric) == "sleep":
             forced = conflicts.get(date_s) or gap_fills.get(date_s)
-            # The duration always comes from the record that justified the choice; other metrics stay free outside a forced night.
+            # A forced night's duration is the representative that justified the choice; an unforced one is capped below. Other metrics stay free outside a forced night.
             pin = forced or (metric in CONFLICT_TOLERANCE and next(iter(night_record.get(date_s, {})), None))
             candidates = [
                 c for c in candidates
-                if (not pin or (c[2] == pin and c[3]["source_id"] == night_record[date_s][pin]))
+                if (not pin or (c[2] == pin and (not forced or c[3]["source_id"] == night_record[date_s][pin])))
                 and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
             ]
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
+            if pin and not forced:  # an unforced night never reports more than its first stored record or its representative
+                rep = next((c for c in candidates if c[3]["source_id"] == night_record[date_s][pin]), candidates[0])
+                candidates = [min(candidates[0], rep, key=lambda c: c[1])]
         rank, value, provider, row = candidates[0]
         conflict = "conservative_value_used" if date_s in conflicts and forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {

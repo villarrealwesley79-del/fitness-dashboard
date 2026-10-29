@@ -192,3 +192,42 @@ def test_wearables_today_sources_line_names_the_provider_of_the_shown_night(isol
     assert shown in (300, 480)
     assert src.get("provider") == ("oura" if shown == 480 else "whoop"), (shown, src)
     assert (src.get("conflict_state") == "conservative_value_used") == (shown == 300), (shown, src)
+
+
+# Round 3: on an unforced night a provider's longer, fuller record must not lift the duration above its first stored record.
+def test_an_unforced_night_never_reports_more_than_the_providers_first_stored_record(tmp_path):
+    db = str(tmp_path / "f.db")
+    upsert_daily_facts(db, [
+        _fact("oura", "sleep_duration", 380, sid="o-summary", updated=9),  # newest: first in the stored order
+        _fact("oura", "sleep_duration", 430, sid="o-session", updated=1),  # fuller: carries efficiency and heart rate
+        _fact("oura", "sleep_efficiency", 90, sid="o-session", updated=1),
+        _fact("oura", "sleep_avg_heart_rate", 55, sid="o-session", updated=1),
+    ])
+    assert _read(db, SLEEP_ROWS_METRICS)["sleep_duration"]["value"] == 380
+
+
+@pytest.mark.parametrize("other", [None, 420, 470])
+def test_a_providers_longer_session_record_never_lifts_the_plan(isolated_app, monkeypatch, other):
+    """Oura's recovery summary says 380 min, its session 430; the plan must not move up from 'recovery'."""
+    from datetime import timedelta
+    rank = {"intensity": 0, "moderate": 1, "recovery": 2, "rest": 3}
+    monkeypatch.setattr(isolated_app, "fetch_open_wearables_data", lambda **_: {"errors": {"config": "missing"}})
+    monkeypatch.setattr(isolated_app, "_cached_wttr", lambda *_a, **_k: {"available": False})
+    monkeypatch.setattr(isolated_app, "WORKOUTS", [])
+    monkeypatch.setattr(isolated_app, "SORENESS_DATA", [])
+    monkeypatch.setattr(isolated_app, "RECOVERY_DATA", [])
+    recovery = [{"id": "oura-rec-1", "date": DAY, "recorded_at": f"{DAY}T08:00:00Z",
+                 "source": {"provider": "oura"}, "sleep_duration_seconds": 380 * 60}]
+    session = {"id": "oura-ev-1", "end_time": f"{DAY}T07:00:00Z", "duration_min": 430, "avg_hr": 55,
+               "efficiency_percent": 90, "source": {"provider": "oura"}, "is_nap": False}
+    extra = {"sleep_summary": [{"date": DAY, "source": {"provider": "whoop"}, "duration_minutes": other, "avg_heart_rate_bpm": 56,
+                                "time_in_bed_minutes": other + 25, "efficiency_percent": 91, "end_time": f"{DAY}T07:00:00Z"}]} if other else {}
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    def plan(payload):
+        isolated_app._store_wearable_facts_from_open_wearables({"fetched_at": f"{tomorrow}T12:00:00Z", **payload})
+        return isolated_app.app.test_client().get("/api/recommendation/smart").get_json()["recommendation"]
+
+    alone = plan({"recovery_summary": recovery, **extra})
+    both = plan({"recovery_summary": recovery, "sleep": {"events": [session]}, **extra})
+    assert rank[both] >= rank[alone], (alone, both)
