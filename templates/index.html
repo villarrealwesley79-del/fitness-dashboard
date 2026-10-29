@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Fitness Dashboard</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20261029-w7d">
-    <link rel="stylesheet" href="/static/css/app.css?v=20261029-w7d">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261029-w6">
+    <link rel="stylesheet" href="/static/css/app.css?v=20261029-w6">
 </head>
 <body>
     <div class="app-shell">
@@ -55,6 +55,7 @@
                     <span class="reco-tag" id="reco-readiness" hidden></span>
                     <span class="reco-intensity-meta" id="reco-intensity">—</span>
                     <span class="reco-tag" id="reco-time" hidden></span>
+                    <span class="reco-tag" id="reco-schedule" hidden></span>
                     <span class="reco-tag" id="reco-rpe" hidden></span>
                 </div>
                 <div class="reco-last-session" id="reco-last-session" hidden></div>
@@ -597,6 +598,18 @@
                         </div>
                     </div>
                     <div class="settings-row">
+                        <label class="settings-row-label" for="settings-hours-start">Training starts</label>
+                        <div class="settings-row-control">
+                            <input type="time" id="settings-hours-start" class="select-inline">
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <label class="settings-row-label" for="settings-hours-end">Training ends</label>
+                        <div class="settings-row-control">
+                            <input type="time" id="settings-hours-end" class="select-inline">
+                        </div>
+                    </div>
+                    <div class="settings-row">
                         <label class="settings-row-label" for="settings-sessions">Sessions Per Week</label>
                         <div class="settings-row-control">
                             <input type="range" id="settings-sessions" min="1" max="7" step="1" aria-describedby="settings-sessions-val">
@@ -651,6 +664,24 @@
                     <div class="integration-detail-row integration-detail-warn" id="open-wearables-detail-attention-row" hidden>
                         <span class="detail-label">Attention</span>
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="calendar-int-dot"></span>
+                            Google Calendar
+                        </span>
+                        <span id="calendar-detail" class="settings-row-detail">Checking calendar…</span>
+                    </div>
+                    <div class="settings-row-control settings-row-control-stack">
+                        <span id="calendar-state" class="state-chip">—</span>
+                        <form id="calendar-form" class="settings-inline-actions" autocomplete="off">
+                            <label class="visually-hidden" for="calendar-url">Secret address in iCal format</label>
+                            <input type="url" id="calendar-url" class="select-inline" placeholder="Secret address in iCal format" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="500">
+                            <button id="btn-calendar-connect" class="btn btn-primary btn-sm" type="submit">Connect</button>
+                            <button id="btn-calendar-disconnect" class="btn btn-ghost btn-sm" type="button">Disconnect</button>
+                        </form>
                     </div>
                 </div>
                 <div class="settings-row">
@@ -1060,6 +1091,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20261029-w7d"></script>
+    <script src="/static/js/app-loader.js?v=20261029-w6"></script>
 </body>
 </html>

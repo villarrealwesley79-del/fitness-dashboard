@@ -1944,6 +1944,21 @@
         await Promise.allSettled([dashP, ouraP, recoP, sleepP]);
     }
 
+    function paintScheduleChip(fit) {
+        const chip = $('reco-schedule');
+        if (!chip) return;
+        const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        let text = '';
+        if (fit && fit.status === 'ok') {
+            if (fit.fits) text = `Free ${clock(fit.window_start)}–${clock(fit.window_end)}${fit.shortened ? ' · shortened' : ''}`;
+            else if (fit.next_window) text = `No window today · tomorrow ${clock(fit.next_window.start)}`;
+            else text = 'No window today or tomorrow';
+        }
+        chip.textContent = text;
+        chip.title = (fit && fit.reason) || '';
+        chip.hidden = !text;
+    }
+
     function paintDashboardFromState() {
         const dash = state.dashboard;
         const oura = state.oura;
@@ -2054,6 +2069,7 @@
         if ($('reco-rpe')) {
             $('reco-rpe').hidden = true;
         }
+        paintScheduleChip(dash && dash.schedule_fit);
 
         // FIT-88: last-session badge — one-liner showing how the completion
         // shaped the next recommendation. Hidden when no recent completion.
@@ -4037,6 +4053,12 @@
         });
         durSel.onchange = () => updateSetting({ available_time_minutes: Number(durSel.value) });
 
+        const hoursStart = $('settings-hours-start'), hoursEnd = $('settings-hours-end');
+        hoursStart.value = (st.training_hours && st.training_hours.start) || '06:00';
+        hoursEnd.value = (st.training_hours && st.training_hours.end) || '21:00';
+        hoursStart.onchange = hoursEnd.onchange = updateTrainingHours;
+        renderCalendarRow();
+
         const range = $('settings-sessions');
         range.value = st.sessions_per_week_target || 3;
         $('settings-sessions-val').textContent = range.value;
@@ -4680,6 +4702,64 @@
                 setupState
             );
         }
+    }
+
+    async function updateTrainingHours() {
+        const start = $('settings-hours-start').value, end = $('settings-hours-end').value;
+        if (!start || !end || start >= end) {
+            toast('Training start must be before the end', 'err');
+            state.settings = null;
+            renderSettings();
+            return;
+        }
+        await updateSetting({ training_hours: { start, end } });
+    }
+
+    // The calendar address is write-only: the server reports connected / not, never the address.
+    async function renderCalendarRow() {
+        let cal = { configured: false, status: 'unconfigured' };
+        try { cal = await api('/api/calendar/ical'); } catch (e) { console.error(e); }
+        const ok = cal.status === 'ok', broken = cal.status === 'error';
+        $('calendar-state').textContent = ok ? 'Connected' : broken ? 'Needs attention' : 'Not connected';
+        $('calendar-state').className = 'state-chip' + (ok ? ' ok' : broken ? ' warn' : '');
+        $('calendar-int-dot').className = ok ? 'int-dot int-dot-on' : 'int-dot';
+        $('calendar-detail').textContent = ok
+            ? 'The plan fits your free time. Read-only.'
+            : broken ? 'Could not read the calendar. Paste a new address if you reset it in Google.'
+            : 'Paste the secret iCal address from Google Calendar so the plan fits your free time. Read-only.';
+        $('calendar-url').hidden = ok;
+        $('btn-calendar-connect').hidden = ok;
+        $('btn-calendar-disconnect').hidden = !cal.configured;
+        $('calendar-form').onsubmit = async (event) => {
+            event.preventDefault();
+            const input = $('calendar-url');
+            if (!input.value.trim()) { toast('Paste the secret iCal address first', 'err'); input.focus(); return; }
+            try {
+                const body = await api('/api/calendar/ical', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: input.value.trim() }),
+                });
+                input.value = '';
+                toast(body.status === 'ok' ? 'Calendar connected' : 'Saved, but the calendar could not be read', body.status === 'ok' ? 'ok' : 'err');
+            } catch (e) {
+                toast(e.apiErrorMessage || 'Could not save the calendar address', 'err');
+                return;
+            }
+            invalidateCaches();
+            renderSettings();
+        };
+        $('btn-calendar-disconnect').onclick = async () => {
+            try {
+                await api('/api/calendar/ical', { method: 'DELETE' });
+                toast('Calendar disconnected');
+            } catch (e) {
+                toast('Could not disconnect the calendar', 'err');
+                return;
+            }
+            invalidateCaches();
+            renderSettings();
+        };
     }
 
     async function updateSetting(patch) {

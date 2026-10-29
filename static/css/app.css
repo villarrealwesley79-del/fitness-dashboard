@@ -101,6 +101,11 @@
     gap: 8px;
 }
 
+#calendar-url {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
 #modal-reco-sources .modal-sheet {
     max-width: 540px;
 }
