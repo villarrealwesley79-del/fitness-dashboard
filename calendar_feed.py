@@ -6,7 +6,6 @@ echoed in an error message.
 from __future__ import annotations
 
 import re
-import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -61,28 +60,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch_ics(
-    url: str, *, timeout: float = 10, total_timeout: float = 15, max_bytes: int = 5_000_000, opener=None
-) -> str:
-    """Download the feed. Raises ValueError (bad URL, too big) or OSError (network, too slow).
-
-    `timeout` is per socket operation; `total_timeout` bounds the body read, so a drip-fed feed
-    overshoots it by at most one `timeout`. read1 makes one recv per call; read() would wait for the
-    whole chunk and never reach the deadline check while bytes trickle in.
-    """
+def fetch_ics(url: str, *, timeout: float = 10, max_bytes: int = 5_000_000, opener=None) -> str:
+    """Download the feed. Raises ValueError (bad URL, too big) or OSError (network)."""
     url = validate_ical_url(url)
     opener = opener or urllib.request.build_opener(_NoRedirect)
-    data, deadline = b"", time.monotonic() + total_timeout
+    # shortcut: timeout is per socket operation, not a total deadline; W6-wiring adds one.
     try:
         resp = opener.open(urllib.request.Request(url), timeout=timeout)
         try:
-            while len(data) <= max_bytes:  # one byte past the cap is enough to refuse
-                chunk = getattr(resp, "read1", resp.read)(min(65536, max_bytes + 1 - len(data)))
-                if not chunk:
-                    break
-                data += chunk
-                if time.monotonic() > deadline:
-                    raise TimeoutError
+            data = resp.read(max_bytes + 1)
         finally:
             resp.close()
     except urllib.error.HTTPError as exc:
@@ -161,8 +147,8 @@ def _rule_possible(rule_text: str) -> bool:
 
     shortcut: sub-daily rules, dense BYHOUR x BYMINUTE x BYSECOND grids (> 24 times a day) and
     BYEASTER (a dateutil extension that crashes) are dropped, and month/day-of-month pairs that
-    cannot exist (Feb 30) are screened. Other impossible rules (BYYEARDAY=366 with BYMONTH=1) walk to
-    year 9999 (about 0.2 s each), so parse_events caps the total parse time. Upgrade if a real feed does that.
+    cannot exist (Feb 30) are screened. Other impossible rules (BYYEARDAY=366 with BYMONTH=1) are
+    still unbounded, so W6-wiring must parse with a per-feed time cap. Upgrade if a real feed does that.
     """
     parts = dict(p.partition("=")[::2] for p in rule_text.upper().split(";"))
     if parts.get("FREQ") not in _FREQS or int(parts.get("INTERVAL", "1")) < 1 or "BYEASTER" in parts:  # INTERVAL=0 makes dateutil loop forever
@@ -216,11 +202,10 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
         starts = [start]
         if "RRULE" in props:
             starts = []
-            rule_text = props["RRULE"][0][1].strip()  # a trailing space must not drop the series
-            if _rule_possible(rule_text):
+            if _rule_possible(props["RRULE"][0][1]):
                 until = lambda m: "UNTIL=" + datetime.strptime(m[1] + (m[2] or "235959"), "%Y%m%d%H%M%S").replace(
                     tzinfo=start.tzinfo).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # dateutil needs UTC UNTIL
-                rule = rrulestr(re.sub(r"UNTIL=(\d{8})(?:T(\d{6}))?(?=;|$)", until, rule_text, flags=re.I), dtstart=start)
+                rule = rrulestr(re.sub(r"UNTIL=(\d{8})(?:T(\d{6}))?(?=;|$)", until, props["RRULE"][0][1], flags=re.I), dtstart=start)
                 starts = list(islice(takewhile(lambda s: u(s) < u(we), rule.xafter(u(ws) - dur, inc=True)), _MAX_INSTANCES))
         starts = [s for s in {u(s): s for s in starts + dates("RDATE")}.values()  # one instance per moment
                   if u(s) not in ex and (uid, u(s)) not in overridden]
@@ -228,17 +213,12 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
     for s in starts:
         e = (u(s) + dur).astimezone(s.tzinfo)
         if u(s) < u(we) and u(e) > u(ws):
-            out.append(Event(uid, u(s).astimezone(s.tzinfo), e, False))  # a DST-gap wall time becomes the real one
+            out.append(Event(uid, s, e, False))
     return out
 
 
-def parse_events(
-    ics_text: str, window_start: datetime, window_end: datetime, *, max_seconds: float = 5
-) -> list[Event]:
+def parse_events(ics_text: str, window_start: datetime, window_end: datetime) -> list[Event]:
     """Events overlapping the window, recurrences expanded inside it. Never raises on bad ICS.
-
-    Raises TimeoutError when expanding the feed takes longer than max_seconds (checked between
-    events): a partial list would show busy time as free.
 
     RDATE (DATE / DATE-TIME) adds instances like RRULE does; RDATE;VALUE=PERIOD is skipped.
 
@@ -262,10 +242,7 @@ def parse_events(
             chosen[(uid, rid)] = (seq, props)
     overridden = {k for k in chosen if k[1] is not None}  # cancelled overrides still replace
     out: list[Event] = []
-    deadline = time.monotonic() + max_seconds
     for (uid, rid), (_, props) in chosen.items():
-        if time.monotonic() > deadline:
-            raise TimeoutError("Calendar feed took too long to read.")
         try:
             out += _instances(uid, rid, props, tz, window_start, window_end, overridden)
         except Exception:  # per-event isolation is the contract; shortcut: a bad event is dropped, not reported

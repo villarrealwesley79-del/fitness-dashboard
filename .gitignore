@@ -12,7 +12,6 @@ __pycache__/
 .health-sync-token
 .apple-health-first-sync
 .open-wearables-password
-.google-calendar-ical-url*
 .whoop-client-id
 .whoop-oauth-state*
 .whoop-token*

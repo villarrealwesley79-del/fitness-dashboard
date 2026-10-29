@@ -324,9 +324,8 @@ class FakeResponse:
     def __init__(self, body: bytes):
         self.body, self.closed = body, False
 
-    def read(self, n=-1):  # like a socket: each call consumes what it returns
-        chunk, self.body = self.body[:n], self.body[n:]
-        return chunk
+    def read(self, n=-1):
+        return self.body[:n]
 
     def close(self):
         self.closed = True
@@ -518,89 +517,3 @@ def test_non_utc_until_still_ends_the_series():
 def test_rdate_repeating_an_rrule_instance_yields_one_event():
     ics = vevent("UID:d", "DTSTART:20261005T090000Z", "DTEND:20261005T100000Z", "RRULE:FREQ=DAILY", "RDATE:20261006T090000Z")
     assert len(parse(ics, ny(2026, 10, 6), ny(2026, 10, 7))) == 1
-
-
-# --- PER-1586 wiring carry-overs -------------------------------------------------
-
-
-@pytest.mark.parametrize("until", ["20261231", "20261231T235959"])
-def test_trailing_space_on_the_rrule_does_not_drop_the_series(until):
-    ics = vevent("UID:u", "DTSTART;TZID=America/New_York:20260105T090000", "DTEND;TZID=America/New_York:20260105T100000",
-                 f"RRULE:FREQ=DAILY;UNTIL={until} ")
-    assert len(cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7))) == 1
-    ics = vevent("UID:u", "DTSTART:20260105T090000Z", "DTEND:20260105T100000Z", "RRULE:FREQ=DAILY ")
-    assert len(cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7))) == 1
-
-
-def test_event_starting_in_a_dst_gap_is_normalised_to_the_real_wall_time():
-    ics = vevent("UID:gap", "DTSTART;TZID=America/New_York:20260301T023000", "DTEND;TZID=America/New_York:20260301T033000",
-                 "RRULE:FREQ=WEEKLY;BYDAY=SU")
-    (event,) = cf.parse_events(ics, ny(2026, 3, 8), ny(2026, 3, 9))  # 02:30 does not exist on Mar 8
-    assert event.start.utcoffset() == timedelta(hours=-4) and event.start.hour == 3 and event.start.minute == 30
-    assert event.start.astimezone(UTC) == datetime(2026, 3, 8, 7, 30, tzinfo=UTC)
-
-
-def test_parse_time_cap_raises_instead_of_returning_a_partial_feed():
-    text = "".join(vevent(f"UID:e{i}", "DTSTART:20261006T090000Z", "DTEND:20261006T100000Z") for i in range(50))
-    assert len(cf.parse_events(text, ny(2026, 10, 6), ny(2026, 10, 7))) == 50
-    with pytest.raises(TimeoutError):
-        cf.parse_events(text, ny(2026, 10, 6), ny(2026, 10, 7), max_seconds=-1)
-
-
-def test_fetch_total_deadline_stops_a_drip_fed_feed(monkeypatch):
-    class Drip:
-        def read(self, n=-1):
-            return b"x"
-
-        def close(self):
-            pass
-
-    class Opener:
-        def open(self, request, timeout=None):
-            return Drip()
-
-    clock = iter(range(1000))
-    monkeypatch.setattr(cf.time, "monotonic", lambda: next(clock))
-    with pytest.raises(OSError, match="could not be fetched") as err:
-        cf.fetch_ics(URL, total_timeout=5, opener=Opener())
-    assert "private-abc123" not in str(err.value)
-
-
-def test_total_deadline_holds_on_a_real_drip_fed_socket():
-    """read() on a real response waits for the whole 64 KiB chunk; read1() lets the deadline fire."""
-    import http.server
-    import socketserver
-    import threading
-    import urllib.request
-
-    class Drip(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            self.send_response(200)
-            self.send_header("Content-Length", "100000")
-            self.end_headers()
-            try:
-                for _ in range(40):  # a byte every 0.1 s, then hang up
-                    self.wfile.write(b"x")
-                    self.wfile.flush()
-                    cf.time.sleep(0.1)
-            except OSError:
-                pass
-
-        def log_message(self, *args):
-            pass
-
-    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Drip)
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-
-    class Local:  # the URL is still validated; the bytes come from the loopback server
-        def open(self, request, timeout=None):
-            return urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/", timeout=timeout)
-
-    started = cf.time.monotonic()
-    try:
-        with pytest.raises(OSError):
-            cf.fetch_ics(URL, timeout=1, total_timeout=1, opener=Local())
-    finally:
-        server.shutdown()
-    assert cf.time.monotonic() - started < 2.5  # the server itself would hold on for 4 s

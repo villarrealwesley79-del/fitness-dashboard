@@ -11,7 +11,6 @@ DEFAULT_SETTINGS = {
     "sex": "",
     "sessions_per_week_target": 3,
     "available_time_minutes": 75,
-    "training_hours": {"start": "06:00", "end": "21:00"},
     "target_weight_lbs": 175,
     "target_body_fat_pct": 18,
     "fatigue_threshold": 72,

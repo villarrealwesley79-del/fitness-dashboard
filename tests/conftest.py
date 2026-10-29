@@ -136,12 +136,6 @@ def isolated_open_wearables_password_file(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 
 @pytest.fixture(autouse=True)
-def isolated_calendar_secret_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:
-    monkeypatch.setenv("GOOGLE_CALENDAR_ICAL_FILE", str(tmp_path / "google-calendar-ical-url"))
-    yield
-
-
-@pytest.fixture(autouse=True)
 def no_live_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Iterator[None]:
     """Fail tests that try to make uncassetted external network calls."""
     if request.node.get_closest_marker("allow_net"):

@@ -13,7 +13,6 @@ SENSITIVE_FILE_PATTERNS = {
     ".health-sync-token",
     ".apple-health-first-sync",
     ".open-wearables-password",
-    ".google-calendar-ical-url*",
     ".mcp-read-token",
     ".whoop-protected-material*",
     ".env",
@@ -125,8 +124,6 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         ".health-sync-token",
         ".apple-health-first-sync",
         ".open-wearables-password",
-        ".google-calendar-ical-url",
-        ".google-calendar-ical-url.k3j2h1",
         ".mcp-read-token",
         ".whoop-protected-material-example.json",
         ".env",
@@ -137,7 +134,6 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         "support/.flask-secret",
         "support/.health-sync-token",
         "support/.open-wearables-password",
-        "support/.google-calendar-ical-url",
         "support/.mcp-read-token",
         "support/.whoop-protected-material-example.json",
         "support/.env.prod",
@@ -159,7 +155,6 @@ def test_gitignore_excludes_protected_fallback_files() -> None:
     }
 
     assert ".open-wearables-password" in rules
-    assert ".google-calendar-ical-url*" in rules  # not the mkstemp temp file (..name.XXXX); that is removed in finally
     assert ".whoop-protected-material*" in rules
     assert ".mcp-*" in rules  # covers .mcp-read-token at any depth
 

@@ -14,7 +14,6 @@ server.log
 .health-sync-token
 .apple-health-first-sync
 .open-wearables-password
-.google-calendar-ical-url*
 .mcp-read-token
 .whoop-client-id
 .whoop-oauth-state*
@@ -25,7 +24,6 @@ server.log
 **/.health-sync-token
 **/.apple-health-first-sync
 **/.open-wearables-password
-**/.google-calendar-ical-url*
 **/.mcp-read-token
 **/.whoop-client-id
 **/.whoop-oauth-state*
