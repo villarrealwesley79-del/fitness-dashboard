@@ -6,7 +6,6 @@ material are rejected before persistence.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -1016,9 +1015,7 @@ def preferred_daily_facts(
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM wearable_daily_facts WHERE profile_key = ? AND date >= ? AND date <= ? "
-            f"AND (metric IN ({','.join('?' for _ in metric_list)})"
-            # a night's representative record is judged on all its sleep metrics, whatever the caller asked for
-            + (" OR metric LIKE 'sleep\\_%' ESCAPE '\\')" if "sleep_duration" in metric_list else ")"),
+            f"AND metric IN ({','.join('?' for _ in metric_list)})",
             (_normalize_profile_key(profile_key), start, end, *metric_list),
         ).fetchall()
     grouped: dict[tuple[str, str], list] = {}
@@ -1048,26 +1045,14 @@ def preferred_daily_facts(
     conflicts: dict[str, str] = {}
     gap_fills: dict[str, str] = {}  # the top-ranked provider logged only a fragment: the next real night fills in
     fragments: dict[str, set] = {}  # a night with a real duration: its sub-hour records (provider, source_id) never feed any sleep metric
-    night_record: dict[str, dict[str, object]] = {}  # date -> provider -> source_id of that provider's representative record
-    sleep_metrics_carried = Counter(  # how many sleep metrics each record supplies
-        (d, c[2], c[3]["source_id"]) for (d, m), cs in grouped.items() if _default_metric_domain(m) == "sleep" for c in cs
-    )
     for (date_s, metric), candidates in grouped.items():
         tolerance = CONFLICT_TOLERANCE.get(metric)
         if tolerance is None:
             continue
-        # Each provider's representative night: live before archive, then the fullest record, then the sorted order.
-        reps: dict[str, tuple] = {}
-        for c in candidates:
-            if c[1] < MIN_NIGHT_SLEEP_MIN:
-                continue
-            best = reps.get(c[2])
-            if best is None or (c[0][1], -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])]) < (
-                best[0][1], -sleep_metrics_carried[(date_s, best[2], best[3]["source_id"])]
-            ):
-                reps[c[2]] = c
-        by_provider = {p: c[1] for p, c in reps.items()}
-        night_record[date_s] = {p: c[3]["source_id"] for p, c in reps.items()}
+        by_provider: dict[str, float] = {}
+        for _rank, other_value, other_provider, _row in candidates:
+            if other_value >= MIN_NIGHT_SLEEP_MIN:
+                by_provider.setdefault(other_provider, other_value)
         if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
             conflicts[date_s] = min(by_provider, key=by_provider.get)
         elif by_provider and candidates[0][1] < MIN_NIGHT_SLEEP_MIN:
@@ -1075,23 +1060,15 @@ def preferred_daily_facts(
         if by_provider:
             fragments[date_s] = {(c[2], c[3]["source_id"]) for c in candidates if c[1] < MIN_NIGHT_SLEEP_MIN}
     for (date_s, metric), candidates in grouped.items():
-        if metric not in metric_list:
-            continue  # loaded only to rank the night's records
         forced = None
         if _default_metric_domain(metric) == "sleep":
             forced = conflicts.get(date_s) or gap_fills.get(date_s)
-            # A forced night's duration is the representative that justified the choice; an unforced one is capped below. Other metrics stay free outside a forced night.
-            pin = forced or (metric in CONFLICT_TOLERANCE and next(iter(night_record.get(date_s, {})), None))
             candidates = [
                 c for c in candidates
-                if (not pin or (c[2] == pin and (not forced or c[3]["source_id"] == night_record[date_s][pin])))
-                and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
+                if (not forced or c[2] == forced) and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
             ]
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
-            if pin and not forced:  # an unforced night never reports more than its first stored record or its representative
-                rep = next((c for c in candidates if c[3]["source_id"] == night_record[date_s][pin]), candidates[0])
-                candidates = [min(candidates[0], rep, key=lambda c: c[1])]
         rank, value, provider, row = candidates[0]
         conflict = "conservative_value_used" if date_s in conflicts and forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {

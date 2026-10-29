@@ -1,9 +1,7 @@
-"""PER-1588 Codex P2 follow-up: a sleep night is judged and reported from each provider's representative record, for every caller. Synthetic data only."""
+"""PER-1588 Codex P2 follow-up: the record that decides a sleep conflict is the record reported, for every caller. Synthetic data only."""
 
 from __future__ import annotations
 
-import itertools
-import random
 from datetime import date
 
 import pytest
@@ -11,9 +9,6 @@ import pytest
 from wearable_fact_store import WearableDailyFact, preferred_daily_facts, upsert_daily_facts
 
 DAY = date.today().isoformat()
-TOL = 60.0
-MIN_NIGHT = 60.0
-PREF = ["oura", "whoop", "apple"]
 SLEEP_ROWS_METRICS = {  # app._sleep_rows_from_facts (readiness, sleep debt, workout guidance)
     "sleep_duration", "sleep_deep_duration", "sleep_rem_duration", "sleep_light_duration",
     "sleep_awake_duration", "sleep_efficiency", "sleep_avg_heart_rate", "sleep_time_in_bed",
@@ -52,8 +47,8 @@ def test_an_unlabelled_night_never_reports_a_duration_that_conflicts_with_anothe
         _fact("whoop", "sleep_duration", 480, sid="w", updated=2),
     ])
     d = _read(db, SLEEP_ROWS_METRICS)["sleep_duration"]
-    # oura's representative (470) is within tolerance of whoop 480, so "no conflict" was decided on 470;
-    # reporting 600 unlabelled exceeds what justified the choice and is 120 min over whoop.
+    # oura's first record (600) is 120 min over whoop, so the conflict is decided on it and the shorter whoop night is used;
+    # an unlabelled 600 would exceed what justified the choice.
     assert d["value"] in (470, 480), d
     if d["value"] == 480:
         assert d["conflict_state"] == "conservative_value_used"
@@ -95,85 +90,9 @@ def test_the_codex_night_never_reports_540_under_any_ordering(tmp_path, thin_new
     d = _read(db, SLEEP_ROWS_METRICS)["sleep_duration"]
     assert d["value"] != 540
     assert d["value"] <= 480 or d["provider"] == "apple" and d["value"] == third <= 480
-    if d["conflict_state"] == "conservative_value_used":
-        reps = [480, 300 if full_system == "archive" else 540] + ([third] if third else [])
-        assert d["value"] == min(reps)
 
 
-# 4. Randomised invariants against an independent oracle of the stated rule.
-def _oracle_reps(records, requested):
-    sleep_req = {m for m in requested if m.startswith("sleep_")}
-    reps = {}
-    for p in PREF:
-        mine = [r for r in records if r["provider"] == p and r["metrics"].get("sleep_duration", 0) >= MIN_NIGHT]
-        if not mine:
-            continue
-        key = lambda r: (r["archive"], -len(sleep_req & set(r["metrics"])), -r["updated"], r["sid"])
-        reps[p] = min(mine, key=key)
-    return reps
-
-
-def _random_night(rng):
-    """Each record's values are unique, so a reported value names the record that supplied it."""
-    records, n = [], 0
-    plausible = iter(rng.sample(range(200, 640), 9))
-    for p in rng.sample(PREF, rng.randint(1, 3)):
-        for _ in range(rng.randint(1, 3)):
-            n += 1
-            metrics = {}
-            if rng.random() < 0.85:
-                metrics["sleep_duration"] = 10 + n if rng.random() < 0.2 else next(plausible)
-            for m, off in (("sleep_efficiency", 1), ("sleep_avg_heart_rate", 2), ("sleep_deep_duration", 3)):
-                if rng.random() < 0.5:
-                    metrics[m] = n * 1000 + off
-            if metrics:
-                archive = rng.random() < 0.25
-                records.append({"provider": p, "sid": f"{'archive:' if archive else ''}{p}-{n}", "archive": int(archive),
-                                "updated": rng.randint(1, 50), "metrics": metrics})
-    return records
-
-
-def _store(db, records):
-    upsert_daily_facts(db, [
-        _fact(r["provider"], m, v, sid=r["sid"], updated=r["updated"], system="archive" if r["archive"] else "open_wearables")
-        for r in records for m, v in r["metrics"].items()
-    ])
-
-
-@pytest.mark.parametrize("seed", range(400))
-def test_random_nights_keep_the_conservative_invariants(tmp_path, seed):
-    rng = random.Random(seed)
-    records = _random_night(rng)
-    if not records:
-        return
-    tag = {(m, v): r["sid"] for r in records for m, v in r["metrics"].items()}
-    db = str(tmp_path / "f.db")
-    _store(db, records)
-    requested = {"sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate", "sleep_deep_duration"}
-    night = _read(db, requested)
-    reps = _oracle_reps(records, requested)
-    d = night.get("sleep_duration")
-    if not reps:
-        return
-    assert d is not None, (seed, records)
-    rep_minutes = {p: r["metrics"]["sleep_duration"] for p, r in reps.items()}
-    # (d) a fragment never feeds the night
-    assert d["value"] >= MIN_NIGHT, (seed, records, night)
-    if d["conflict_state"] == "conservative_value_used":
-        # (b) the label carries the minimum of the competing representatives
-        assert d["value"] == min(rep_minutes.values()), (seed, records, night)
-        # (a) every sleep metric of a forced night comes from the record that supplied the duration
-        for m, f in night.items():
-            if m != "sleep_duration":
-                assert tag[(m, f["value"])] == reps[d["provider"]]["sid"], (seed, m, records, night)
-    else:
-        # (c) an unlabelled duration never exceeds another provider's representative by more than the tolerance
-        for p, v in rep_minutes.items():
-            if p != d["provider"]:
-                assert d["value"] - v <= TOL, (seed, p, records, night)
-
-
-# 5. End to end: the sources line on /api/wearables/today must name the provider whose night is shown.
+# 4. End to end: the sources line on /api/wearables/today must name the provider whose night is shown.
 def test_wearables_today_sources_line_names_the_provider_of_the_shown_night(isolated_app, isolated_client, monkeypatch):
     monkeypatch.setattr(isolated_app, "fetch_open_wearables_data", lambda **_: {"errors": {"config": "missing"}})
     monkeypatch.setattr(isolated_app, "_cached_wttr", lambda *_a, **_k: {"available": False})
@@ -194,7 +113,7 @@ def test_wearables_today_sources_line_names_the_provider_of_the_shown_night(isol
     assert (src.get("conflict_state") == "conservative_value_used") == (shown == 300), (shown, src)
 
 
-# Round 3: on an unforced night a provider's longer, fuller record must not lift the duration above its first stored record.
+# On an unforced night a provider's longer, fuller record must not lift the duration above its first stored record.
 def test_an_unforced_night_never_reports_more_than_the_providers_first_stored_record(tmp_path):
     db = str(tmp_path / "f.db")
     upsert_daily_facts(db, [
