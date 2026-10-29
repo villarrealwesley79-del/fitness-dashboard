@@ -8660,8 +8660,8 @@ def sleep_summary():
                 "light_sleep_min": night.get("light_sleep_min"),
                 "awake_time_min": night.get("awake_time_min"),
                 "sleep_score": None,
-                "avg_heart_rate": night.get("avg_heart_rate") or 0,
-                "efficiency": night.get("efficiency") or 0,
+                "avg_heart_rate": night.get("avg_heart_rate"),
+                "efficiency": night.get("efficiency"),
                 "source": night.get("provider"),
             },
             "week_average": {
@@ -8669,7 +8669,7 @@ def sleep_summary():
                 "score": None,
                 "deep_min": int(average("deep_sleep_min")) if average("deep_sleep_min") is not None else None,
                 "rem_min": int(average("rem_sleep_min")) if average("rem_sleep_min") is not None else None,
-                "avg_heart_rate": avg_hr or 0,
+                "avg_heart_rate": avg_hr,
             },
             "consistency": {
                 "bedtime_circular_std_dev_min": bedtime_variance,
