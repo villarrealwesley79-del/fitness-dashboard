@@ -1333,8 +1333,8 @@
 
     function openWearablesProviderAliases(provider) {
         const normalized = normalizeOpenWearablesProviderId(provider);
-        if (normalized === 'apple' || normalized === 'healthkit') {
-            return ['apple', 'healthkit'];
+        if (normalized === 'apple' || normalized === 'apple_health' || normalized === 'healthkit') {
+            return ['apple', 'apple_health', 'healthkit'];
         }
         if (normalized === 'google' || normalized === 'google_health_connect' || normalized === 'health_connect') {
             return ['google', 'google_health_connect', 'health_connect'];
