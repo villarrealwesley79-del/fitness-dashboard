@@ -75,9 +75,60 @@ def test_body_measurement_accepts_the_left_right_tape_strings_the_form_sends(fit
 
 
 def test_login_redirect_no_longer_carries_the_dead_shell_reload_flag():
-    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    assert "fd_shell_reload" not in (root / "app.py").read_text() + (root / "auth.py").read_text()
+
+
+def test_the_log_tab_has_no_strength_quick_log_card():
     html = (Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text()
     assert "btn-log-strength" not in html and "rpe-row" not in html
+
+
+# ---- front end --------------------------------------------------------------
+
+def test_focus_and_tap_never_confirm_an_rpe_but_editing_does():
+    out = run_app_js(
+        ["rpeInteractionObserves"],
+        """
+process.stdout.write(JSON.stringify(['click', 'focus', 'pointerdown', 'input', 'change'].map(
+  (type) => e.rpeInteractionObserves({ type, isTrusted: true }))));
+""",
+    )
+    assert out == [False, False, False, True, True]
+
+
+def test_undo_treats_409_as_restored_and_other_errors_as_failures():
+    out = run_app_js(
+        ["restoreDeletedWorkout", "state"],
+        """
+const toasts = [];
+sandbox.__fitSet.toast((message, kind) => toasts.push([message, kind || 'ok']));
+sandbox.__fitSet.renderHistory(async () => {});
+sandbox.__fitSet.api(async () => { throw new Error('409 /api/restore-history: {"error":{"code":"conflict"}}'); });
+await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
+sandbox.__fitSet.api(async () => { throw new Error('500 /api/restore-history: boom'); });
+await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
+process.stdout.write(JSON.stringify(toasts));
+""",
+        mocks=["toast", "renderHistory", "api"],
+    )
+    assert out == [["Workout restored", "ok"], ["Restore failed", "err"]]
+
+
+@pytest.mark.parametrize("flag", [{}, {"rpe_observed": False}], ids=["legacy-no-flag", "rpe-not-observed"])
+def test_missed_reps_reduce_load_even_when_the_rpe_is_unobserved(fitness_app, flag):
+    sets = [{"weight_lbs": 300, "reps": 6, "rpe": 7, **flag}, {"weight_lbs": 300, "reps": 5, "rpe": 7, **flag}]
+    last = fitness_app._get_last_exercise_performance(
+        [{"date": "2026-06-01", "exercises": [{"machine": "Leg Press", "sets": sets}]}], "Leg Press")
+    weight, reps, _note = fitness_app._apply_progressive_overload(300, 10, 8.0, True, last)
+    assert (weight, reps) == (295, 10)
+
+
+def test_the_log_tab_segmented_control_has_a_column_per_button():
+    root = Path(__file__).resolve().parents[1]
+    buttons = (root / "templates" / "index.html").read_text().count('class="seg-btn')
+    css = (root / "static" / "css" / "style.css").read_text()
+    assert f"grid-template-columns: repeat({buttons}, 1fr)" in css[css.index(".segmented {"):][:200]
 
 
 def test_stats_avg_rpe_ignores_unconfirmed_targets():

@@ -2636,6 +2636,10 @@ def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound,
     min_reps = last_perf.get("min_reps", 0)
     completed_reps = min_reps >= base_reps
 
+    # Missed reps are evidence on their own, even when no RPE was observed.
+    if not completed_reps:
+        return max(5, base_weight - weight_step), base_reps, "Auto-regulated: reduce load"
+
     if avg_rpe is None:
         return base_weight, base_reps, "Maintain load: RPE missing"
 
@@ -2643,7 +2647,7 @@ def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound,
         return base_weight + weight_step, base_reps, f"Progression: +{weight_step} lbs"
     if abs(avg_rpe - target_rpe) <= 0.25 and completed_reps:
         return base_weight, base_reps + 1, "Progression: +1 rep"
-    if avg_rpe > target_rpe + 0.25 or not completed_reps:
+    if avg_rpe > target_rpe + 0.25:
         adjusted = max(5, base_weight - weight_step)
         return adjusted, base_reps, "Auto-regulated: reduce load"
 

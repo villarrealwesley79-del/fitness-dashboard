@@ -952,7 +952,7 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 
 .segmented {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     background: var(--bg-card);
     border: 1px solid var(--border-1);
     border-radius: 12px;
