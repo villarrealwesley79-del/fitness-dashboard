@@ -54,3 +54,16 @@ def test_a_forced_night_uses_the_one_provider_record_that_carries_the_most_sleep
     assert {metric: fact["value"] for metric, fact in night.items()} == {
         "sleep_duration": 300, "sleep_efficiency": 90, "sleep_avg_heart_rate": 55,
     }
+
+
+def test_a_forced_night_keeps_live_over_a_fuller_archive_record(tmp_path):
+    db = str(tmp_path / "facts.db")
+    upsert_daily_facts(db, [
+        _fact("oura", "sleep_duration", 480, source_id="o"),
+        _fact("whoop", "sleep_duration", 300, source_id="live"),
+        _fact("whoop", "sleep_duration", 320, source_id="archive:1", system="archive", freshness="stale"),
+        _fact("whoop", "sleep_efficiency", 85, source_id="archive:1", system="archive", freshness="stale"),
+        _fact("whoop", "sleep_avg_heart_rate", 50, source_id="archive:1", system="archive", freshness="stale"),
+    ])
+    fact = _read(db, "sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate")["sleep_duration"]
+    assert (fact["value"], fact["via"]) == (300, "open_wearables")

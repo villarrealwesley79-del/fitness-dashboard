@@ -279,54 +279,11 @@
             <div class="tab-title-row"><h2 class="tab-title">Log Workout</h2><span class="tab-sub" id="log-date-display">—</span></div>
 
             <div class="segmented">
-                <button class="seg-btn active" data-log-type="strength" type="button">Strength</button>
-                <button class="seg-btn" data-log-type="cardio" type="button">Cardio</button>
+                <button class="seg-btn active" data-log-type="cardio" type="button">Cardio</button>
                 <button class="seg-btn" data-log-type="recovery" type="button">Recovery</button>
             </div>
 
-            <div id="panel-strength" class="log-panel active">
-                <form id="form-strength" class="form-grid" onsubmit="return false;">
-                    <div class="form-field">
-                        <label for="log-date">Date</label>
-                        <input type="date" id="log-date" name="date" required>
-                    </div>
-                    <div class="form-field">
-                        <label for="log-exercise">Exercise</label>
-                        <select id="log-exercise" name="exercise" required><option value="">Select exercise…</option></select>
-                    </div>
-                    <div class="form-row-2">
-                        <div class="form-field"><label for="log-sets">Sets</label><input type="number" id="log-sets" min="1" value="3"></div>
-                        <div class="form-field"><label for="log-reps">Reps</label><input type="number" id="log-reps" min="1" value="10"></div>
-                    </div>
-                    <div class="form-field">
-                        <label for="log-weight">Weight <span class="field-hint">lbs</span></label>
-                        <input type="number" id="log-weight" min="0" step="0.5" placeholder="175">
-                    </div>
-                    <div class="form-field">
-                        <label>RPE</label>
-                        <div class="rpe-row" id="rpe-row">
-                            <button type="button" data-rpe="1">1</button>
-                            <button type="button" data-rpe="2">2</button>
-                            <button type="button" data-rpe="3">3</button>
-                            <button type="button" data-rpe="4">4</button>
-                            <button type="button" data-rpe="5">5</button>
-                            <button type="button" data-rpe="6">6</button>
-                            <button type="button" data-rpe="7" class="active">7</button>
-                            <button type="button" data-rpe="8">8</button>
-                            <button type="button" data-rpe="9">9</button>
-                            <button type="button" data-rpe="10">10</button>
-                        </div>
-                        <input type="hidden" id="log-rpe" value="7">
-                    </div>
-                    <div class="form-field">
-                        <label for="log-notes">Notes <span class="field-hint">optional</span></label>
-                        <textarea id="log-notes" placeholder="How did it feel?"></textarea>
-                    </div>
-                    <button id="btn-log-strength" class="btn btn-primary btn-block" type="button">Log Set</button>
-                </form>
-            </div>
-
-            <div id="panel-cardio" class="log-panel">
+            <div id="panel-cardio" class="log-panel active">
                 <form id="form-cardio" class="form-grid" onsubmit="return false;">
                     <div class="form-field"><label for="cardio-date">Date</label><input type="date" id="cardio-date" name="date" required></div>
                     <div class="form-field">

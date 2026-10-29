@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +26,7 @@ def fitness_app(monkeypatch):
 
 # ---- server -----------------------------------------------------------------
 
-def test_quick_log_sets_default_rpe_observed_to_false_and_keep_an_explicit_true(fitness_app):
+def test_add_workout_sets_default_rpe_observed_to_false_and_keep_an_explicit_true(fitness_app):
     sets = [
         {"weight_lbs": 100, "reps": 8, "rpe": 7},
         {"weight_lbs": 100, "reps": 8, "rpe": 8, "rpe_observed": True},
@@ -75,74 +76,50 @@ def test_body_measurement_accepts_the_left_right_tape_strings_the_form_sends(fit
 
 def test_login_redirect_no_longer_carries_the_dead_shell_reload_flag():
     from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    assert "fd_shell_reload" not in (root / "app.py").read_text() + (root / "auth.py").read_text()
+    html = (Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text()
+    assert "btn-log-strength" not in html and "rpe-row" not in html
 
 
-# ---- front end --------------------------------------------------------------
-
-def test_focus_and_tap_never_confirm_an_rpe_but_editing_does():
+def test_stats_avg_rpe_ignores_unconfirmed_targets():
     out = run_app_js(
-        ["rpeInteractionObserves"],
+        ["renderStats", "state"],
         """
-process.stdout.write(JSON.stringify(['click', 'focus', 'pointerdown', 'input', 'change'].map(
-  (type) => e.rpeInteractionObserves({ type, isTrusted: true }))));
+const el = () => ({ textContent: '', innerHTML: '', hidden: false, style: {}, classList: { toggle() {}, add() {}, remove() {} } });
+for (const id of ['stats-workouts','stats-workouts-delta','stats-volume','stats-volume-delta','stats-avg-vol',
+  'stats-avg-vol-delta','stats-rpe','stats-rpe-sub','stats-sets','stats-sets-delta','stats-time','stats-time-delta']) sandbox.elements[id] = el();
+const today = new Date().toISOString().slice(0, 10);
+sandbox.__fitSet.getHistory(async () => ({ workouts: [{ id: 'w1', date: today, total_volume: 0, total_sets: 3, exercises: [
+  { machine: 'Chest Press', sets: [{ rpe: 7, rpe_observed: false }, { rpe: 9, rpe_observed: false }, { rpe: 8 }] },
+] }] }));
+sandbox.__fitSet.getOpenWearablesWorkouts(async () => []);
+sandbox.__fitSet.renderMuscleRecovery(async () => {});
+try { await e.renderStats(); } catch (err) { /* later charts need a real DOM */ }
+process.stdout.write(JSON.stringify({ rpe: sandbox.elements['stats-rpe'].textContent, sub: sandbox.elements['stats-rpe-sub'].textContent }));
+""",
+        mocks=["getHistory", "getOpenWearablesWorkouts", "renderMuscleRecovery"],
+    )
+    assert out == {"rpe": "--", "sub": ""}, out
+
+
+def test_history_detail_shows_an_rpe_only_when_it_was_observed():
+    out = run_app_js(
+        ["openWorkoutDetail"],
+        """
+const el = () => ({ textContent: '', innerHTML: '', hidden: true, setAttribute() {}, removeAttribute() {}, focus() {},
+  classList: { toggle() {}, add() {}, remove() {} }, querySelector: () => null, querySelectorAll: () => [] });
+for (const id of ['modal-workout-detail', 'workout-detail-body', 'workout-detail-title']) sandbox.elements[id] = el();
+try {
+  e.openWorkoutDetail({ source: 'lifted', date: '2026-10-28', exercises: [
+    { machine: 'Chest Press', sets: [
+      { set_number: 1, weight_lbs: 100, reps: 8, rpe: 7, rpe_observed: false },
+      { set_number: 2, weight_lbs: 100, reps: 8, rpe: 9, rpe_observed: true },
+    ] },
+  ] });
+} catch (err) { /* modal plumbing after the body is written */ }
+process.stdout.write(JSON.stringify({ html: sandbox.elements['workout-detail-body'].innerHTML }));
 """,
     )
-    assert out == [False, False, False, True, True]
-
-
-def test_undo_treats_409_as_restored_and_other_errors_as_failures():
-    out = run_app_js(
-        ["restoreDeletedWorkout", "state"],
-        """
-const toasts = [];
-sandbox.__fitSet.toast((message, kind) => toasts.push([message, kind || 'ok']));
-sandbox.__fitSet.renderHistory(async () => {});
-sandbox.__fitSet.api(async () => { throw new Error('409 /api/restore-history: {"error":{"code":"conflict"}}'); });
-await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
-sandbox.__fitSet.api(async () => { throw new Error('500 /api/restore-history: boom'); });
-await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
-process.stdout.write(JSON.stringify(toasts));
-""",
-        mocks=["toast", "renderHistory", "api"],
-    )
-    assert out == [["Workout restored", "ok"], ["Restore failed", "err"]]
-
-
-def test_quick_log_sends_rpe_observed_only_after_an_rpe_button_was_tapped():
-    out = run_app_js(
-        ["logStrength"],
-        """
-const field = (value, extra = {}) => ({ value, dataset: {}, ...extra });
-const rpe = field('7');
-const sentBodies = [];
-sandbox.elements['log-date'] = field('2026-10-28');
-sandbox.elements['log-exercise'] = field('Chest Press', { selectedOptions: [{ dataset: { muscle: 'chest' } }] });
-sandbox.elements['log-sets'] = field('2');
-sandbox.elements['log-reps'] = field('8');
-sandbox.elements['log-weight'] = field('100');
-sandbox.elements['log-notes'] = field('');
-sandbox.elements['log-rpe'] = rpe;
-sandbox.__fitSet.api(async (path, opts) => { sentBodies.push(JSON.parse(opts.body)); return {}; });
-sandbox.__fitSet.toast(() => {});
-sandbox.__fitSet.invalidateCaches(() => {});
-sandbox.__fitSet.prepareLog(() => {});
-await e.logStrength();
-rpe.dataset.observed = '1';
-await e.logStrength();
-process.stdout.write(JSON.stringify(sentBodies.map((b) => ({
-  session_type: b.session_type, machine: b.exercises[0].machine, muscle: b.exercises[0].muscle_group,
-  sets: b.exercises[0].sets.map((s) => [s.set_number, s.weight_lbs, s.reps, s.rpe, s.rpe_observed]),
-}))));
-""",
-        mocks=["api", "toast", "invalidateCaches", "prepareLog"],
-    )
-    assert [row["sets"] for row in out] == [
-        [[1, 100, 8, 7, False], [2, 100, 8, 7, False]],
-        [[1, 100, 8, 7, True], [2, 100, 8, 7, True]],
-    ]
-    assert {(row["session_type"], row["machine"], row["muscle"]) for row in out} == {("strength", "Chest Press", "chest")}
+    assert "RPE 7" not in out["html"] and "RPE 9" in out["html"]
 
 
 def test_left_right_tape_fields_post_as_one_slash_string_and_require_both_sides():

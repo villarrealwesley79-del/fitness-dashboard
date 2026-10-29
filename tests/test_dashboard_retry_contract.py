@@ -405,32 +405,6 @@ process.stdout.write(JSON.stringify({ aborted, message }));
     assert output["message"] == "aborted"
 
 
-def test_handle_unauthorized_preserves_active_workout_and_reload_paths():
-    output = run_app_js(
-        ["handleUnauthorizedResponse"],
-        """
-sandbox.location.reload = () => { sandbox.__reloaded = true; };
-let toasts = [];
-sandbox.__fitSet.toast((message, tone) => toasts.push({ message, tone }));
-let active = true;
-sandbox.__fitSet.activeWorkoutHasProgress(() => active);
-const guarded = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
-let first = '';
-try { await e.handleUnauthorizedResponse(guarded); } catch (error) { first = error.message; }
-active = false;
-const reload = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
-let second = '';
-try { await e.handleUnauthorizedResponse(reload); } catch (error) { second = error.message; }
-process.stdout.write(JSON.stringify({ first, second, reloaded: Boolean(sandbox.__reloaded), toasts }));
-""",
-        mocks=["toast", "activeWorkoutHasProgress"],
-    )
-    assert output["first"] == "reload required after workout"
-    assert output["second"] == "reload required"
-    assert output["reloaded"] is True
-    assert output["toasts"] == [{"message": "Update ready after workout. Refresh when finished.", "tone": "warn"}]
-
-
 def test_fit233_adaptation_release_assets_and_reload_contract():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()

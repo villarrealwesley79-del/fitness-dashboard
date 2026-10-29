@@ -163,6 +163,6 @@ def test_thread_with_free_fds_rotates_and_keeps_a_contiguous_run_of_lines(tmp_pa
     assert old, len(old)  # the last rotation may land just before the writer stops, leaving the new file empty
     run = old + new
     assert run == list(range(run[0], run[0] + len(run))), "a line went missing across rotation"
-    assert run[-1] == r["written"] - 1 or not new
+    assert run[-1] == r["written"] - 1
     print("normal", r, "lines kept", len(run))
 

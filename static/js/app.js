@@ -22,7 +22,6 @@
         analytics: null,
         muscleFatigue: null,
         nextWorkout: null,
-        exercises: null,
         openWearablesStatus: null,
         wearableSources: null,
         openWearablesUi: {
@@ -169,21 +168,6 @@
 
     async function handleUnauthorizedResponse(res) {
         if (!res || res.status !== 401) return;
-        let reloadRequired = false;
-        try {
-            const body = await res.clone().json();
-            reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
-        } catch {
-            reloadRequired = false;
-        }
-        if (reloadRequired) {
-            if (activeWorkoutHasProgress()) {
-                toast('Update ready after workout. Refresh when finished.', 'warn');
-                throw new Error('reload required after workout');
-            }
-            window.location.reload();
-            throw new Error('reload required');
-        }
         window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
         throw new Error('unauthorized');
     }
@@ -1004,15 +988,6 @@
         catch { state.muscleFatigue = null; }
         return state.muscleFatigue;
     }
-    async function getExercises(force = false) {
-        if (!force && state.exercises) return state.exercises;
-        try {
-            const r = await api('/api/exercises');
-            state.exercises = r && r.exercises ? r.exercises : Array.isArray(r) ? r : [];
-        } catch { state.exercises = []; }
-        return state.exercises;
-    }
-
     function invalidateCaches() {
         for (const key in fetchSeq) fetchSeq[key] += 1;
         state.dashboard = state.vitals = state.oura = state.ouraSleep = null;
@@ -2748,20 +2723,8 @@
 
     // --- Log -----------------------------------------------------
     async function prepareLog() {
-        const dateInputs = ['log-date', 'cardio-date', 'recovery-date'];
+        const dateInputs = ['cardio-date', 'recovery-date'];
         dateInputs.forEach((id) => { if ($(id) && !$(id).value) $(id).value = today(); });
-
-        const select = $('log-exercise');
-        if (select && select.options.length <= 1) {
-            const list = await getExercises();
-            list.forEach((ex) => {
-                const opt = document.createElement('option');
-                const name = typeof ex === 'string' ? ex : (ex.name || ex.exercise || ex.machine);
-                opt.value = name; opt.textContent = name;
-                opt.dataset.muscle = (typeof ex === 'string' ? '' : (ex.muscle || ex.muscle_group || ''));
-                select.appendChild(opt);
-            });
-        }
 
         // today's summary
         const hist = await getHistory();
@@ -3376,7 +3339,7 @@
                     <span>${escapeHtml(set.set_number || '')}</span>
                     <span>${escapeHtml(set.weight_lbs ?? 0)} lb</span>
                     <span>${escapeHtml(set.reps ?? 0)} reps</span>
-                    <span>${set.rpe ? `RPE ${escapeHtml(set.rpe)}` : 'RPE —'}</span>
+                    <span>${set.rpe && set.rpe_observed === true ? `RPE ${escapeHtml(set.rpe)}` : 'RPE —'}</span>
                     ${set.notes ? `<div class="workout-set-note">${escapeHtml(set.notes)}</div>` : ''}
                 </div>
             `).join('');
@@ -3899,7 +3862,7 @@
         const avgVol = workouts.length ? totalVol / workouts.length : 0;
         const rpeList = [];
         workouts.forEach((w) => (w.exercises || []).forEach((e) => (e.sets || []).forEach((s) => {
-            if (s.rpe != null) rpeList.push(Number(s.rpe));
+            if (s.rpe != null && s.rpe_observed === true) rpeList.push(Number(s.rpe));
         })));
         const avgRpe = rpeList.length ? rpeList.reduce((a, b) => a + b, 0) / rpeList.length : 0;
 
@@ -4748,44 +4711,6 @@
     }
 
     // --- Logging actions -----------------------------------------
-    async function logStrength() {
-        const exercise = $('log-exercise').value;
-        const setCount = Math.min(Math.floor(Number($('log-sets').value || 0)), 20);
-        if (!exercise) return toast('Pick an exercise', 'err');
-        if (!(setCount >= 1)) return toast('Enter at least one set', 'err');
-        // The hidden RPE field defaults to 7; only a tapped RPE button is an observation.
-        const row = {
-            weight_lbs: Number($('log-weight').value || 0),
-            reps: Number($('log-reps').value || 0),
-            rpe: Number($('log-rpe').value || 0),
-            rpe_observed: $('log-rpe').dataset.observed === '1',
-        };
-        const option = $('log-exercise').selectedOptions && $('log-exercise').selectedOptions[0];
-        const payload = {
-            date: $('log-date').value || today(),
-            session_type: 'strength',
-            exercises: [{
-                machine: exercise,
-                muscle_group: (option && option.dataset.muscle) || undefined,
-                sets: Array.from({ length: setCount }, (_, i) => ({ set_number: i + 1, ...row })),
-            }],
-            notes: $('log-notes').value || '',
-        };
-        try {
-            await api('/api/add-workout', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            toast('Set logged');
-            delete $('log-rpe').dataset.observed; // back to the unconfirmed default
-            $('log-rpe').value = '7';
-            qsa('#rpe-row button').forEach((x) => x.classList.toggle('active', x.dataset.rpe === '7'));
-            invalidateCaches();
-            prepareLog();
-        } catch (e) { console.error(e); toast('Log failed', 'err'); }
-    }
-
     async function logCardio() {
         const payload = {
             date: $('cardio-date').value || today(),
@@ -6880,15 +6805,6 @@
             });
         });
 
-        // RPE selector
-        qsa('#rpe-row button').forEach((b) => {
-            b.addEventListener('click', () => {
-                qsa('#rpe-row button').forEach((x) => x.classList.toggle('active', x === b));
-                $('log-rpe').value = b.dataset.rpe;
-                $('log-rpe').dataset.observed = '1';
-            });
-        });
-
         // Range chips
         qsa('#history-range-chips .chip-btn').forEach((c) => {
             c.addEventListener('click', () => {
@@ -6906,7 +6822,6 @@
         });
 
         // Log buttons
-        $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
         $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
         const bodyWeightInput = $('body-log-weight');

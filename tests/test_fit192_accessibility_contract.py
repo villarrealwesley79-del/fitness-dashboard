@@ -209,12 +209,6 @@ def test_core_log_and_settings_controls_have_programmatic_labels():
         if tag == "label" and attrs.get("for")
     }
     expected_targets = {
-        "log-date",
-        "log-exercise",
-        "log-sets",
-        "log-reps",
-        "log-weight",
-        "log-notes",
         "cardio-date",
         "cardio-type",
         "cardio-duration",

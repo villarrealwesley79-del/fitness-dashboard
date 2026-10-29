@@ -1028,7 +1028,7 @@ def preferred_daily_facts(
         if only_provider and provider != only_provider:
             continue
         if row["freshness"] == "unknown" and row["source_system"] != "archive":
-            continue  # the mapper's invalid-time marker; archive rows use `unknown` legitimately
+            continue  # the mapper writes unknown for invalid or future timestamps; archive rows are exempt by source_system
         preference = SOURCE_PREFERENCE.get(_default_metric_domain(row["metric"]), [])
         rank = (
             preference.index(provider) if provider in preference else len(preference),
@@ -1074,7 +1074,7 @@ def preferred_daily_facts(
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
             if forced:  # one provider, several plausible records: the fullest record wins
-                candidates.sort(key=lambda c: -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])])
+                candidates.sort(key=lambda c: (c[0][1], -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])]))  # live before archive, then fullest
         rank, value, provider, row = candidates[0]
         conflict = "conservative_value_used" if date_s in conflicts and forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {

@@ -1,6 +1,6 @@
 """The owner's source rule: Oura first for sleep and recovery, WHOOP first for activity."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import pytest
 
@@ -179,7 +179,7 @@ def test_multi_day_sleep_summary_stores_one_dated_fact_per_night(tmp_path):
     days = [_day(i) for i in range(5)]
     hub.store_wearable_facts(
         {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": f"{_day(-1)}T12:00:00Z",  # after today's end time whatever the clock says (future end = unknown)
             "sleep_summary": {"data": [
                 {"date": d, "source": {"provider": "oura"}, "end_time": f"{d}T08:00:00Z", "duration_minutes": 400 + n}
                 for n, d in enumerate(days)
