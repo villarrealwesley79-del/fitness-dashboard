@@ -325,10 +325,10 @@ def test_modal_markup_exposes_dialog_semantics_and_labels():
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/css/style.css?v=20261029-nocal" in html
-    assert "/static/js/app-loader.js?v=20261029-nocal" in html
-    assert "/static/js/app.js?v=20261029-nocal" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20261029-nocal" in sw
+    assert "/static/css/style.css?v=20261030-w9" in html
+    assert "/static/js/app-loader.js?v=20261030-w9" in html
+    assert "/static/js/app.js?v=20261030-w9" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20261030-w9" in sw
 
 
 def test_settings_hash_route_and_reco_sources_modal_aria_state():

@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#0b1120">
+    <meta name="theme-color" content="#f7f1e8">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>Fitness Dashboard</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20261029-nocal">
-    <link rel="stylesheet" href="/static/css/app.css?v=20261029-nocal">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261030-w9">
+    <link rel="stylesheet" href="/static/css/app.css?v=20261030-w9">
 </head>
 <body>
     <div class="app-shell">
@@ -30,7 +30,7 @@
 
             <div class="card readiness-card">
                 <div class="card-head">
-                    <div class="card-label">READINESS SCORE</div>
+                    <div class="card-label">Readiness score</div>
                     <button type="button" class="chip chip-retry" id="readiness-retry" hidden aria-live="polite">Couldn’t load · retry</button>
                     <div class="card-link" id="readiness-caret">›</div>
                 </div>
@@ -46,7 +46,7 @@
 
             <div class="card reco-card">
                 <div class="reco-head">
-                    <div class="reco-badge">RECOMMENDATION</div>
+                    <div class="reco-badge">Recommendation</div>
                     <button type="button" class="chip chip-retry" id="reco-retry" hidden aria-live="polite">Couldn’t load · retry</button>
                     <div class="reco-confidence"><span class="reco-conf-dot"></span><span id="reco-confidence-pct">--%</span></div>
                 </div>
@@ -86,7 +86,7 @@
                 </div>
             </div>
 
-            <div class="section-title">TODAY AT A GLANCE</div>
+            <div class="section-title">Today at a glance</div>
             <div class="glance-grid">
                 <div class="glance-card">
                     <div class="glance-label">Steps</div>
@@ -112,7 +112,7 @@
 
             <div class="card insight-card">
                 <div class="insight-head">
-                    <span class="insight-tag">INSIGHT</span>
+                    <span class="insight-tag">Insight</span>
                     <button type="button" class="chip chip-retry" id="insight-retry" hidden aria-live="polite">Couldn’t load · retry</button>
                 </div>
                 <div class="insight-title" id="insight-title">Gathering data…</div>
@@ -125,13 +125,13 @@
                  dashboard scroll length; charts stay one tap away. -->
             <details class="quick-trends" id="dash-quick-trends">
                 <summary class="quick-trends-summary">
-                    <span class="quick-trends-label">QUICK TRENDS</span>
+                    <span class="quick-trends-label">Quick trends</span>
                     <span class="quick-trends-caret" aria-hidden="true">›</span>
                 </summary>
                 <div class="quick-trends-body">
                     <div class="card trend-card">
                         <div class="card-head">
-                            <div class="card-label">READINESS (7D)</div>
+                            <div class="card-label">Readiness (7d)</div>
                             <div class="card-sub" id="readiness-7d-avg">avg —</div>
                         </div>
                         <div class="chart-holder" id="chart-readiness-7d"></div>
@@ -140,7 +140,7 @@
 
                     <div class="card trend-card">
                         <div class="card-head">
-                            <div class="card-label">VOLUME (4W)</div>
+                            <div class="card-label">Volume (4w)</div>
                             <div class="card-sub" id="volume-4w-sub">—</div>
                         </div>
                         <div class="chart-holder" id="chart-volume-4w"></div>
@@ -153,7 +153,7 @@
         <section id="tab-vitals" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-vitals" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Vitals</h2><span class="tab-sub" id="vitals-date">—</span></div>
 
-            <div class="section-title">CORE METRICS</div>
+            <div class="section-title">Core metrics</div>
             <div class="metric-grid-2">
                 <div class="metric-card">
                     <div class="metric-label">Resting HR</div>
@@ -177,7 +177,7 @@
                 </div>
             </div>
 
-            <div class="section-title">ACTIVITY</div>
+            <div class="section-title">Activity</div>
             <div class="metric-grid-2">
                 <div class="metric-card">
                     <div class="metric-label">Steps</div>
@@ -203,7 +203,7 @@
                 </div>
             </div>
 
-            <div class="section-title">SLEEP</div>
+            <div class="section-title">Sleep</div>
             <div class="metric-grid-2">
                 <div class="metric-card">
                     <div class="metric-label">Sleep Duration</div>
@@ -218,7 +218,7 @@
                 </div>
             </div>
 
-            <div class="section-title">BODY</div>
+            <div class="section-title">Body</div>
             <div class="metric-grid-2">
                 <div class="metric-card">
                     <div class="metric-label">Weight</div>
@@ -238,7 +238,7 @@
             <div class="tab-title-row"><h2 class="tab-title">Next Workout</h2><span class="tab-sub">Rule-Based Plan</span></div>
 
             <div class="card hero-card">
-                <div class="hero-badge">RECOMMENDED PLAN</div>
+                <div class="hero-badge">Recommended plan</div>
                 <div class="hero-title" id="nw-title">—</div>
                 <div class="hero-sub" id="nw-sub">Loading…</div>
                 <div class="hero-chips">
@@ -251,14 +251,14 @@
                 </div>
             </div>
 
-            <div class="section-title">EXERCISES</div>
+            <div class="section-title">Exercises</div>
             <div id="nw-exercise-list" class="exercise-list">
                 <div class="skeleton">Loading exercises…</div>
             </div>
 
             <div id="nw-cardio-card" class="card cardio-card" hidden>
                 <div class="card-head">
-                    <div class="card-label">CARDIO FINISHER</div>
+                    <div class="card-label">Cardio finisher</div>
                 </div>
                 <div class="cardio-body">
                     <div class="cardio-title" id="nw-cardio-title">—</div>
@@ -334,7 +334,7 @@
             <div id="log-result"></div>
 
             <div class="card summary-card">
-                <div class="card-head"><div class="card-label">TODAY'S SUMMARY</div></div>
+                <div class="card-head"><div class="card-label">Today's summary</div></div>
                 <div class="summary-grid">
                     <div><div class="summary-label">Volume</div><div class="summary-value" id="today-volume">—</div></div>
                     <div><div class="summary-label">Exercises</div><div class="summary-value" id="today-exercises">—</div></div>
@@ -358,7 +358,7 @@
 
             <div class="card">
                 <div class="card-head">
-                    <div class="card-label">WORKOUT FREQUENCY</div>
+                    <div class="card-label">Workout frequency</div>
                     <div class="card-sub" id="history-freq-sub">—</div>
                 </div>
                 <div class="big-kpi"><span id="history-count">--</span><span class="big-kpi-sub">Workouts</span></div>
@@ -368,7 +368,7 @@
 
             <div class="card">
                 <div class="card-head">
-                    <div class="card-label">VOLUME OVER TIME</div>
+                    <div class="card-label">Volume over time</div>
                     <div class="card-sub" id="history-vol-sub">—</div>
                 </div>
                 <div class="big-kpi"><span id="history-total-volume">--</span><span class="big-kpi-sub">lbs</span></div>
@@ -377,12 +377,12 @@
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">TOP EXERCISES</div></div>
+                <div class="card-head"><div class="card-label">Top exercises</div></div>
                 <div id="history-top-exercises" class="top-list"></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">RECENT WORKOUTS</div></div>
+                <div class="card-head"><div class="card-label">Recent workouts</div></div>
                 <div id="history-type-filter" class="history-filter-chips" aria-label="Filter recent workouts"></div>
                 <div id="history-workout-list" class="workout-list"></div>
             </div>
@@ -409,29 +409,29 @@
                  the recomp signal the /api/body-recomp summary already
                  computes (current vs target weight/BF, weeks-to-target). -->
             <div class="card body-recomp-card" id="body-recomp-card" hidden>
-                <div class="card-head"><div class="card-label">TARGET PROGRESS</div></div>
+                <div class="card-head"><div class="card-label">Target progress</div></div>
                 <div id="body-recomp-rows" class="body-recomp-rows"></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">WEIGHT TREND (90 DAYS)</div></div>
+                <div class="card-head"><div class="card-label">Weight trend (90 days)</div></div>
                 <div class="chart-holder chart-tall" id="chart-weight"></div>
                 <div class="chart-takeaway" id="chart-weight-takeaway" hidden></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">BODY FAT TREND (90 DAYS)</div></div>
+                <div class="card-head"><div class="card-label">Body fat trend (90 days)</div></div>
                 <div class="chart-holder chart-tall" id="chart-bf"></div>
                 <div class="chart-takeaway" id="chart-bf-takeaway" hidden></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">COMPOSITION</div><div class="card-sub" id="measurements-date">—</div></div>
+                <div class="card-head"><div class="card-label">Composition</div><div class="card-sub" id="measurements-date">—</div></div>
                 <div id="measurements-grid" class="measurement-grid"></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">LOG MEASUREMENT</div></div>
+                <div class="card-head"><div class="card-label">Log measurement</div></div>
                 <form id="form-body" class="form-grid" onsubmit="return false;">
                     <div class="form-row-2">
                         <div class="form-field">
@@ -534,7 +534,7 @@
 
             <div class="card">
                 <div class="card-head">
-                    <div class="card-label">MUSCLE RECOVERY</div>
+                    <div class="card-label">Muscle recovery</div>
                     <div class="card-sub" id="muscle-recovery-sub">—</div>
                 </div>
                 <div id="muscle-recovery-empty" class="empty" hidden>No fatigue data yet — log a workout to populate.</div>
@@ -549,13 +549,13 @@
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">VOLUME BY MUSCLE GROUP</div></div>
+                <div class="card-head"><div class="card-label">Volume by muscle group</div></div>
                 <div id="chart-muscle-donut" class="donut-holder"></div>
                 <div id="muscle-legend" class="legend"></div>
             </div>
 
             <div class="card">
-                <div class="card-head"><div class="card-label">PROGRESS INSIGHTS</div></div>
+                <div class="card-head"><div class="card-label">Progress insights</div></div>
                 <div id="insights-list" class="insight-list"></div>
             </div>
         </section>
@@ -757,10 +757,6 @@
                 <div class="settings-subtitle">App</div>
                 <div class="card">
                     <div class="settings-row">
-                        <div class="settings-row-label">Dark Mode</div>
-                        <div class="settings-row-control"><span class="toggle on" aria-hidden="true"></span></div>
-                    </div>
-                    <div class="settings-row">
                         <div class="settings-row-label">Units</div>
                         <div class="settings-row-control"><span class="state-chip">Imperial (lb)</span></div>
                     </div>
@@ -775,14 +771,14 @@
         </main>
 
         <nav class="tab-bar" role="tablist" aria-label="Primary sections">
-            <button id="tab-btn-dashboard" class="tab-btn active" data-tab="tab-dashboard" type="button" role="tab" aria-controls="tab-dashboard" aria-selected="true"><span class="tab-ico">◉</span><span class="tab-lbl">Dash</span></button>
-            <button id="tab-btn-vitals" class="tab-btn" data-tab="tab-vitals" type="button" role="tab" aria-controls="tab-vitals" aria-selected="false" tabindex="-1"><span class="tab-ico">♥</span><span class="tab-lbl">Vitals</span></button>
-            <button id="tab-btn-workout" class="tab-btn" data-tab="tab-workout" type="button" role="tab" aria-controls="tab-workout" aria-selected="false" tabindex="-1"><span class="tab-ico">▲</span><span class="tab-lbl">Next</span></button>
-            <button id="tab-btn-log" class="tab-btn" data-tab="tab-log" type="button" role="tab" aria-controls="tab-log" aria-selected="false" tabindex="-1"><span class="tab-ico">+</span><span class="tab-lbl">Log</span></button>
-            <button id="tab-btn-history" class="tab-btn" data-tab="tab-history" type="button" role="tab" aria-controls="tab-history" aria-selected="false" tabindex="-1"><span class="tab-ico">⟳</span><span class="tab-lbl">History</span></button>
-            <button id="tab-btn-body" class="tab-btn" data-tab="tab-body" type="button" role="tab" aria-controls="tab-body" aria-selected="false" tabindex="-1"><span class="tab-ico">◈</span><span class="tab-lbl">Body</span></button>
-            <button id="tab-btn-stats" class="tab-btn" data-tab="tab-stats" type="button" role="tab" aria-controls="tab-stats" aria-selected="false" tabindex="-1"><span class="tab-ico">⎔</span><span class="tab-lbl">Stats</span></button>
-            <button id="tab-btn-settings" class="tab-btn" data-tab="tab-settings" type="button" role="tab" aria-controls="tab-settings" aria-selected="false" tabindex="-1"><span class="tab-ico">⚙</span><span class="tab-lbl">Settings</span></button>
+            <button id="tab-btn-dashboard" class="tab-btn active" data-tab="tab-dashboard" type="button" role="tab" aria-controls="tab-dashboard" aria-selected="true"><span class="tab-lbl">Dash</span></button>
+            <button id="tab-btn-vitals" class="tab-btn" data-tab="tab-vitals" type="button" role="tab" aria-controls="tab-vitals" aria-selected="false" tabindex="-1"><span class="tab-lbl">Vitals</span></button>
+            <button id="tab-btn-workout" class="tab-btn" data-tab="tab-workout" type="button" role="tab" aria-controls="tab-workout" aria-selected="false" tabindex="-1"><span class="tab-lbl">Next</span></button>
+            <button id="tab-btn-log" class="tab-btn" data-tab="tab-log" type="button" role="tab" aria-controls="tab-log" aria-selected="false" tabindex="-1"><span class="tab-lbl">Log</span></button>
+            <button id="tab-btn-history" class="tab-btn" data-tab="tab-history" type="button" role="tab" aria-controls="tab-history" aria-selected="false" tabindex="-1"><span class="tab-lbl">History</span></button>
+            <button id="tab-btn-body" class="tab-btn" data-tab="tab-body" type="button" role="tab" aria-controls="tab-body" aria-selected="false" tabindex="-1"><span class="tab-lbl">Body</span></button>
+            <button id="tab-btn-stats" class="tab-btn" data-tab="tab-stats" type="button" role="tab" aria-controls="tab-stats" aria-selected="false" tabindex="-1"><span class="tab-lbl">Stats</span></button>
+            <button id="tab-btn-settings" class="tab-btn" data-tab="tab-settings" type="button" role="tab" aria-controls="tab-settings" aria-selected="false" tabindex="-1"><span class="tab-lbl">Settings</span></button>
         </nav>
     </div>
 
@@ -1060,6 +1056,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20261029-nocal"></script>
+    <script src="/static/js/app-loader.js?v=20261030-w9"></script>
 </body>
 </html>

@@ -2,6 +2,8 @@
 
 Private, single-owner fitness app (Flask). Scope: workout plan and logging, sleep and recovery, body and cardio, Open Wearables as the only wearable hub. See `README.md`.
 
+@DESIGN.md
+
 ## Work
 
 - The current Linear issue description is canonical. If it and a doc disagree, the issue wins.
