@@ -70,6 +70,8 @@ html, body {
     overscroll-behavior-y: none;
 }
 
+html { scroll-padding-bottom: calc(80px + var(--safe-bottom)); } /* keyboard focus must not land under the fixed tab bar */
+
 body {
     background:
         radial-gradient(1200px 700px at 90% -10%, rgba(124,58,237,0.22) 0%, transparent 60%),
@@ -2310,7 +2312,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     position: fixed;
     left: 0; right: 0;
     bottom: calc(80px + var(--safe-bottom));
-    z-index: 80;
+    z-index: 200; /* above every modal (max 130) so a 409 or swap message shows over the active workout */
     pointer-events: none;
     display: flex;
     flex-direction: column;

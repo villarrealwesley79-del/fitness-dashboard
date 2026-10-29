@@ -876,9 +876,11 @@
     }
     async function getNextWorkout(force = false) {
         if (!force && state.nextWorkout) return state.nextWorkout;
+        const current = startFetch('nextWorkout');
         const payload = await api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
-        state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
-        return state.nextWorkout;
+        const next = payload && payload.next_workout ? payload.next_workout : null;
+        if (current()) state.nextWorkout = next; // a superseded or invalidated response must not land in state
+        return next;
     }
     async function getVitals(force = false) {
         if (!force && state.vitals) return state.vitals;
@@ -2479,6 +2481,8 @@
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';
+            $('nw-duration').textContent = '— min'; // a rest day must not keep the last plan's chips
+            $('nw-rpe').textContent = 'RPE —';
             $('nw-exercise-list').innerHTML = '<div class="empty">No exercises scheduled.</div>';
             return;
         }

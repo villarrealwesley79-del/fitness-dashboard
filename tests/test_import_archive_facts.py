@@ -262,3 +262,26 @@ def test_archived_oura_night_keeps_its_measured_time_in_bed(tmp_path):
     days = preferred_daily_facts(db, {"sleep_time_in_bed"}, "2026-01-05", "2026-01-06", "1")
     assert days["2026-01-05"]["sleep_time_in_bed"]["value"] == 480
     assert "2026-01-06" not in days
+
+
+def test_a_zero_total_apple_sleep_row_derives_asleep_minutes_from_the_stages_never_from_in_bed(tmp_path):
+    db = tmp_path / "apple_zero.db"
+    rows = {  # the HAE shape: total 0.0 beside real stages
+        "2026-07-08": {"duration_minutes": 0.0, "duration_minutes_source": "hae_asleep", "deep_minutes": 81, "rem_minutes": 112,
+                       "core_minutes": 228, "awake_minutes": 21.5, "in_bed_minutes": 442.5},
+        "2026-07-09": {"duration_minutes": 0.0, "in_bed_minutes": 400},  # no stages: nothing to derive
+        "2026-07-10": {"duration_minutes": 410, "deep_minutes": 80, "rem_minutes": 100, "core_minutes": 200},  # a real total wins
+    }
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("CREATE TABLE ah_sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, record_type TEXT, record_date TEXT, record_key TEXT, data_json TEXT)")
+        for day, data in rows.items():
+            conn.execute("INSERT INTO ah_sync_log (record_type, record_date, record_key, data_json) VALUES ('sleep', ?, '', ?)", (day, json.dumps(data)))
+        conn.commit()
+
+    facts, _ = importer.apple_facts(str(db), "2026-10-29T00:00:00Z")
+
+    durations = {f.date: f for f in facts if f.metric == "sleep_duration"}
+    assert durations["2026-07-08"].value == 421  # 81 + 112 + 228
+    assert durations["2026-07-08"].source_system == "archive"
+    assert "2026-07-09" not in durations
+    assert durations["2026-07-10"].value == 410

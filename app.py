@@ -3003,7 +3003,9 @@ def calculate_personal_records(workouts: list) -> dict:
 
     for workout in workouts:
         for exercise in workout.get("exercises", []):
-            machine = exercise["machine"]
+            machine = exercise.get("machine")
+            if not machine:
+                continue  # rows stored before the route validated the name
             if machine not in exercise_prs:
                 exercise_prs[machine] = {"all_time": 0, "all_time_date": "", "recent_30": 0, "recent_30_date": ""}
 
@@ -3278,7 +3280,9 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     exercise_freq = {}
     for w in workouts:
         for e in w.get("exercises", []):
-            machine = e["machine"]
+            machine = e.get("machine")
+            if not machine:
+                continue
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
@@ -4594,6 +4598,9 @@ def add_workout():
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+
+    if not all(isinstance(ex, dict) and ex.get("machine") for ex in exercises):
+        return api_error("Each exercise must include machine", 400, code="invalid_field")  # readers index ["machine"]
 
     for exercise in exercises:
         for set_row in (exercise.get("sets") if isinstance(exercise, dict) else None) or []:

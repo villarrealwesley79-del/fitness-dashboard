@@ -137,9 +137,9 @@ process.stdout.write(JSON.stringify({ restored, active: e.state.activeWorkout, c
 
 def test_frontend_asset_versions_stay_in_sync():
     # Stable deployment/cache constants are intentionally source contracts.
-    assert "/static/js/app-loader.js?v=20261028-w7-follow-ups" in APP_HTML
-    assert "/static/js/app.js?v=20261028-w7-follow-ups" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20261028-w7-follow-ups';" in APP_SW
+    assert "/static/js/app-loader.js?v=20261029-w7d" in APP_HTML
+    assert "/static/js/app.js?v=20261029-w7d" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20261029-w7d';" in APP_SW
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS
 

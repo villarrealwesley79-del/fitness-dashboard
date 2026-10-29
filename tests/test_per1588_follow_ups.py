@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from datetime import date
 from pathlib import Path
 
@@ -84,6 +85,27 @@ def test_the_log_tab_has_no_strength_quick_log_card():
     assert "btn-log-strength" not in html and "rpe-row" not in html
 
 
+def test_add_workout_rejects_an_exercise_without_a_machine_and_stores_nothing(fitness_app):
+    client = fitness_app.app.test_client()
+    for exercises in ([{"exercise": "Bench", "sets": []}], [{"machine": "", "sets": []}], ["Bench"]):
+        response = client.post(
+            "/api/add-workout",
+            json={"date": "2026-10-28", "session_type": "strength", "exercises": exercises},
+            headers=CSRF,
+        )
+        assert response.status_code == 400, exercises
+    assert fitness_app.WORKOUTS == []
+
+
+def test_readers_skip_a_stored_exercise_without_a_machine(fitness_app):
+    workouts = [{"date": "2026-10-28", "session_type": "strength", "exercises": [
+        {"sets": [{"weight_lbs": 100, "reps": 5}]},
+        {"machine": "Chest Press", "sets": [{"weight_lbs": 100, "reps": 5}]},
+    ]}]
+    assert list(fitness_app.calculate_personal_records(workouts)) == ["Chest Press"]
+    assert fitness_app.calculate_workout_summary_stats(workouts)["top_exercises"] == [{"exercise": "Chest Press", "count": 1}]
+
+
 # ---- front end --------------------------------------------------------------
 
 def test_focus_and_tap_never_confirm_an_rpe_but_editing_does():
@@ -102,17 +124,22 @@ def test_undo_treats_409_as_restored_and_other_errors_as_failures():
         ["restoreDeletedWorkout", "state"],
         """
 const toasts = [];
+let refreshes = 0;
 sandbox.__fitSet.toast((message, kind) => toasts.push([message, kind || 'ok']));
-sandbox.__fitSet.renderHistory(async () => {});
+sandbox.__fitSet.renderHistory(async () => { refreshes += 1; });
+e.state.history = { stale: true };
 sandbox.__fitSet.api(async () => { throw new Error('409 /api/restore-history: {"error":{"code":"conflict"}}'); });
 await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
+const after409 = { refreshes, history: e.state.history };  // the History list reloads so the restored row shows
 sandbox.__fitSet.api(async () => { throw new Error('500 /api/restore-history: boom'); });
 await e.restoreDeletedWorkout({ id: 'w1', date: '2026-10-28' });
-process.stdout.write(JSON.stringify(toasts));
+process.stdout.write(JSON.stringify({ toasts, after409, refreshes }));
 """,
         mocks=["toast", "renderHistory", "api"],
     )
-    assert out == [["Workout restored", "ok"], ["Restore failed", "err"]]
+    assert out["toasts"] == [["Workout restored", "ok"], ["Restore failed", "err"]]
+    assert out["after409"] == {"refreshes": 1, "history": None}
+    assert out["refreshes"] == 1  # a real failure does not refresh
 
 
 @pytest.mark.parametrize("flag", [{}, {"rpe_observed": False}], ids=["legacy-no-flag", "rpe-not-observed"])
@@ -351,3 +378,50 @@ process.stdout.write(JSON.stringify({ cleared, kept: e.state.nextWorkout, dashbo
     )
     assert out["cleared"] == {"failed": True, "dashboard": None, "nextWorkout": None}
     assert out["kept"] == {"id": "next-workout-endpoint-plan"} and out["dashboard"] is None
+
+
+def test_a_superseded_next_workout_response_does_not_land_in_state():
+    out = run_app_js(
+        ["getNextWorkout", "invalidateCaches", "state"],
+        ROUTER + """
+answers['/api/next-workout'] = () => 'hold';
+const older = e.getNextWorkout(true);
+const newer = e.getNextWorkout(true);
+held['/api/next-workout'][1].resolve(json({ next_workout: { id: 'newer' } }));
+await newer;
+held['/api/next-workout'][0].resolve(json({ next_workout: { id: 'older' } }));
+await older;
+const afterOlder = e.state.nextWorkout.id;
+const pending = e.getNextWorkout(true);
+e.invalidateCaches();
+held['/api/next-workout'][2].resolve(json({ next_workout: { id: 'stale' } }));
+await pending;
+process.stdout.write(JSON.stringify({ afterOlder, afterInvalidate: e.state.nextWorkout }));
+""",
+    )
+    assert out == {"afterOlder": "newer", "afterInvalidate": None}
+
+
+def test_the_rest_day_branch_resets_the_plan_chips():
+    out = run_app_js(
+        ["renderNextWorkout"],
+        ROUTER + """
+const chip = (text) => ({ textContent: text });
+for (const [id, text] of Object.entries({ 'nw-title': 'Push', 'nw-sub': 'x', 'nw-duration': '501 min', 'nw-rpe': 'RPE 8', 'nw-exercise-list': '' })) {
+  sandbox.elements[id] = chip(text);
+}
+answers['/api/next-workout'] = () => json({ next_workout: null });
+await e.renderNextWorkout();
+process.stdout.write(JSON.stringify([sandbox.elements['nw-title'].textContent, sandbox.elements['nw-duration'].textContent, sandbox.elements['nw-rpe'].textContent]));
+""",
+    )
+    assert out == ["Rest Day", "— min", "RPE —"]
+
+
+def test_the_toast_host_stacks_above_every_modal_and_focus_clears_the_tab_bar():
+    css = (Path(__file__).resolve().parents[1] / "static" / "css" / "style.css").read_text()
+    toast = int(re.search(r"\.toast-host \{[^}]*?z-index:\s*(\d+)", css).group(1))
+    others = [int(z) for z in re.findall(r"z-index:\s*(\d+)", css)]
+    others.remove(toast)
+    assert toast > max(others)
+    assert re.search(r"html \{ scroll-padding-bottom: calc\(\d+px \+ var\(--safe-bottom\)\); \}", css)
