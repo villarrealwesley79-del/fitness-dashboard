@@ -166,7 +166,7 @@ def build_recommendation_source_proof(
             used_override=open_used,
         ),
         **{
-            domain: domain_proof(domain, bool(source_inputs.get("wearable_modifier_applied")))
+            domain: domain_proof(domain, bool((source_inputs.get("domain_modifier_applied") or {}).get(domain)))
             for domain in ("sleep", "recovery", "activity")
         },
         "apple_health": proof(

@@ -151,7 +151,9 @@ def test_sleep_proof_names_the_guard_provider_when_it_raised_caution(app_db):
     body = app_db.app.test_client().get("/api/recommendation/smart").get_json()
     assert "sleep_caution" in body["recommendation_sources"]["open_wearables"]["applied_modifiers"]
     proof = body["recommendation_sources"]["source_proof"]["sleep"]
-    assert (proof["provider"], "sleep_duration" in proof["fields_used"]) == ("whoop", True), proof
+    # Round 6: the readiness estimate and sleep debt stay Oura's; the WHOOP duration the guard read is credited to WHOOP.
+    assert (proof["provider"], "sleep_duration" in proof["fields_used"]) == ("oura", False), proof
+    assert (proof["guard_source"]["provider"], proof["guard_source"]["fields_used"]) == ("whoop", ["sleep_duration"]), proof
 
 
 def test_recovery_proof_credits_the_whoop_score_the_guard_applied(app_db):

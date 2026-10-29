@@ -233,7 +233,7 @@ def import_archives(oura: str | None, apple: str | None, db_path: str, profile_k
         apple_rows, unmapped = apple_facts(apple, imported_at)
         facts += apple_rows
     live = live_keys(db_path, profile_key)
-    live_workouts = [  # a live session hides only its own archived copy: same provider, category, start within 5 minutes
+    live_workouts = [  # a live session hides only its own archived copy: same provider, start within 5 minutes (labels differ by source)
         (e["provider"], workout_key(e))
         for e in (list_workout_events(db_path, profile_key) if live else [])
         if e["via"] != "archive"
@@ -241,7 +241,7 @@ def import_archives(oura: str | None, apple: str | None, db_path: str, profile_k
     kept, skipped_live = [], 0
     for fact in facts:
         covered = (
-            any(p == fact.provider_id and same_workout(k, workout_key(fact.__dict__)) for p, k in live_workouts)
+            any(p == fact.provider_id and same_workout((fk[0], k[1]), fk) for p, k in live_workouts for fk in [workout_key(fact.__dict__)])
             if fact.metric.startswith("workout_")
             else (fact.provider_id, fact.metric, fact.date) in live
         )

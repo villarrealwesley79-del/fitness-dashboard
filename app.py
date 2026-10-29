@@ -2246,6 +2246,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
 
 _WEARABLE_REFRESH_SECONDS = 15 * 60
 _WEARABLE_REFRESH_STATE = {"at": None}
+_WEARABLE_REFRESH_LOCK = threading.Lock()  # concurrent requests wait for the fetch in progress instead of reading old facts
 _WEARABLE_BACKFILL_CHUNK_DAYS = 28
 
 
@@ -2254,16 +2255,17 @@ def _refresh_wearable_facts(force=False):
 
     Failures are swallowed: readers fall back to the facts already stored.
     """
-    last = _WEARABLE_REFRESH_STATE["at"]
-    if not force and last is not None and time.monotonic() - last < _WEARABLE_REFRESH_SECONDS:
-        return False
-    _WEARABLE_REFRESH_STATE["at"] = time.monotonic()
-    try:
-        _store_wearable_facts_from_open_wearables(fetch_open_wearables_data())
-        return True
-    except Exception:
-        app.logger.warning("Open Wearables refresh failed; using stored facts", exc_info=True)
-        return False
+    with _WEARABLE_REFRESH_LOCK:
+        last = _WEARABLE_REFRESH_STATE["at"]
+        if not force and last is not None and time.monotonic() - last < _WEARABLE_REFRESH_SECONDS:
+            return False
+        _WEARABLE_REFRESH_STATE["at"] = time.monotonic()
+        try:
+            _store_wearable_facts_from_open_wearables(fetch_open_wearables_data())
+            return True
+        except Exception:
+            app.logger.warning("Open Wearables refresh failed; using stored facts", exc_info=True)
+            return False
 
 
 def backfill_open_wearables_facts(days=365):
@@ -4628,6 +4630,7 @@ def gym_now():
 @app.route('/api/dashboard')
 def api_dashboard():
     """API endpoint for dashboard data."""
+    _refresh_wearable_facts()  # before any factor or fingerprint reads stored facts
     volume = calculate_volume(WORKOUTS, weeks=4)
     progression = calculate_progression_status(WORKOUTS)
 
@@ -7427,35 +7430,33 @@ def _stored_open_wearables_workouts():
     return [{**normalize_history_item(row, source="open_wearables"), "source_label": row["source_label"]} for row in rows]
 
 
+def _extract_open_wearables_main_sleeps(payload):
+    """Every main-sleep (non-nap) event in the payload, oldest first, with its metrics."""
+    sleeps = []
+    for event in sorted(_extract_open_wearables_sleep_events(payload), key=lambda e: e.get("event_time") or datetime.min):
+        if event.get("is_nap") is True:
+            continue
+        event_time = event.get("event_time")
+        duration = event.get("duration_min")
+        avg_hr = event.get("avg_hr")
+        sleeps.append({
+            "duration_min": int(round(duration)) if duration is not None else None,
+            "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
+            "event_time": event_time.isoformat() if event_time else None,
+            "observed_at": event.get("observed_at"),
+            "recent": bool(event_time) and (datetime.now() - event_time) <= timedelta(hours=36),
+            "raw": event.get("raw"),
+            "stages_min": event.get("stages_min") or {},
+            "efficiency_percent": event.get("efficiency_percent"),
+            "is_nap": event.get("is_nap"),
+        })
+    return sleeps
+
+
 def _extract_open_wearables_sleep(payload):
-    """Extract most recent sleep metrics from Open Wearables payload."""
-    events = _extract_open_wearables_sleep_events(payload)
-    if not events:
-        return None
-
-    main_sleep_events = [event for event in events if event.get("is_nap") is not True]
-    if not main_sleep_events:
-        return None
-    best = max(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
-    best_time = best.get("event_time")
-    duration = best.get("duration_min")
-    avg_hr = best.get("avg_hr")
-
-    recent = False
-    if best_time:
-        recent = (datetime.now() - best_time) <= timedelta(hours=36)
-
-    return {
-        "duration_min": int(round(duration)) if duration is not None else None,
-        "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
-        "event_time": best_time.isoformat() if best_time else None,
-        "observed_at": best.get("observed_at"),
-        "recent": recent,
-        "raw": best.get("raw"),
-        "stages_min": best.get("stages_min") or {},
-        "efficiency_percent": best.get("efficiency_percent"),
-        "is_nap": best.get("is_nap"),
-    }
+    """The most recent main-sleep event, or None."""
+    sleeps = _extract_open_wearables_main_sleeps(payload)
+    return sleeps[-1] if sleeps else None
 
 
 def _extract_open_wearables_sleep_events(payload):
@@ -7981,7 +7982,7 @@ def _store_wearable_facts_from_open_wearables(data):
         db_file=WEARABLE_FACTS_DB_FILE,
         profile_key=_open_wearables_profile_key(),
         activity_extractor=_extract_open_wearables_activity_summaries,
-        sleep_extractor=_extract_open_wearables_sleep,
+        sleep_extractor=_extract_open_wearables_main_sleeps,
         row_replacement_sources=_open_wearables_row_replacement_sources,
     )
 
@@ -9162,8 +9163,8 @@ def _training_recommendation_from_factors(
     return recommendation, effective_readiness
 
 
-def _wearable_factor_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
-    """Whether a wearable-owned rule changed the category at its application step."""
+def _wearable_factor_rules(readiness, recovery_bonus, hrv_trend, sleep_debt):
+    """{domain: whether a wearable-owned rule changed the category}: readiness and sleep debt are sleep, HRV is recovery."""
     effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
     recommendation = "moderate"
     if effective_readiness is not None:
@@ -9178,15 +9179,20 @@ def _wearable_factor_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_de
             raw_recommendation = "recovery"
         elif readiness > 85:
             raw_recommendation = "intensity"
-    applied = recommendation != "moderate" and raw_recommendation == recommendation
+    applied = {"sleep": recommendation != "moderate" and raw_recommendation == recommendation, "recovery": False}
     if hrv_trend == "declining":
         next_recommendation = _downgrade_training_recommendation_once(recommendation)
-        applied = applied or next_recommendation != recommendation
+        applied["recovery"] = next_recommendation != recommendation
         recommendation = next_recommendation
     if ((sleep_debt or {}).get("debt_minutes") or 0) > 300:
         next_recommendation = _downgrade_training_recommendation_once(recommendation)
-        applied = applied or next_recommendation != recommendation
+        applied["sleep"] = applied["sleep"] or next_recommendation != recommendation
     return applied
+
+
+def _wearable_factor_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
+    """Whether any wearable-owned rule changed the category at its application step."""
+    return any(_wearable_factor_rules(readiness, recovery_bonus, hrv_trend, sleep_debt).values())
 
 
 @app.route('/api/recommendation/smart')
@@ -9426,8 +9432,8 @@ def smart_recommendation_api():
                 "freshness": guard_fact.get("freshness"), "conflict_state": guard_fact.get("conflict_state"),
             }
             slot = domain_sources.get(domain, {})
-            if domain == "recovery" and domain_fields[domain] and slot.get("provider") != guard_provider:
-                # The slot's field is Oura's HRV trend: keep it and credit the WHOOP score to its own source.
+            if any(f != field for f in domain_fields[domain]) and slot.get("provider") != guard_provider:
+                # The slot's other fields (Oura's HRV trend or sleep estimate) stay with their provider; the guard fact is credited to its own.
                 domain_sources[domain] = {**slot, "guard_source": {**node, "fields_used": [field]}}
                 continue
             if field not in domain_fields[domain]:
@@ -9469,16 +9475,18 @@ def smart_recommendation_api():
                 and 90 <= weather_temperature < 95
             ):
                 weather_fields.append("humidity_pct")
+    wearable_rules = _wearable_factor_rules(
+        recommendation_readiness, recovery_bonus, recommendation_hrv_trend, recommendation_sleep_debt,
+    )
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
         "domain_sources": domain_sources,
         "domain_fields": domain_fields,
-        "wearable_modifier_applied": _wearable_factor_rule_applied(
-            recommendation_readiness,
-            recovery_bonus,
-            recommendation_hrv_trend,
-            recommendation_sleep_debt,
-        ),
+        "domain_modifier_applied": {
+            "sleep": wearable_rules["sleep"] or "sleep_caution" in guard_applied,
+            "recovery": wearable_rules["recovery"] or bool(guard_applied & {"recovery_caution", "recovery_deload"}),
+            "activity": "activity_caution" in guard_applied,
+        },
         "apple_health_fields": apple_health_fields,
         "apple_health_modifier_applied": (
             apple_health_hr_used

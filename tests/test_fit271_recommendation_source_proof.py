@@ -24,7 +24,7 @@ def _proof(*, freshness=None, source_inputs=None):
             "open_wearables_modifier_applied": True,
             "domain_sources": {"recovery": RECOVERY_NODE},
             "domain_fields": {"recovery": ["readiness_score"]},
-            "wearable_modifier_applied": True,
+            "domain_modifier_applied": {"sleep": True, "recovery": True, "activity": True},
             "apple_health_fields": ["recent_workout_load"],
             "weather_fields": ["feelslike_f"],
             "weather_status": "fresh",

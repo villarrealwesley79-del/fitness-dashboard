@@ -521,7 +521,7 @@ def store_wearable_facts(
     db_file: str,
     profile_key: str,
     activity_extractor: Callable[[object], list[dict]],
-    sleep_extractor: Callable[[object], dict | None],
+    sleep_extractor: Callable[[object], list[dict]],
     row_replacement_sources: Callable[[object], list[str]],
     now: Callable[[], datetime] = datetime.now,
 ) -> int:
@@ -582,9 +582,7 @@ def store_wearable_facts(
                 domain_dates[domain] = date_s
 
     facts = []
-    activity = activity_extractor(data.get("activity_summary"))
-    if activity:
-        latest = sorted(activity, key=lambda row: row.get("date") or datetime.min.date())[-1]
+    for latest in activity_extractor(data.get("activity_summary")) or []:
         date_s = latest["date"].strftime("%Y-%m-%d")
         activity_raw = latest.get("raw") if isinstance(latest.get("raw"), dict) else {}
         activity_provenance = {
@@ -617,9 +615,10 @@ def store_wearable_facts(
         if added_activity_fact:
             mark_replacement_sources(latest.get("raw"), date_s, "activity")
 
-    sleep = sleep_extractor(data.get("sleep"))
-    sleep_event_time = _temporal_text(sleep.get("event_time")) if sleep else None
-    if sleep and sleep_event_time:
+    for sleep in sleep_extractor(data.get("sleep")) or []:
+        sleep_event_time = _temporal_text(sleep.get("event_time"))
+        if not sleep_event_time:
+            continue
         date_s = _temporal_value(sleep_event_time).date().isoformat()
         sleep_raw = sleep.get("raw") if isinstance(sleep.get("raw"), dict) else {}
         observed_at = _temporal_text(sleep.get("observed_at") or sleep_event_time)
@@ -1178,15 +1177,19 @@ def stored_workouts(db_file: str, profile_key: str, start: str | None = None) ->
     """History rows from stored workout facts: no live fetch, so an outage cannot fail History.
 
     A workout recorded by two providers (same category, starts within 5 minutes) is one row
-    whose source_label lists both; an archive row is hidden only when a live row from the
-    same provider is that session, so an archived morning run survives a live evening ride.
+    whose source_label lists both; an archive row is hidden only by a live row from the same
+    provider that starts within 5 minutes (Health Auto Export and Open Wearables name one
+    session differently, so the category is ignored), so an archived morning run survives a live evening ride.
     """
     events = list_workout_events(db_file, profile_key, start)
+    live = [(e["provider"], workout_key(e)[1]) for e in events if e["via"] != "archive"]
     order = SOURCE_PREFERENCE["activity"]
     events.sort(key=lambda e: (order.index(e["provider"]) if e["provider"] in order else len(order), e["via"] == "archive"))
     groups: list[tuple[tuple[str, object], list[dict]]] = []
     for event in events:
         key = workout_key(event)
+        if event["via"] == "archive" and any(p == event["provider"] and same_workout((key[0], t), key) for p, t in live):
+            continue  # its own live copy, whatever each source calls the session
         for group_key, members in groups:
             if not same_workout(group_key, key):
                 continue
@@ -1194,8 +1197,6 @@ def stored_workouts(db_file: str, profile_key: str, start: str | None = None) ->
             if not same:
                 members.append(event)
                 break
-            if event["via"] == "archive" and any(m["via"] != "archive" for m in same):
-                break  # a live row from this provider is the same session
         else:
             groups.append((key, [event]))
     rows = []

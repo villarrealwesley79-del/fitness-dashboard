@@ -551,8 +551,8 @@ def test_store_wearable_facts_is_profile_scoped(tmp_path):
             {"date": date(2026, 6, 28), "steps": 1200, "resting": None, "active_minutes": None, "raw": {"source": {"provider": "oura"}}}
         ] if payload else [],
         sleep_extractor=lambda payload: (
-            {"duration_min": 420, "avg_hr": None, "event_time": "2026-06-28T23:58:00", "recent": True, "raw": {"source": {"provider": "oura"}}}
-            if payload else None
+            [{"duration_min": 420, "avg_hr": None, "event_time": "2026-06-28T23:58:00", "recent": True, "raw": {"source": {"provider": "oura"}}}]
+            if payload else []
         ),
         row_replacement_sources=lambda row: ["oura"] if row else [],
     )
@@ -617,12 +617,12 @@ def test_slice_one_oura_sleep_and_recovery_keep_direct_fallback(tmp_path):
         db_file=db_file,
         profile_key="profile-42",
         activity_extractor=lambda _payload: [],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": 420,
             "avg_hr": None,
             "event_time": f"{today}T08:00:00Z",
             "raw": {"source": {"provider": "oura"}},
-        },
+        }],
         row_replacement_sources=lambda row: ["oura"] if row else [],
     )
 
@@ -653,12 +653,12 @@ def test_provider_domain_dates_do_not_retire_direct_fallback(tmp_path):
         db_file=db_file,
         profile_key="profile-42",
         activity_extractor=lambda _payload: [],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": 420,
             "avg_hr": None,
             "event_time": f"{today.isoformat()}T08:00:00Z",
             "raw": {"source": {"provider": "oura"}},
-        },
+        }],
         row_replacement_sources=lambda row: ["oura"] if row else [],
     )
 
@@ -1379,11 +1379,11 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         activity_extractor=lambda _payload: [
             {"date": date(2026, 6, 28), "steps": 8200, "resting": None, "active_minutes": None, "raw": {}}
         ],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": 430, "avg_hr": None, "event_time": "2026-06-28T07:00:00",
             "recent": True, "efficiency_percent": 91.5, "is_nap": False,
             "raw": {"id": "sleep-1", "source": {"provider": "oura"}},
-        },
+        }],
         row_replacement_sources=lambda _row: [],
     )
 
@@ -1757,13 +1757,13 @@ def test_store_wearable_facts_drops_non_finite_health_values(tmp_path):
             "distance": None,
             "raw": {"source": {"provider": "oura"}},
         }],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": float("nan"),
             "avg_hr": None,
             "event_time": f"{today}T07:00:00Z",
             "recent": True,
             "raw": {"source": {"provider": "oura"}},
-        },
+        }],
         row_replacement_sources=lambda row: [row["source"]["provider"]] if row.get("source") else [],
     )
 
@@ -1877,13 +1877,13 @@ def test_store_wearable_facts_rejects_malformed_temporal_keys_and_provenance(tmp
         db_file=db_file,
         profile_key="profile-42",
         activity_extractor=lambda _payload: [],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": 420,
             "avg_hr": None,
             "event_time": "bad-sleep-time",
             "recent": True,
             "raw": {},
-        },
+        }],
         row_replacement_sources=lambda _row: [],
     )
 
@@ -1910,14 +1910,14 @@ def test_store_wearable_facts_drops_invalid_observation_provenance(tmp_path):
         db_file=db_file,
         profile_key="profile-42",
         activity_extractor=lambda _payload: [],
-        sleep_extractor=lambda _payload: {
+        sleep_extractor=lambda _payload: [{
             "duration_min": 420,
             "avg_hr": None,
             "event_time": f"{today}T07:00:00Z",
             "observed_at": "also-not-a-timestamp",
             "recent": True,
             "raw": {},
-        },
+        }],
         row_replacement_sources=lambda _row: [],
     )
 
