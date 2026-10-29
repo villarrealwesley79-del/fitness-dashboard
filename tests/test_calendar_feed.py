@@ -564,3 +564,43 @@ def test_fetch_total_deadline_stops_a_drip_fed_feed(monkeypatch):
     with pytest.raises(OSError, match="could not be fetched") as err:
         cf.fetch_ics(URL, total_timeout=5, opener=Opener())
     assert "private-abc123" not in str(err.value)
+
+
+def test_total_deadline_holds_on_a_real_drip_fed_socket():
+    """read() on a real response waits for the whole 64 KiB chunk; read1() lets the deadline fire."""
+    import http.server
+    import socketserver
+    import threading
+    import urllib.request
+
+    class Drip(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", "100000")
+            self.end_headers()
+            try:
+                for _ in range(40):  # a byte every 0.1 s, then hang up
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    cf.time.sleep(0.1)
+            except OSError:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Drip)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    class Local:  # the URL is still validated; the bytes come from the loopback server
+        def open(self, request, timeout=None):
+            return urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/", timeout=timeout)
+
+    started = cf.time.monotonic()
+    try:
+        with pytest.raises(OSError):
+            cf.fetch_ics(URL, timeout=1, total_timeout=1, opener=Local())
+    finally:
+        server.shutdown()
+    assert cf.time.monotonic() - started < 2.5  # the server itself would hold on for 4 s

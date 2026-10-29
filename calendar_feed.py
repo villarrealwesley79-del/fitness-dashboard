@@ -67,7 +67,8 @@ def fetch_ics(
     """Download the feed. Raises ValueError (bad URL, too big) or OSError (network, too slow).
 
     `timeout` is per socket operation; `total_timeout` bounds the body read, so a drip-fed feed
-    overshoots it by at most one `timeout`.
+    overshoots it by at most one `timeout`. read1 makes one recv per call; read() would wait for the
+    whole chunk and never reach the deadline check while bytes trickle in.
     """
     url = validate_ical_url(url)
     opener = opener or urllib.request.build_opener(_NoRedirect)
@@ -76,7 +77,7 @@ def fetch_ics(
         resp = opener.open(urllib.request.Request(url), timeout=timeout)
         try:
             while len(data) <= max_bytes:  # one byte past the cap is enough to refuse
-                chunk = resp.read(min(65536, max_bytes + 1 - len(data)))
+                chunk = getattr(resp, "read1", resp.read)(min(65536, max_bytes + 1 - len(data)))
                 if not chunk:
                     break
                 data += chunk

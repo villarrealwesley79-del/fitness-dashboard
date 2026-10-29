@@ -4128,7 +4128,10 @@ def _calendar_state(now, force=False):
 
     status is unconfigured | ok | error. The address is read, used and dropped in here.
     """
-    with _CALENDAR_LOCK:
+    # Readers never wait on a fetch: while one runs they get the last state. Only a connect waits (force).
+    if not _CALENDAR_LOCK.acquire(blocking=force):
+        return dict(_CALENDAR) or {"status": "unconfigured", "events": [], "last_fetch": None}
+    try:
         args, kwargs = _calendar_secret_args()
         cached = _CALENDAR
         if force or not (
@@ -4136,20 +4139,22 @@ def _calendar_state(now, force=False):
             and cached.get("day") == now.date()
             and time.monotonic() - cached.get("at", -CALENDAR_REFRESH_SECONDS) < CALENDAR_REFRESH_SECONDS
         ):
-            cached.clear()
-            cached.update(key=kwargs["fallback_path"], day=now.date(), at=time.monotonic(),
-                          status="unconfigured", events=[], last_fetch=None)
+            fresh = dict(key=kwargs["fallback_path"], day=now.date(), at=time.monotonic(),
+                         status="unconfigured", events=[], last_fetch=None)
             url = load_protected_secret(*args, **kwargs).strip()
             if url:
-                cached.update(status="error", last_fetch=now.isoformat(timespec="minutes"))
+                fresh.update(status="error", last_fetch=now.isoformat(timespec="minutes"))
                 try:
                     start = datetime.combine(now.date(), datetime.min.time()).astimezone()
                     end = datetime.combine(now.date() + timedelta(days=2), datetime.min.time()).astimezone()
-                    cached.update(events=calendar_feed.parse_events(calendar_feed.fetch_ics(url), start, end),
-                                  status="ok")
+                    fresh.update(events=calendar_feed.parse_events(calendar_feed.fetch_ics(url), start, end),
+                                 status="ok")
                 except Exception as exc:  # outage, bad address or hostile feed: the plan carries on without it
                     logging.getLogger(__name__).warning("Calendar feed unavailable (%s).", type(exc).__name__)
+            cached.update(fresh)  # swapped in only when done, so readers never see a half-built state
         return dict(cached)
+    finally:
+        _CALENDAR_LOCK.release()
 
 
 def _calendar_day(events, now, offset):
@@ -4181,6 +4186,12 @@ def _schedule_fit():
         return {"status": state["status"], "plan_minutes": None}
     wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
     fit = calendar_feed.fit_session(_calendar_day(state["events"], now, 0)[1], wanted, [o["value"] for o in TIME_OPTIONS])
+    if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
+        built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
+                                      consume_cardio_rotation=False, include_open_wearables_readiness=False)
+        room = (fit["window_end"] - fit["window_start"]).total_seconds() / 60
+        if built["estimated_minutes"] > room:
+            fit = {**fit, "fits": False, "minutes": 0, "shortened": False}
     out = {
         "status": "ok", "fits": fit["fits"], "minutes": fit["minutes"] or None, "shortened": fit["shortened"],
         "plan_minutes": fit["minutes"] if fit["fits"] and fit["shortened"] else None,

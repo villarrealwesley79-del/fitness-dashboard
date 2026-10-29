@@ -78,7 +78,7 @@ def build_payload(
         },
         # Preferred sleep/recovery/activity facts: a new night or a changed value re-plans.
         "readiness": readiness,
-        # Calendar fit (PER-1586): a different session length re-plans; a moving window does not.
+        # Calendar fit (PER-1586): a different session length re-plans, so the plan can change as the clock moves through a window.
         "schedule_fit": schedule_fit,
         "wearable_facts": [
             {key: fact.get(key) for key in ("date", "metric", "provider", "value", "freshness", "conflict_state")}

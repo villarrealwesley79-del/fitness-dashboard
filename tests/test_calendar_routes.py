@@ -8,7 +8,8 @@ import importlib
 import logging
 import os
 import stat
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -231,6 +232,59 @@ def test_short_gap_shortens_the_plan_and_says_why(feed):
         "reason": "Calendar: 45 min fits 10:00 AM to 10:45 AM; session budget set to 45 min",
     }
     assert nxt["next_workout"]["available_time"] == 45
+
+
+@pytest.mark.parametrize(
+    "goal, minutes, fits",
+    [("hypertrophy", 20, False), ("hypertrophy", 30, False), ("hypertrophy", 45, True), ("strength", 45, False)],
+)
+def test_a_window_is_a_fit_only_when_the_plan_built_for_it_fits(feed, goal, minutes, fits):
+    """The generator never builds under two exercises (34 min hypertrophy, 60 min strength)."""
+    module, client, set_feed = feed
+    set_feed(ics(((0, *divmod(10 * 60 + minutes, 60)), (0, 21, 0))))  # busy from `minutes` after 10:00
+    module.USER_SETTINGS.update(available_time_minutes=75, training_goal=goal)
+    connect(client)
+    body = client.get("/api/next-workout").get_json()
+    fit, plan = body["schedule_fit"], body["next_workout"]
+    assert fit["fits"] is fits
+    if fits:
+        assert plan["estimated_minutes"] <= minutes
+        assert fit["reason"].startswith(f"Calendar: {minutes} min fits")
+    else:
+        assert fit["plan_minutes"] is None and plan["available_time"] == 75
+        assert fit["reason"] == "Calendar: no free window today; next window tomorrow 6:00 AM"
+
+
+def test_readers_do_not_wait_for_a_calendar_fetch(feed):
+    """/gym-now (no calendar of its own) and the dashboard serve the last state while a refresh runs."""
+    module, client, set_feed = feed
+    set_feed(ics())
+    connect(client)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(url, **kwargs):
+        started.set()
+        release.wait(10)
+        return ics()
+
+    module.calendar_feed.fetch_ics = slow  # restored by the feed fixture's monkeypatch
+    module._CALENDAR["at"] -= module.CALENDAR_REFRESH_SECONDS + 1  # the next reader refetches
+    refresher = threading.Thread(target=lambda: module.app.test_client().get("/api/dashboard"), daemon=True)
+    refresher.start()
+    assert started.wait(10)
+    results = []
+    reader = threading.Thread(
+        target=lambda: results.append((module.app.test_client().get("/gym-now").status_code,
+                                       module.app.test_client().get("/api/dashboard").get_json()["schedule_fit"]["status"])),
+        daemon=True,
+    )
+    reader.start()
+    reader.join(3)  # the refresh is still blocked: a reader that waited on it would not be done
+    finished_early = not reader.is_alive()
+    release.set()
+    refresher.join(10)
+    reader.join(10)
+    assert finished_early and results == [(200, "ok")]
 
 
 def test_free_afternoon_keeps_the_normal_plan(feed):

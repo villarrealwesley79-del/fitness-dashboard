@@ -28,7 +28,7 @@ Only timed events. All-day events, cancelled events and events marked "Free" do 
 
 ## What it changes
 
-- **Today's session length** is the smaller of your preferred duration and the longest free window left today (inside your training hours, from now on), rounded down to a duration option (20, 30, 45, 60, 75 or 90 minutes). The dashboard shows a chip with the window, and "Why this plan?" says when the session budget was cut. The plan generator never builds fewer than two exercises (about 42 minutes), so a window shorter than that still gets that minimum plan.
+- **Today's session length** is the smaller of your preferred duration and the longest free window left today (inside your training hours, from now on), rounded down to a duration option (20, 30, 45, 60, 75 or 90 minutes). The dashboard shows a chip with the window, and "Why this plan?" says when the session budget was cut. The plan generator never builds fewer than two exercises (34 to 60 minutes, by training goal), so the window counts as a fit only when the plan built for it is no longer than the window; otherwise the dashboard says there is no window today and shows your normal plan.
 - **Under 20 free minutes** means "no window today": the plan stays as it was and the chip names the first window tomorrow.
 - **Outage, bad address or no address:** the normal plan, with no calendar chip. Nothing breaks.
 
