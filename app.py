@@ -85,6 +85,7 @@ from data_store import (
     save_push_subscription,
     save_current_workout_plan,
 )
+import calendar_feed
 import open_wearables_hub
 import workout_recommendation_fingerprint
 
@@ -2674,6 +2675,7 @@ def generate_next_workout(
 
     if available_time is None:
         available_time = USER_SETTINGS.get("available_time_minutes", 60)
+        available_time = min(available_time, _schedule_fit()["plan_minutes"] or available_time)  # PER-1586
 
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
     time_per_set = goal_params.get("time_per_set_minutes", 3)
@@ -4083,6 +4085,205 @@ _FINGERPRINT_FACT_METRICS = {
 }  # HRV is fingerprinted through _hrv_facts(), the series the plan reads
 
 
+# --- Google Calendar secret iCal feed (PER-1586) ---------------------------------------
+# Read-only. The address is a secret: it lives in protected_secrets and never reaches a
+# response, a log line or an error message. The owner's assistant blocks time through its
+# own calendar connector; this app never writes to the calendar.
+GOOGLE_CALENDAR_SERVICE = "fitness-dashboard-google-calendar-ical"
+GOOGLE_CALENDAR_FILE_ENV = "GOOGLE_CALENDAR_ICAL_FILE"
+CALENDAR_REFRESH_SECONDS = 15 * 60
+_CALENDAR = {}  # last feed attempt: key, day, at, status, events, last_fetch
+_CALENDAR_LOCK = threading.Lock()
+
+
+def _parse_training_hours(value):
+    """(start, end) as times from {"start": "HH:MM", "end": "HH:MM"} with start before end, else None."""
+    try:
+        start, end = (datetime.strptime(value[key], "%H:%M").time() for key in ("start", "end"))
+    except (TypeError, KeyError, ValueError):
+        return None
+    return (start, end) if start < end else None
+
+
+def _training_hours():
+    return (
+        _parse_training_hours(USER_SETTINGS.get("training_hours"))
+        or _parse_training_hours(DEFAULT_SETTINGS["training_hours"])
+    )
+
+
+def _calendar_secret_args():
+    override = os.environ.get(GOOGLE_CALENDAR_FILE_ENV, "").strip()
+    path = os.path.abspath(os.path.expanduser(override)) if override else data_path(".google-calendar-ical-url")
+    account = "google-calendar-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+    return (GOOGLE_CALENDAR_SERVICE, account), {"fallback_path": path, "fallback_override_env": GOOGLE_CALENDAR_FILE_ENV}
+
+
+def _calendar_now():
+    return datetime.now().astimezone().replace(second=0, microsecond=0)
+
+
+def _calendar_state(now, force=False):
+    """The cached feed: fetched at most every 15 minutes (and once per day); outages are cached too.
+
+    status is unconfigured | ok | error. The address is read, used and dropped in here.
+    """
+    # Readers never wait on a fetch: while one runs they get the last state. Only a connect waits (force).
+    if not _CALENDAR_LOCK.acquire(blocking=force):
+        cached = dict(_CALENDAR)
+        if cached.get("day") == now.date() and cached.get("key") == _calendar_secret_args()[1]["fallback_path"]:
+            return cached
+        args, kwargs = _calendar_secret_args()
+        if not load_protected_secret(*args, **kwargs).strip():  # a local read, no network: a never-connected user is not "refreshing"
+            return {"status": "unconfigured", "events": [], "last_fetch": None}
+        return {"status": "refreshing", "events": [], "last_fetch": None}  # old-day or other-address data would show a booked day as free
+    try:
+        args, kwargs = _calendar_secret_args()
+        cached = _CALENDAR
+        if force or not (
+            cached.get("key") == kwargs["fallback_path"]
+            and cached.get("day") == now.date()
+            and time.monotonic() - cached.get("at", -CALENDAR_REFRESH_SECONDS) < CALENDAR_REFRESH_SECONDS
+        ):
+            fresh = dict(key=kwargs["fallback_path"], day=now.date(), at=time.monotonic(),
+                         status="unconfigured", events=[], last_fetch=None)
+            url = load_protected_secret(*args, **kwargs).strip()
+            if url:
+                fresh.update(status="error", last_fetch=now.isoformat(timespec="minutes"))
+                try:
+                    start = datetime.combine(now.date(), datetime.min.time()).astimezone()
+                    end = datetime.combine(now.date() + timedelta(days=2), datetime.min.time()).astimezone()
+                    fresh.update(events=calendar_feed.parse_events(calendar_feed.fetch_ics(url), start, end),
+                                 status="ok")
+                except Exception as exc:  # outage, bad address or hostile feed: the plan carries on without it
+                    logging.getLogger(__name__).warning("Calendar feed unavailable (%s).", type(exc).__name__)
+            cached.update(fresh)  # swapped in only when done, so readers never see a half-built state
+        return dict(cached)
+    finally:
+        _CALENDAR_LOCK.release()
+
+
+def _calendar_day(events, now, offset):
+    """(busy, free windows) inside the training hours of today (from now on) or tomorrow."""
+    day = now.date() + timedelta(days=offset)
+    start, end = _training_hours()
+    window_start, window_end = (datetime.combine(day, t).astimezone() for t in (start, end))
+    if offset == 0:
+        window_start = max(window_start, now)
+    if window_end <= window_start:
+        return [], []
+    busy = calendar_feed.busy_intervals(events, window_start, window_end)
+    return busy, calendar_feed.free_windows(busy, window_start, window_end)
+
+
+def _calendar_iso(moment):
+    return moment.astimezone().isoformat(timespec="minutes")
+
+
+def _calendar_clock(moment):
+    return moment.astimezone().strftime("%I:%M %p").lstrip("0")
+
+
+def _schedule_fit(plan=None):
+    """How the calendar changes today's plan. plan_minutes is the shortened length, else None.
+
+    `plan` is a preserved (customised) plan that is returned as it is: it is never shortened,
+    only checked against the free windows.
+    """
+    now = _calendar_now()
+    state = _calendar_state(now)
+    if state["status"] != "ok":
+        return {"status": state["status"], "plan_minutes": None}
+    windows = _calendar_day(state["events"], now, 0)[1]
+    span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
+    if plan is not None:
+        need = int(plan.get("estimated_minutes") or plan.get("available_time") or 0)  # not estimated_duration: it is a "60 min" label
+        held = next((w for w in windows if span(w) >= need), None)  # earliest that holds the plan
+        fit = {"fits": bool(held), "minutes": need if held else 0, "shortened": False,
+               "window_start": held[0] if held else None, "window_end": held[1] if held else None}
+    else:
+        wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
+        fit = calendar_feed.fit_session(windows, wanted, [o["value"] for o in TIME_OPTIONS])
+        if fit["fits"] and not fit["shortened"]:
+            # the generator keeps the owner's own length, even above the options: name a window that holds it (one exists, as not shortened)
+            held = next(w for w in windows if span(w) >= wanted)
+            fit = {**fit, "minutes": wanted, "window_start": held[0], "window_end": held[1]}
+        if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
+            built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
+                                          consume_cardio_rotation=False, include_open_wearables_readiness=False)
+            if built["estimated_minutes"] > span((fit["window_start"], fit["window_end"])):
+                later = next((w for w in windows if span(w) >= built["estimated_minutes"]), None)  # earliest that holds the plan
+                fit = {**fit, "window_start": later[0], "window_end": later[1]} if later else {**fit, "fits": False, "minutes": 0, "shortened": False}
+    out = {
+        "status": "ok", "fits": fit["fits"], "minutes": fit["minutes"] or None, "shortened": fit["shortened"],
+        "plan_minutes": fit["minutes"] if fit["fits"] and fit["shortened"] else None,
+    }
+    if fit["fits"]:
+        out["window_start"], out["window_end"] = _calendar_iso(fit["window_start"]), _calendar_iso(fit["window_end"])
+        out["reason"] = (
+            f"Calendar: {fit['minutes']} min fits {_calendar_clock(fit['window_start'])} to "
+            f"{_calendar_clock(fit['window_end'])}" + (f"; session budget set to {fit['minutes']} min" if fit["shortened"] else "")
+        )
+    else:
+        tomorrow = _calendar_day(state["events"], now, 1)[1]
+        out["next_window"] = {"day": "tomorrow", "start": _calendar_iso(tomorrow[0][0])} if tomorrow else None
+        out["reason"] = (
+            f"Calendar: no free window today; next window tomorrow {_calendar_clock(tomorrow[0][0])}"
+            if tomorrow else "Calendar: no free window today or tomorrow"
+        )
+    return out
+
+
+def _calendar_status(state):
+    return {"configured": state["status"] != "unconfigured", "status": state["status"], "last_fetch": state["last_fetch"]}
+
+
+@app.route('/api/calendar/ical', methods=['GET', 'POST', 'DELETE'])
+def api_calendar_ical():
+    """Connection state only; the address is write-only."""
+    if request.method == 'GET':
+        return jsonify(_calendar_status(_calendar_state(_calendar_now())))
+    args, kwargs = _calendar_secret_args()
+    try:
+        if request.method == 'DELETE':
+            delete_protected_secret(*args, **kwargs)
+        else:
+            data, err = get_json_body(required=True)
+            if err:
+                return err
+            raw, err = _coerce_str(data.get("url"), "url", max_len=500)
+            if err:
+                return err
+            try:
+                url = calendar_feed.validate_ical_url(raw)
+            except ValueError as exc:  # the message never echoes the address
+                return api_error(str(exc), 400, code="invalid_field")
+            save_protected_secret(*args, url, **kwargs)
+    except (OSError, RuntimeError):
+        return api_error("Could not update the calendar address.", 500, code="calendar_store_failed")
+    return jsonify(_calendar_status(_calendar_state(_calendar_now(), force=True)))
+
+
+@app.route('/api/calendar/windows')
+def api_calendar_windows():
+    """Busy and free training windows for the owner's assistant (mcp get_open_windows)."""
+    day = request.args.get("day", "today")
+    if day not in ("today", "tomorrow"):
+        return api_error("day must be today or tomorrow", 400, code="invalid_field")
+    now = _calendar_now()
+    state = _calendar_state(now)
+    out = {"status": state["status"], "day": day, "windows": [], "busy": []}
+    if state["status"] == "ok":
+        busy, windows = _calendar_day(state["events"], now, 0 if day == "today" else 1)
+        out["busy"] = [{"start": _calendar_iso(s), "end": _calendar_iso(e)} for s, e in busy]
+        out["windows"] = [
+            {"start": _calendar_iso(s), "end": _calendar_iso(e),
+             "minutes": int((e.astimezone(timezone.utc) - s.astimezone(timezone.utc)).total_seconds() // 60)}
+            for s, e in windows
+        ]
+    return jsonify(out)
+
+
 def _workout_recommendation_fingerprint():
     """Fingerprint inputs that should force a new next-workout plan."""
     today_s = _today_str()
@@ -4092,6 +4293,7 @@ def _workout_recommendation_fingerprint():
         for _metric, fact in sorted(by_metric.items())
     ] + _hrv_facts()
 
+    fit = _schedule_fit()
     return workout_recommendation_fingerprint.build_fingerprint(
         auth_scope=_current_auth_scope(),
         day=today_s,
@@ -4106,6 +4308,7 @@ def _workout_recommendation_fingerprint():
         open_wearables_marker=_open_wearables_recommendation_marker(),
         wearable_facts=wearable_facts,
         readiness=_readiness_with_basis()[0],
+        schedule_fit={"status": fit["status"], "plan_minutes": fit["plan_minutes"]},
     )
 
 
@@ -4116,6 +4319,7 @@ def api_next_workout():
     fingerprint = _workout_recommendation_fingerprint()
     today_s = _today_str()
     current_plan = _same_day_preserved_workout_plan(today_s)
+    preserved_plan = current_plan
     lookup_token = None
     if not current_plan:
         current_plan = _current_workout_plan_for_fingerprint(
@@ -4155,6 +4359,7 @@ def api_next_workout():
     display_workout = _wearable_adjusted_for_display(current_plan, open_wearables_modifier)
     return jsonify({
         "next_workout": _workout_with_auth_scope(display_workout),
+        "schedule_fit": _schedule_fit(preserved_plan),
         "recommendation_sources": {
             **_recommendation_sources_payload(
                 freshness,
@@ -4434,6 +4639,7 @@ def api_dashboard():
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
         "next_workout": _workout_with_auth_scope(next_workout),
+        "schedule_fit": _schedule_fit(next_workout if using_stored_customization else None),
         "readiness_factors": {
             "acwr": acwr,
             "sleep_debt": sleep_debt,
@@ -4955,6 +5161,7 @@ def settings():
             "sex": USER_SETTINGS.get("sex", DEFAULT_SETTINGS["sex"]),
             "sessions_per_week_target": USER_SETTINGS.get("sessions_per_week_target", DEFAULT_SETTINGS["sessions_per_week_target"]),
             "available_time_minutes": USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"]),
+            "training_hours": dict(zip(("start", "end"), (f"{t:%H:%M}" for t in _training_hours()))),
             "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", DEFAULT_SETTINGS["target_weight_lbs"]),
             "target_body_fat_pct": USER_SETTINGS.get("target_body_fat_pct", DEFAULT_SETTINGS["target_body_fat_pct"]),
             "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", DEFAULT_SETTINGS["fatigue_threshold"]),
@@ -5015,6 +5222,12 @@ def settings():
             if err2:
                 return err2
             updated_settings["available_time_minutes"] = t
+
+        if "training_hours" in data:
+            hours = _parse_training_hours(data.get("training_hours"))
+            if hours is None:
+                return api_error("training_hours needs start before end, as HH:MM", 400, code="invalid_field")
+            updated_settings["training_hours"] = dict(zip(("start", "end"), (f"{t:%H:%M}" for t in hours)))
 
         if "target_weight_lbs" in data:
             tw, err2 = _coerce_float(data.get("target_weight_lbs"), "target_weight_lbs", min_v=80, max_v=500)
@@ -8685,7 +8898,10 @@ def smart_recommendation_api():
     freshness = _compute_data_freshness()
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    canonical_plan = _same_day_preserved_workout_plan(today) or current_plan
+    preserved_plan = _same_day_preserved_workout_plan(today)
+    canonical_plan = preserved_plan or current_plan
+    if calendar_reason := _schedule_fit(preserved_plan).get("reason"):
+        reason_bits.append(calendar_reason)
     if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
         next_workout = dict(canonical_plan)
         next_workout.pop("_user_customized", None)
