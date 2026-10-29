@@ -4197,7 +4197,7 @@ def _schedule_fit(plan=None):
     windows = _calendar_day(state["events"], now, 0)[1]
     span = lambda w: (w[1].astimezone(timezone.utc) - w[0].astimezone(timezone.utc)).total_seconds() / 60
     if plan is not None:
-        need = int(plan.get("estimated_minutes") or 0)
+        need = int(plan.get("estimated_minutes") or plan.get("estimated_duration") or plan.get("available_time") or 0)  # as /gym-now
         held = next((w for w in windows if span(w) >= need), None)  # earliest that holds the plan
         fit = {"fits": bool(held), "minutes": need if held else 0, "shortened": False,
                "window_start": held[0] if held else None, "window_end": held[1] if held else None}
@@ -4205,7 +4205,9 @@ def _schedule_fit(plan=None):
         wanted = USER_SETTINGS.get("available_time_minutes", DEFAULT_SETTINGS["available_time_minutes"])
         fit = calendar_feed.fit_session(windows, wanted, [o["value"] for o in TIME_OPTIONS])
         if fit["fits"] and not fit["shortened"]:
-            fit = {**fit, "minutes": wanted}  # the generator keeps the owner's own length, even above the options
+            # the generator keeps the owner's own length, even above the options: name a window that holds it (one exists, as not shortened)
+            held = next(w for w in windows if span(w) >= wanted)
+            fit = {**fit, "minutes": wanted, "window_start": held[0], "window_end": held[1]}
         if fit["fits"]:  # a window is a fit only if the plan built for it is no longer than the window
             built = generate_next_workout(WORKOUTS, SORENESS_DATA, available_time=fit["minutes"],
                                           consume_cardio_rotation=False, include_open_wearables_readiness=False)

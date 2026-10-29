@@ -519,6 +519,33 @@ def test_probe_uses_the_budget_the_generator_will_use(feed):
     assert fit["reason"] == "Calendar: 120 min fits 12:00 PM to 2:00 PM"
 
 
+@pytest.mark.parametrize("wanted, goal, spans, window", [
+    (120, "toning", [((0, 11, 30), (0, 12, 0)), ((0, 14, 0), (0, 21, 0))], "Calendar: 120 min fits 12:00 PM to 2:00 PM"),  # free 90 then 120; the plan (86) is shorter than the 90 window
+    (120, "endurance", [((0, 11, 40), (0, 12, 0)), ((0, 17, 0), (0, 21, 0))], "Calendar: 120 min fits 12:00 PM to 5:00 PM"),  # free 100 then 300
+    (240, "hypertrophy", [((0, 12, 30), (0, 13, 0)), ((0, 18, 0), (0, 21, 0))], "Calendar: 240 min fits 1:00 PM to 6:00 PM"),  # free 150 then 300
+])
+def test_the_minutes_named_always_fit_the_window_named(feed, wanted, goal, spans, window):
+    """A budget above every option keeps its own minutes, so the window must hold those minutes, not the rounded-down option."""
+    module, client, set_feed = feed
+    set_feed(ics(*spans))
+    module.USER_SETTINGS.update(available_time_minutes=wanted, training_goal=goal)
+    connect(client)
+    for body in (client.get("/api/next-workout").get_json(), client.get("/api/dashboard").get_json()):
+        fit = body["schedule_fit"]
+        assert fit["minutes"] == wanted and fit["shortened"] is False and fit["reason"] == window
+        start, end = (datetime.fromisoformat(fit[k]) for k in ("window_start", "window_end"))
+        assert wanted <= (end - start).total_seconds() / 60 and body["next_workout"]["estimated_minutes"] <= wanted
+    assert window in client.get("/api/recommendation/smart").get_json()["reasoning"]  # the brief says the same
+
+
+def test_a_preserved_plan_without_a_length_uses_the_gym_now_fallback(feed):
+    module, client, set_feed = feed
+    set_feed(GAP_45)
+    connect(client)
+    preserve(module, estimated_minutes=None, estimated_duration=60)
+    fit = client.get("/api/next-workout").get_json()["schedule_fit"]
+    assert fit["fits"] is False and fit["next_window"]["day"] == "tomorrow"  # 60 minutes does not fit 45
+
 PRESERVED = {"id": "per1586-kept", "estimated_minutes": 75}
 
 
