@@ -3406,18 +3406,24 @@ def _open_wearables_fingerprint_sessions(workouts):
     return kept + [s for sessions in folded.values() for s in sessions]
 
 
-def _unlogged_watch_cardio(sessions):
-    """Non-strength sessions minus the ones a CARDIO_DATA entry already records.
+def _split_watch_cardio(sessions):
+    """Non-strength sessions as (not recorded by CARDIO_DATA, {id(entry): the session it records}).
 
     Each logged entry covers one same-date, same-type session, the closest duration first.
     """
     cardio = [s for s in sessions if s["canonical_category"] != "strength_training"]
+    matched = {}
     for c in CARDIO_DATA:
         key = (c.get("date"), _canonical_cardio_fatigue_type(c.get("activity_type")))
         same = [s for s in cardio if (s["date"], _canonical_cardio_fatigue_type(s["activity_type"])) == key]
         if same:
-            cardio.remove(min(same, key=lambda s: abs(s["duration_minutes"] - _fit95_number(c.get("duration_minutes")))))
-    return cardio
+            matched[id(c)] = min(same, key=lambda s: abs(s["duration_minutes"] - _fit95_number(c.get("duration_minutes"))))
+            cardio.remove(matched[id(c)])
+    return cardio, matched
+
+
+def _unlogged_watch_cardio(sessions):
+    return _split_watch_cardio(sessions)[0]
 
 
 def _cardio_with_open_wearables():
@@ -3436,7 +3442,8 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
       tonnage: sum over all sets of (reps * weight), plus duration-derived load for
                cardio-style app workouts. Unchanged from before watch sessions counted.
       minutes: logged workout and cardio durations plus the Open Wearables sessions that survive the
-               History fold. It is dropped unless a watch session is counted in it.
+               History fold (a hand-logged run the watch also recorded counts as the watch copy, once).
+               It is dropped unless a watch session is counted in it.
     The reported ratio is the higher of the two. Only the ratio acts on the plan: above 1.5
     forces recovery and 1.3 or more downgrades once (_training_recommendation_from_factors);
     nothing raises volume on a low ratio, so a higher ratio is never less cautious. Ties
@@ -3473,9 +3480,10 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
     daily, daily_minutes = {}, {}
     if wearable_sessions is None:
         kept, folded = _open_wearables_fold(workouts)
-        sessions = [s for s in kept if s["canonical_category"] == "strength_training"] + _unlogged_watch_cardio(kept)
+        unlogged, matched = _split_watch_cardio(kept)
+        sessions = [s for s in kept if s["canonical_category"] == "strength_training"] + unlogged
     else:
-        kept, folded, sessions = wearable_sessions, {}, wearable_sessions
+        kept, folded, sessions, matched = wearable_sessions, {}, wearable_sessions, {}
     counted = []  # watch sessions whose minutes are in the series
 
     def add_minutes(d, minutes):
@@ -3494,7 +3502,10 @@ def calculate_acwr(workouts: list, wearable_sessions=None) -> dict:
         add_minutes(d, minutes)
     for c in CARDIO_DATA:
         if not c.get("workout_id"):  # completed-workout cardio is already in its WORKOUTS row
-            add_minutes(in_window(c.get("date")), _fit95_number(c.get("duration_minutes")))
+            d, twin = in_window(c.get("date")), matched.get(id(c))
+            if d and twin:  # the watch recorded this run too: count the watch copy once, so hand-logging never drops the series
+                counted.append(twin)
+            add_minutes(d, _fit95_number((twin or c).get("duration_minutes")))
     for s in sessions:
         d = in_window(s.get("date"))
         if d:

@@ -276,15 +276,15 @@ def test_one_logged_run_drops_only_one_same_day_watch_run(app_module):
     assert [r["duration_minutes"] for r in app_module._cardio_with_open_wearables()] == [30, 45.0]
 
 
-def test_a_watch_run_also_logged_by_hand_counts_no_watch_minutes(app_module):
+def test_a_watch_run_also_logged_by_hand_still_counts_toward_acwr(app_module):
     app_module.WORKOUTS[:] = [timed_lift(n) for n in (3, 10, 17, 24)]
     for n in (2, 9, 16, 23):
         store(app_module, n, "Running", 30, hour=7)
-    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] is not None
+    watch_only = app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]
     for n in (2, 9, 16, 23):
         app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 30})
-    # Every watch run is the logged one: no watch session is counted, so the ratio is the logs' own, as before watch sessions counted.
-    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] is None
+    assert watch_only is not None
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"] == watch_only  # the run counts once
 
 
 def test_a_run_logged_by_hand_alone_is_never_less_cautious_than_not_logging_it(app_module):
@@ -408,13 +408,69 @@ def test_the_plan_fingerprint_sees_folded_watch_durations(app_module):
 
 
 def test_logs_alone_never_get_a_minutes_series_credited_to_the_watch(app_module):
-    # The watch lift folds into a timed lift and the watch run is the hand-logged run: no watch session is counted.
+    # The watch lift folds into a timed lift and counts nothing; no watch run exists, so no watch session is counted.
     app_module.WORKOUTS[:] = [{**lift(1), "duration_minutes": 60}]
     store(app_module, 1, "Traditional Strength Training", 60, hour=18)
-    store(app_module, 2, "Running", 30, hour=7)
     app_module.CARDIO_DATA[:] = [{"date": day(2), "activity_type": "Outdoor Run", "duration_minutes": 30, "intensity": 5}]
     result = app_module.calculate_acwr(app_module.WORKOUTS)
     assert result["acwr_series"]["minutes"] is None and result["acwr_series"]["used"] == "tonnage"
+    # Rule B: a hand-logged run the watch also recorded counts as the watch copy, exactly once (60 lift + 30 run).
+    store(app_module, 2, "Running", 30, hour=7)
+    assert app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]["acute_load"] == 90
+
+
+def _add_cardio(module, n, minutes):
+    r = module.app.test_client().post("/api/add-cardio", json={"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": minutes, "intensity": 5})
+    assert r.status_code in (200, 201), r.get_json()
+
+
+def test_hand_logging_every_watch_run_through_add_cardio_keeps_the_load(app_module):
+    """Logging the runs a watch also recorded must not make the plan less cautious than not logging them."""
+    store(app_module, 20, "Running", 30, hour=7)
+    for n in (1, 2, 3, 4):
+        store(app_module, n, "Running", 90, hour=7)
+    client = app_module.app.test_client()
+    before = app_module.calculate_acwr(app_module.WORKOUTS)
+    smart_before = client.get("/api/recommendation/smart").get_json()["recommendation"]
+    for n, mins in ((20, 30), (1, 90), (2, 90), (3, 90), (4, 90)):
+        _add_cardio(app_module, n, mins)
+    after = app_module.calculate_acwr(app_module.WORKOUTS)
+    smart_after = client.get("/api/recommendation/smart").get_json()["recommendation"]
+    assert (before["acwr"], before["risk"], smart_before) == (2.769, "high", "recovery")
+    assert (after["acwr"], after["risk"], smart_after) == (before["acwr"], before["risk"], smart_before)
+
+
+def test_hand_logging_the_one_old_watch_run_does_not_flip_a_recovery_day(app_module):
+    """Four 90-min runs this week on the watch and by hand, one quiet 30-min watch run 20 days ago: logging that old run
+    (chronic-only minutes) must not turn a recovery day into a moderate one."""
+    pattern = [("Chest Press", "chest"), ("Seated Row", "back"), ("Leg Press", "quads")]
+    app_module.WORKOUTS[:] = [
+        {"date": day(n), "session_type": "push", "duration_minutes": 55,
+         "exercises": [{"machine": pattern[i % 3][0], "muscle_group": pattern[i % 3][1], "sets": [{"weight_lbs": 100, "reps": 10}] * 3}]}
+        for i, n in enumerate((1, 3, 5, 8, 10, 12, 15, 17, 19, 22, 24, 26))
+    ]
+    store(app_module, 20, "Running", 30, hour=7)
+    for n in (1, 2, 3, 4):
+        store(app_module, n, "Running", 90, hour=7)
+        app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 90, "intensity": 5})
+    client = app_module.app.test_client()
+    before = (app_module.calculate_acwr(app_module.WORKOUTS)["acwr"], client.get("/api/recommendation/smart").get_json()["recommendation"])
+    _add_cardio(app_module, 20, 30)
+    after = (app_module.calculate_acwr(app_module.WORKOUTS)["acwr"], client.get("/api/recommendation/smart").get_json()["recommendation"])
+    assert before == (1.929, "recovery")
+    assert after == before
+
+
+def test_logging_four_weekly_watch_runs_keeps_a_moderate_day_moderate(app_module):
+    app_module.WORKOUTS[:] = [timed_lift(n) for n in (3, 10, 17, 24)]
+    for n in (2, 9, 16, 23):
+        store(app_module, n, "Running", 30, hour=7)
+    watch_only = app_module.calculate_acwr(app_module.WORKOUTS)["acwr_series"]["minutes"]
+    for n in (2, 9, 16, 23):
+        app_module.CARDIO_DATA.append({"date": day(n), "activity_type": "Outdoor Run", "duration_minutes": 30})
+    acwr = app_module.calculate_acwr(app_module.WORKOUTS)
+    assert acwr["acwr_series"]["minutes"] == watch_only and watch_only["acwr"] < 1.3
+    assert app_module._training_recommendation_from_factors(None, acwr_data=acwr)[0] == "moderate"
 
 
 @pytest.mark.parametrize("sets", [None, 0, "x"])
