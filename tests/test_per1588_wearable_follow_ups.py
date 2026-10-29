@@ -67,3 +67,53 @@ def test_a_forced_night_keeps_live_over_a_fuller_archive_record(tmp_path):
     ])
     fact = _read(db, "sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate")["sleep_duration"]
     assert (fact["value"], fact["via"]) == (300, "open_wearables")
+
+
+def _codex_p2_night(db, full_minutes):
+    # Oura 480; WHOOP has a newer duration-only 300 record and an older fuller record carrying efficiency and heart rate.
+    upsert_daily_facts(db, [
+        _fact("whoop", "sleep_duration", full_minutes, source_id="full"),
+        _fact("whoop", "sleep_efficiency", 90, source_id="full"),
+        _fact("whoop", "sleep_avg_heart_rate", 55, source_id="full"),
+        _fact("oura", "sleep_duration", 480, source_id="o"),
+    ])
+    time.sleep(0.01)
+    upsert_daily_facts(db, [_fact("whoop", "sleep_duration", 300, source_id="thin")])
+
+
+def test_the_codex_p2_night_never_reports_540(tmp_path):
+    """Codex P2: whoop's representative is the 540 record, 540 vs 480 is within tolerance, so Oura (preferred) is used, unlabelled."""
+    db = str(tmp_path / "facts.db")
+    _codex_p2_night(db, 540)
+
+    fact = _read(db, "sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate")["sleep_duration"]
+
+    assert (fact["provider"], fact["value"]) == ("oura", 480)
+    assert fact["conflict_state"] != "conservative_value_used"
+
+
+def test_a_conservative_night_never_reports_more_than_the_competing_representative(tmp_path):
+    """Codex P2: the duration that justified the conservative pick must not be re-ranked to a longer one."""
+    db = str(tmp_path / "facts.db")
+    _codex_p2_night(db, 600)  # whoop's representative (600) vs oura 480: a real conflict, the shorter oura night wins
+
+    night = _read(db, "sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate")
+
+    assert (night["sleep_duration"]["provider"], night["sleep_duration"]["value"]) == ("oura", 480)
+    assert night["sleep_duration"]["conflict_state"] == "conservative_value_used"
+    assert set(night) == {"sleep_duration"}  # oura's record carries nothing else: never borrowed from whoop
+
+
+def test_a_forced_night_reports_efficiency_from_the_record_that_supplied_the_duration(tmp_path):
+    db = str(tmp_path / "facts.db")
+    upsert_daily_facts(db, [  # whoop is the shorter provider; its fullest record has no duration at all
+        _fact("oura", "sleep_duration", 480, source_id="o"),
+        _fact("whoop", "sleep_duration", 300, source_id="has-duration"),
+        _fact("whoop", "sleep_efficiency", 88, source_id="has-duration"),
+        _fact("whoop", "sleep_efficiency", 70, source_id="no-duration"),
+        _fact("whoop", "sleep_avg_heart_rate", 50, source_id="no-duration"),
+    ])
+
+    night = _read(db, "sleep_duration", "sleep_efficiency", "sleep_avg_heart_rate")
+
+    assert {m: f["value"] for m, f in night.items()} == {"sleep_duration": 300, "sleep_efficiency": 88}

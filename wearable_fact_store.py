@@ -1046,35 +1046,43 @@ def preferred_daily_facts(
     conflicts: dict[str, str] = {}
     gap_fills: dict[str, str] = {}  # the top-ranked provider logged only a fragment: the next real night fills in
     fragments: dict[str, set] = {}  # a night with a real duration: its sub-hour records (provider, source_id) never feed any sleep metric
+    night_record: dict[str, dict[str, object]] = {}  # date -> provider -> source_id of that provider's representative record
+    sleep_metrics_carried = Counter(  # how many sleep metrics each record supplies
+        (d, c[2], c[3]["source_id"]) for (d, m), cs in grouped.items() if _default_metric_domain(m) == "sleep" for c in cs
+    )
     for (date_s, metric), candidates in grouped.items():
         tolerance = CONFLICT_TOLERANCE.get(metric)
         if tolerance is None:
             continue
-        by_provider: dict[str, float] = {}
-        for _rank, other_value, other_provider, _row in candidates:
-            if other_value >= MIN_NIGHT_SLEEP_MIN:
-                by_provider.setdefault(other_provider, other_value)
+        # Each provider's representative night: live before archive, then the fullest record, then the sorted order.
+        reps: dict[str, tuple] = {}
+        for c in candidates:
+            if c[1] < MIN_NIGHT_SLEEP_MIN:
+                continue
+            best = reps.get(c[2])
+            if best is None or (c[0][1], -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])]) < (
+                best[0][1], -sleep_metrics_carried[(date_s, best[2], best[3]["source_id"])]
+            ):
+                reps[c[2]] = c
+        by_provider = {p: c[1] for p, c in reps.items()}
+        night_record[date_s] = {p: c[3]["source_id"] for p, c in reps.items()}
         if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
             conflicts[date_s] = min(by_provider, key=by_provider.get)
         elif by_provider and candidates[0][1] < MIN_NIGHT_SLEEP_MIN:
             gap_fills[date_s] = next(iter(by_provider))
         if by_provider:
             fragments[date_s] = {(c[2], c[3]["source_id"]) for c in candidates if c[1] < MIN_NIGHT_SLEEP_MIN}
-    sleep_metrics_carried = Counter(  # how many sleep metrics each record supplies
-        (d, c[2], c[3]["source_id"]) for (d, m), cs in grouped.items() if _default_metric_domain(m) == "sleep" for c in cs
-    )
     for (date_s, metric), candidates in grouped.items():
         forced = None
         if _default_metric_domain(metric) == "sleep":
             forced = conflicts.get(date_s) or gap_fills.get(date_s)
             candidates = [
                 c for c in candidates
-                if (not forced or c[2] == forced) and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
+                if (not forced or (c[2] == forced and c[3]["source_id"] == night_record[date_s][forced]))
+                and (c[2], c[3]["source_id"]) not in fragments.get(date_s, ())
             ]
             if not candidates:
                 continue  # the used provider has no such metric: never borrow another provider's
-            if forced:  # one provider, several plausible records: the fullest record wins
-                candidates.sort(key=lambda c: (c[0][1], -sleep_metrics_carried[(date_s, c[2], c[3]["source_id"])]))  # live before archive, then fullest
         rank, value, provider, row = candidates[0]
         conflict = "conservative_value_used" if date_s in conflicts and forced else row["conflict_state"]
         result.setdefault(date_s, {})[metric] = {
